@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-prophet"
 version = "0.1.0"
-description = "Prophet Arena benchmark runner and CLI"
+description = "Prophet Arena benchmark runner and AI Prophet CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    {name = "Prophet Arena Team"}
+    {name = "AI Prophet Team"}
 ]
 dependencies = [
     # Core
