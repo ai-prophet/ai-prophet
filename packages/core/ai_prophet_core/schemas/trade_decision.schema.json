@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prophetarena.ai/schemas/trade_decision.v1.json",
+  "title": "Trade Decision",
+  "description": "LLM-generated trade decision based on probability forecast",
+  "type": "object",
+  "required": ["recommendation", "size_usd", "rationale"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier"
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["BUY_YES", "BUY_NO", "HOLD"],
+      "description": "Trade direction based on probability vs market price"
+    },
+    "size_usd": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Dollar amount to trade (0 for HOLD)"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Brief reasoning for the trade decision and sizing"
+    }
+  },
+  "additionalProperties": false
+}
+

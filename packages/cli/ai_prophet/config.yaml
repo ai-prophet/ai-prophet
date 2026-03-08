@@ -1,0 +1,42 @@
+# PA Client Configuration
+# Copy to config.local.yaml to override (gitignored)
+
+search:
+  max_queries_per_market: 1
+  max_results_per_query: 3
+  mock: false
+  connect_timeout: 10
+  total_timeout: 30
+  fetch_timeout: 15
+  max_concurrent: 3
+  max_html_bytes: 524288       # 512 KB — cap per-page HTML download
+  max_extract_chars: 5000      # Truncate extracted article text
+
+pipeline:
+  max_markets: 5
+  min_size_usd: 1.0
+
+llm:
+  temperature: 0.7
+  max_tokens: 4096
+  max_retries: 3
+  retry_delay: 1.0
+  http_timeout: 600.0
+  verbose_truncate_chars: 3000
+
+server:
+  timeout: 90
+  max_retries: 3
+  retry_backoff: 2.0
+  poll_interval: 60.0
+  max_polls: 60   # 60 * 60s = 1 hour max wait
+
+memory:
+  recent_ticks_limit: 5
+  market_history_limit: 3
+
+benchmark:
+  initial_cash: 10000.0
+  deadline_buffer_seconds: 180
+  result_timeout_seconds: 300
+  process_join_timeout: 10

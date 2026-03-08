@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prophetarena.ai/schemas/review.v1.json",
+  "title": "Review Decision",
+  "description": "Batched attention allocation for markets during the REVIEW stage",
+  "type": "object",
+  "required": ["review"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier"
+    },
+    "review": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["market_id", "priority", "queries", "rationale"],
+        "properties": {
+          "market_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Market identifier to review"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Priority score (0-100, higher = more important)"
+          },
+          "queries": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "maxItems": 3,
+            "description": "Up to 3 search queries to execute for this market (can be empty if no research needed)"
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Short rationale for selecting this market"
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10,
+      "description": "Selected markets to review (empty means no markets selected)"
+    }
+  },
+  "additionalProperties": false
+}

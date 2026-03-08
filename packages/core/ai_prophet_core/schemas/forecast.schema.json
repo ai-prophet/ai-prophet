@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prophetarena.ai/schemas/forecast.v1.json",
+  "title": "Market Forecast",
+  "description": "Probabilistic forecast for a prediction market (forecasting ability only)",
+  "type": "object",
+  "required": ["p_yes", "rationale"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier"
+    },
+    "p_yes": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Probability that the YES outcome will occur"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "description": "Reasoning supporting the probability estimate"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prophetarena.ai/schemas/search.v1.json",
+  "title": "Search Summary",
+  "description": "Summary of web search results for a market query",
+  "type": "object",
+  "required": ["summary", "key_points", "open_questions"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "2-6 sentence synthesis of the most relevant findings"
+    },
+    "key_points": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      },
+      "maxItems": 10,
+      "description": "Key claims or observations from the search"
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "description": "What remains unknown or ambiguous"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-prophet"
+version = "0.1.0"
+description = "Prophet Arena benchmark runner and CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    {name = "Prophet Arena Team"}
+]
+dependencies = [
+    # Core
+    "pydantic>=2.5.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    
+    # HTTP & API
+    "httpx>=0.27.0",
+    "aiohttp>=3.9.0",
+    
+    # Database (SQLite only by default)
+    "sqlalchemy>=2.0.0",
+    
+    # CLI
+    "click>=8.1.0",
+    
+    # LLM Providers
+    "anthropic>=0.18.0",
+    "openai>=1.12.0",
+    
+    # Search & Content Extraction
+    "trafilatura>=1.6.0",
+    
+    # Live betting adapter runtime
+    "requests>=2.31.0",
+    "cryptography>=43.0.0",
+
+    # Core SDK
+    "ai-prophet-core>=0.1.0,<0.2.0",
+]
+
+[project.optional-dependencies]
+postgres = [
+    "psycopg2-binary>=2.9.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+]
+
+[project.urls]
+Homepage = "https://www.prophetarena.co"
+Documentation = "https://www.prophetarena.co"
+
+[project.scripts]
+ai-prophet = "ai_prophet.cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_prophet*"]
+
+[tool.setuptools.package-data]
+"ai_prophet" = ["config.yaml", "py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
