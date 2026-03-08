@@ -8,9 +8,9 @@ from unittest.mock import Mock
 import requests
 
 from ai_prophet.core.tick_context import CandidateMarket
-from ai_prophet.live_betting.adapters.base import OrderRequest, OrderStatus
-from ai_prophet.live_betting.adapters.kalshi import KalshiAdapter
 from ai_prophet.live_betting_adapter import execute_live_betting_strategy
+from ai_prophet_core.betting.adapters.base import OrderRequest, OrderStatus
+from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
 
 def _make_order() -> OrderRequest:
@@ -27,7 +27,7 @@ def _make_order() -> OrderRequest:
 
 
 def test_kalshi_adapter_network_error_returns_rejected(monkeypatch):
-    adapter = KalshiAdapter(api_key_id="id", private_key_b64="key", dry_run=False)
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
     monkeypatch.setattr(adapter, "_sign_request", lambda *_args, **_kwargs: {})
 
     def raise_network(*_args, **_kwargs):
@@ -41,7 +41,7 @@ def test_kalshi_adapter_network_error_returns_rejected(monkeypatch):
 
 
 def test_kalshi_adapter_http_error_returns_rejected(monkeypatch):
-    adapter = KalshiAdapter(api_key_id="id", private_key_b64="key", dry_run=False)
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
     monkeypatch.setattr(adapter, "_sign_request", lambda *_args, **_kwargs: {})
 
     response = Mock()
@@ -74,7 +74,7 @@ def test_live_betting_strategy_closes_llm_client(monkeypatch):
 
     fake_llm = _FakeLLMClient()
     monkeypatch.setattr(
-        "ai_prophet.live_betting.config.get_pipeline_config",
+        "ai_prophet_core.betting.config.get_pipeline_config",
         lambda _model_spec: {"provider": "openai", "api_model": "gpt-5.2"},
     )
     monkeypatch.setattr("ai_prophet.llm.create_llm_client", lambda **_kwargs: fake_llm)

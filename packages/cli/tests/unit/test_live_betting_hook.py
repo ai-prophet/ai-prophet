@@ -4,17 +4,15 @@ from datetime import UTC, datetime
 
 from sqlalchemy import create_engine
 
-from ai_prophet.live_betting import hook as hook_module
-from ai_prophet.live_betting.hook import LiveBettingHook
+from ai_prophet_core.betting.hook import LiveBettingHook
 
 
 def test_hook_dedupes_duplicate_model_forecasts(monkeypatch):
-    monkeypatch.setattr(hook_module, "LIVE_BETTING_ENABLED", True)
-
     engine = create_engine("sqlite:///:memory:")
     hook = LiveBettingHook(
         betting_model_names=["model-a", "model-b"],
         db_engine=engine,
+        enabled=True,
         dry_run=True,
     )
 

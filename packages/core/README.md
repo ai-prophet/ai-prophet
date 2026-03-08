@@ -18,6 +18,27 @@ For local development from this repository:
 python -m pip install -e packages/core
 ```
 
+## Live Betting
+
+`ai-prophet-core` also ships `ai_prophet_core.betting` for forecast aggregation,
+order routing, and local persistence. The public API is explicit: importing the module
+does not enable trading or load dotenv files. Callers opt in by constructing a
+`LiveBettingHook` directly or by loading `LiveBettingSettings` from the environment.
+
+Common environment variables:
+
+- `LIVE_BETTING_ENABLED` for CLI-side enablement
+- `LIVE_BETTING_DRY_RUN` with `true` as the safe default
+- `KALSHI_API_KEY_ID`
+- `KALSHI_PRIVATE_KEY_B64` as the preferred Kalshi private-key variable
+- `KALSHI_API_KEY` as a legacy alias for the same base64-encoded private key
+- `KALSHI_BASE_URL` to override the default Kalshi endpoint
+- `DATABASE_URL` to override the default local SQLite database
+
+If you want dotenv-backed local development, call `LiveBettingSettings.from_env()`.
+That helper will honor `LIVE_BETTING_DOTENV_PATH` or `LIVE_BETTING_LOAD_DOTENV=true`
+when it reads process configuration.
+
 ## Quickstart
 
 ```python

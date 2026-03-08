@@ -217,15 +217,13 @@ def _get_shared_live_hook(model_configs: list[dict] | None = None):
         return _live_hook_holder["hook"]
 
     try:
-        from ai_prophet.live_betting.config import BETTING_MODEL_SPECS
-        from ai_prophet.live_betting.db import create_db_engine
-        from ai_prophet.live_betting.hook import (
-            LIVE_BETTING_DRY_RUN,
-            LIVE_BETTING_ENABLED,
-            LiveBettingHook,
-        )
+        from ai_prophet_core.betting.config import BETTING_MODEL_SPECS, LiveBettingSettings
+        from ai_prophet_core.betting.db import create_db_engine
+        from ai_prophet_core.betting.hook import LiveBettingHook
 
-        if not LIVE_BETTING_ENABLED:
+        settings = LiveBettingSettings.from_env()
+
+        if not settings.enabled:
             click.echo("[LIVE BETTING] Hook DISABLED (LIVE_BETTING_ENABLED=false)")
             _live_hook_holder["hook"] = None
             return None
@@ -245,7 +243,7 @@ def _get_shared_live_hook(model_configs: list[dict] | None = None):
             return None
 
         click.echo(
-            f"[LIVE BETTING] Hook ENABLED — dry_run={LIVE_BETTING_DRY_RUN}, "
+            f"[LIVE BETTING] Hook ENABLED — dry_run={settings.dry_run}, "
             f"models={active_betting_models} ({len(active_betting_models)} of {len(BETTING_MODEL_SPECS)} configured)"
         )
 
@@ -255,7 +253,9 @@ def _get_shared_live_hook(model_configs: list[dict] | None = None):
         hook = LiveBettingHook(
             betting_model_names=active_betting_models,
             db_engine=db_engine,
-            dry_run=LIVE_BETTING_DRY_RUN,
+            enabled=settings.enabled,
+            dry_run=settings.dry_run,
+            kalshi_config=settings.kalshi,
         )
         click.echo("[LIVE BETTING] Hook created successfully")
         _live_hook_holder["hook"] = hook
@@ -275,7 +275,7 @@ def _make_pipeline_builder(
     """Return a callable that builds an AgentPipeline for a participant config.
 
     For live-betting models (identified by PIPELINE_MODEL_SPECS in
-    live_betting/config.py), the pipeline is configured with the
+    ai_prophet_core.betting.config), the pipeline is configured with the
     model's avoid_market_search / include_market_stats flags, and an
     on_forecast callback is wired to the shared LiveBettingHook.
     """
@@ -285,7 +285,7 @@ def _make_pipeline_builder(
         # Check if this is a live-betting model with custom config
         betting_cfg = None
         try:
-            from ai_prophet.live_betting.config import get_pipeline_config
+            from ai_prophet_core.betting.config import get_pipeline_config
             betting_cfg = get_pipeline_config(model_spec)
             if betting_cfg:
                 logger.info(f"Loaded betting config for {model_spec}: provider={betting_cfg['provider']}, model={betting_cfg['api_model']}")

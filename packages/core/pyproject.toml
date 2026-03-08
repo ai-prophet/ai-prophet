@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-prophet-core"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI Prophet, utils, types and HTTP client"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,6 +14,10 @@ dependencies = [
     "pydantic>=2.0",
     "httpx>=0.27",
     "jsonschema>=4.0",
+    "python-dotenv>=1.0.0",
+    "sqlalchemy>=2.0.0",
+    "requests>=2.31.0",
+    "cryptography>=43.0.0",
 ]
 
 [project.urls]

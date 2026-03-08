@@ -1,0 +1,155 @@
+"""Configuration helpers for the live betting system."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+
+from dotenv import load_dotenv
+
+MAX_SPREAD = 1.03
+
+DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com"
+KALSHI_BASE_URL = DEFAULT_KALSHI_BASE_URL
+
+LIVE_BETTING_ENABLED_ENV = "LIVE_BETTING_ENABLED"
+LIVE_BETTING_DRY_RUN_ENV = "LIVE_BETTING_DRY_RUN"
+LIVE_BETTING_DOTENV_PATH_ENV = "LIVE_BETTING_DOTENV_PATH"
+LIVE_BETTING_LOAD_DOTENV_ENV = "LIVE_BETTING_LOAD_DOTENV"
+KALSHI_API_KEY_ID_ENV = "KALSHI_API_KEY_ID"
+KALSHI_BASE_URL_ENV = "KALSHI_BASE_URL"
+KALSHI_PRIVATE_KEY_B64_ENV = "KALSHI_PRIVATE_KEY_B64"
+KALSHI_PRIVATE_KEY_LEGACY_ENV = "KALSHI_API_KEY"
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _parse_bool(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    return default
+
+
+def load_live_betting_dotenv(
+    dotenv_path: str | None = None,
+    *,
+    load_default: bool = False,
+    override: bool = False,
+) -> None:
+    """Load dotenv values for live-betting configuration on demand."""
+    if dotenv_path:
+        load_dotenv(dotenv_path, override=override)
+        return
+    if load_default:
+        load_dotenv(override=override)
+
+
+@dataclass(frozen=True)
+class KalshiConfig:
+    """Explicit Kalshi connection settings."""
+
+    api_key_id: str = ""
+    private_key_base64: str = ""
+    base_url: str = DEFAULT_KALSHI_BASE_URL
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "KalshiConfig":
+        env_map = os.environ if env is None else env
+        private_key_base64 = env_map.get(KALSHI_PRIVATE_KEY_B64_ENV) or env_map.get(
+            KALSHI_PRIVATE_KEY_LEGACY_ENV, ""
+        )
+        return cls(
+            api_key_id=env_map.get(KALSHI_API_KEY_ID_ENV, ""),
+            private_key_base64=private_key_base64,
+            base_url=env_map.get(KALSHI_BASE_URL_ENV, DEFAULT_KALSHI_BASE_URL),
+        )
+
+
+@dataclass(frozen=True)
+class LiveBettingSettings:
+    """Runtime settings for live betting integration."""
+
+    enabled: bool = False
+    dry_run: bool = True
+    kalshi: KalshiConfig = field(default_factory=KalshiConfig)
+
+    @classmethod
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        dotenv_path: str | None = None,
+        load_default_dotenv: bool | None = None,
+    ) -> "LiveBettingSettings":
+        if env is None:
+            resolved_dotenv_path = dotenv_path or os.getenv(LIVE_BETTING_DOTENV_PATH_ENV)
+            should_load_default = (
+                _parse_bool(os.getenv(LIVE_BETTING_LOAD_DOTENV_ENV), default=False)
+                if load_default_dotenv is None
+                else load_default_dotenv
+            )
+            load_live_betting_dotenv(
+                dotenv_path=resolved_dotenv_path,
+                load_default=should_load_default and resolved_dotenv_path is None,
+            )
+            env_map: Mapping[str, str] = os.environ
+        else:
+            env_map = env
+
+        return cls(
+            enabled=_parse_bool(env_map.get(LIVE_BETTING_ENABLED_ENV), default=False),
+            dry_run=_parse_bool(env_map.get(LIVE_BETTING_DRY_RUN_ENV), default=True),
+            kalshi=KalshiConfig.from_env(env_map),
+        )
+
+
+MODEL_CONFIGS = {
+    "gemini-3": {
+        "provider": "google",
+        "api_model": "gemini-3-pro-preview",
+        "avoid_market_search": False,
+        "include_market_stats": True,
+    },
+    "gemini-3-no-search": {
+        "provider": "google",
+        "api_model": "gemini-3-pro-preview",
+        "avoid_market_search": True,
+        "include_market_stats": False,
+    },
+    "anthropic/claude-opus-4.6": {
+        "provider": "anthropic",
+        "api_model": "claude-opus-4-6",
+        "avoid_market_search": False,
+        "include_market_stats": True,
+    },
+    "anthropic/claude-opus-4.6-no-search": {
+        "provider": "anthropic",
+        "api_model": "claude-opus-4-6",
+        "avoid_market_search": True,
+        "include_market_stats": False,
+    },
+}
+
+PIPELINE_MODEL_SPECS = {
+    "google:gemini-3-pro-preview": "gemini-3",
+    "google:gemini-3-pro-preview-no-search": "gemini-3-no-search",
+    "anthropic:claude-opus-4-6": "anthropic/claude-opus-4.6",
+    "anthropic:claude-opus-4-6-no-search": "anthropic/claude-opus-4.6-no-search",
+}
+
+BETTING_MODEL_SPECS = list(PIPELINE_MODEL_SPECS.keys())
+
+
+def get_pipeline_config(model_spec: str) -> dict | None:
+    """Get the MODEL_CONFIGS entry for a pipeline model spec."""
+    config_name = PIPELINE_MODEL_SPECS.get(model_spec)
+    if config_name is None:
+        return None
+    return MODEL_CONFIGS.get(config_name)

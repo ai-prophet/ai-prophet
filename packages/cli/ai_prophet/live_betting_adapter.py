@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def is_live_betting_model(model_spec: str) -> bool:
     """Return True when this participant uses live_betting strategy."""
     try:
-        from ai_prophet.live_betting.config import BETTING_MODEL_SPECS
+        from ai_prophet_core.betting.config import BETTING_MODEL_SPECS
 
         return model_spec in BETTING_MODEL_SPECS
     except ImportError:
@@ -33,8 +33,8 @@ def execute_live_betting_strategy(
 ) -> tuple[list[dict], dict[str, float]]:
     """Execute live_betting strategy in a single batched forecast pass."""
     try:
-        from ai_prophet.live_betting.config import get_pipeline_config
-        from ai_prophet.live_betting.strategy import compute_bet
+        from ai_prophet_core.betting.config import get_pipeline_config
+        from ai_prophet_core.betting.strategy import compute_bet
         from ai_prophet.llm import create_llm_client
 
         config = get_pipeline_config(model_spec)

@@ -1,16 +1,4 @@
-"""Kalshi exchange adapter — routes orders to Kalshi's v2 REST API.
-
-Implements the ExchangeAdapter interface for real-market execution on Kalshi.
-Uses RSA-PSS authentication matching the indexer's KalshiConnector pattern.
-
-Kalshi API notes:
-- Prices are in cents (1-99), framework uses [0, 1] floats
-- Orders use: POST /trade-api/v2/portfolio/orders
-- Side is "yes" or "no" (lowercase)
-- Action is "buy" or "sell" (lowercase)
-- count is number of contracts (integer)
-- type is "limit" or "market"
-"""
+"""Kalshi exchange adapter."""
 
 from __future__ import annotations
 
@@ -23,6 +11,12 @@ from typing import Any
 
 import requests  # type: ignore[import-untyped]
 
+from ..config import (
+    DEFAULT_KALSHI_BASE_URL,
+    KALSHI_API_KEY_ID_ENV,
+    KALSHI_PRIVATE_KEY_B64_ENV,
+    KALSHI_PRIVATE_KEY_LEGACY_ENV,
+)
 from .base import (
     ExchangeAdapter,
     ExecutionMode,
@@ -35,31 +29,24 @@ logger = logging.getLogger(__name__)
 
 
 class KalshiAdapter(ExchangeAdapter):
-    """Routes orders to Kalshi's v2 API for real-market execution.
-
-    Authentication uses RSA-PSS signatures (same as the indexer connector).
-    Orders are submitted as limit orders at the computed execution price.
-
-    Supports a dry_run mode that validates everything but doesn't hit the API.
-
-    Args:
-        api_key_id: Kalshi API key ID (or KALSHI_API_KEY_ID env var).
-        private_key_b64: Base64-encoded RSA private key (or KALSHI_API_KEY env var).
-        base_url: Kalshi API base URL.
-        dry_run: If True, simulate order submission without hitting the API.
-        timeout_sec: HTTP request timeout.
-    """
+    """Routes orders to Kalshi's v2 API."""
 
     def __init__(
         self,
         api_key_id: str = "",
-        private_key_b64: str = "",
-        base_url: str = "https://api.elections.kalshi.com",
+        private_key_base64: str = "",
+        *,
+        private_key_b64: str | None = None,
+        base_url: str = DEFAULT_KALSHI_BASE_URL,
         dry_run: bool = False,
         timeout_sec: int = 30,
     ):
-        self._api_key_id = api_key_id or os.getenv("KALSHI_API_KEY_ID", "")
-        self._private_key_b64 = private_key_b64 or os.getenv("KALSHI_API_KEY", "")
+        # Support the legacy parameter and env name while we transition the public API.
+        env_private_key = os.getenv(KALSHI_PRIVATE_KEY_B64_ENV, "") or os.getenv(
+            KALSHI_PRIVATE_KEY_LEGACY_ENV, ""
+        )
+        self._api_key_id = api_key_id or os.getenv(KALSHI_API_KEY_ID_ENV, "")
+        self._private_key_base64 = private_key_base64 or private_key_b64 or env_private_key
         self._base_url = base_url
         self._dry_run = dry_run
         self._timeout = timeout_sec
@@ -68,8 +55,11 @@ class KalshiAdapter(ExchangeAdapter):
 
         if not self._api_key_id:
             logger.warning("KalshiAdapter: No API key ID configured")
-        if not self._private_key_b64:
-            logger.warning("KalshiAdapter: No private key configured")
+        if not self._private_key_base64:
+            logger.warning(
+                "KalshiAdapter: No private key configured "
+                "(set KALSHI_PRIVATE_KEY_B64 or pass private_key_base64)"
+            )
 
     @property
     def name(self) -> str:
@@ -83,25 +73,22 @@ class KalshiAdapter(ExchangeAdapter):
     def dry_run(self) -> bool:
         return self._dry_run
 
-    # ------------------------------------------------------------------
-    # Authentication (RSA-PSS, mirrors indexer/kalshi_connector.py)
-    # ------------------------------------------------------------------
-
     def _load_private_key(self):
         """Lazy-load RSA private key from base64-encoded string."""
         if self._private_key is not None:
             return self._private_key
 
-        if not self._private_key_b64:
+        if not self._private_key_base64:
             raise RuntimeError(
                 "Kalshi private key not configured. "
-                "Set KALSHI_API_KEY env var or pass private_key_b64."
+                "Set KALSHI_PRIVATE_KEY_B64 (preferred) or KALSHI_API_KEY "
+                "(legacy alias), or pass private_key_base64."
             )
 
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import serialization
 
-        key_bytes = base64.b64decode(self._private_key_b64)
+        key_bytes = base64.b64decode(self._private_key_base64)
         self._private_key = serialization.load_pem_private_key(
             key_bytes, password=None, backend=default_backend()
         )
@@ -132,20 +119,8 @@ class KalshiAdapter(ExchangeAdapter):
             "Content-Type": "application/json",
         }
 
-    # ------------------------------------------------------------------
-    # Core adapter methods
-    # ------------------------------------------------------------------
-
     def submit_order(self, request: OrderRequest) -> OrderResult:
-        """Submit a limit order to Kalshi.
-
-        Translates framework OrderRequest to Kalshi's API format:
-        - limit_price (0-1 float) → yes_price/no_price (1-99 cents)
-        - side YES/NO → "yes"/"no"
-        - action BUY/SELL → "buy"/"sell"
-        - shares → count (integer contracts)
-        """
-        # Pre-validate
+        """Submit a limit order to Kalshi."""
         validation_error = self.validate_order(request)
         if validation_error:
             return OrderResult(
@@ -155,15 +130,13 @@ class KalshiAdapter(ExchangeAdapter):
                 rejection_reason=validation_error,
             )
 
-        # Dry-run mode: simulate success without API call
         if self._dry_run:
             return self._dry_run_result(request)
 
-        # Build Kalshi order payload
         ticker = request.exchange_ticker
-        side = request.side.lower()  # "yes" or "no"
-        action = request.action.lower()  # "buy" or "sell"
-        count = int(request.shares)  # Kalshi uses integer contracts
+        side = request.side.lower()
+        action = request.action.lower()
+        count = int(request.shares)
 
         if count <= 0:
             return OrderResult(
@@ -173,11 +146,9 @@ class KalshiAdapter(ExchangeAdapter):
                 rejection_reason=f"Count must be positive integer, got {request.shares}",
             )
 
-        # Convert price from [0,1] float to cents (1-99)
         price_cents = int(round(float(request.limit_price) * 100))
         price_cents = max(1, min(99, price_cents))
 
-        # Build price field based on side
         order_body: dict[str, Any] = {
             "ticker": ticker,
             "action": action,
@@ -191,13 +162,16 @@ class KalshiAdapter(ExchangeAdapter):
         else:
             order_body["no_price"] = price_cents
 
-        # Attach client_order_id for idempotency
         order_body["client_order_id"] = request.order_id
 
         logger.info(
-            f"KalshiAdapter: submitting order — "
-            f"{action} {count}x {ticker} {side} @ {price_cents}¢ "
-            f"(intent={request.intent_id})"
+            "KalshiAdapter: submitting order - %s %sx %s %s @ %s¢ (intent=%s)",
+            action,
+            count,
+            ticker,
+            side,
+            price_cents,
+            request.intent_id,
         )
 
         path = "/trade-api/v2/portfolio/orders"
@@ -219,8 +193,9 @@ class KalshiAdapter(ExchangeAdapter):
             except Exception:
                 pass
             logger.error(
-                f"KalshiAdapter: order rejected by API — "
-                f"status={e.response.status_code}, detail={error_detail}"
+                "KalshiAdapter: order rejected by API - status=%s, detail=%s",
+                e.response.status_code,
+                error_detail,
             )
             return OrderResult(
                 order_id=request.order_id,
@@ -230,7 +205,7 @@ class KalshiAdapter(ExchangeAdapter):
                 raw_response={"error": error_detail},
             )
         except requests.exceptions.RequestException as e:
-            logger.error(f"KalshiAdapter: network error — {e}")
+            logger.error("KalshiAdapter: network error - %s", e)
             return OrderResult(
                 order_id=request.order_id,
                 intent_id=request.intent_id,
@@ -238,7 +213,6 @@ class KalshiAdapter(ExchangeAdapter):
                 rejection_reason=f"Network error: {e}",
             )
 
-        # Parse response
         return self._parse_order_response(request, data)
 
     def get_balance(self) -> Decimal:
@@ -257,19 +231,14 @@ class KalshiAdapter(ExchangeAdapter):
             )
             response.raise_for_status()
             data = response.json()
-            # Kalshi returns balance in cents
             balance_cents = data.get("balance", 0)
             return Decimal(str(balance_cents)) / Decimal("100")
         except requests.exceptions.RequestException as e:
-            logger.error(f"KalshiAdapter: failed to fetch balance — {e}")
+            logger.error("KalshiAdapter: failed to fetch balance - %s", e)
             return Decimal("0")
 
     def get_positions(self) -> list[dict[str, Any]]:
-        """Fetch current positions from Kalshi.
-
-        Returns:
-            List of position dicts with ticker, side, count, avg_price info.
-        """
+        """Fetch current positions from Kalshi."""
         if self._dry_run:
             return []
 
@@ -286,15 +255,11 @@ class KalshiAdapter(ExchangeAdapter):
             data = response.json()
             return data.get("market_positions", [])
         except requests.exceptions.RequestException as e:
-            logger.error(f"KalshiAdapter: failed to fetch positions — {e}")
+            logger.error("KalshiAdapter: failed to fetch positions - %s", e)
             return []
 
     def get_market(self, ticker: str) -> dict[str, Any] | None:
-        """Fetch a single market by ticker for live quotes.
-
-        Returns:
-            Market dict with yes_bid, yes_ask, etc. or None.
-        """
+        """Fetch a single market by ticker for live quotes."""
         path = f"/trade-api/v2/markets/{ticker}"
         headers = self._sign_request("GET", path)
 
@@ -308,24 +273,22 @@ class KalshiAdapter(ExchangeAdapter):
             data = response.json()
             return data.get("market")
         except requests.exceptions.RequestException as e:
-            logger.error(f"KalshiAdapter: failed to fetch market {ticker} — {e}")
+            logger.error("KalshiAdapter: failed to fetch market %s - %s", ticker, e)
             return None
 
     def close(self) -> None:
-        """Close HTTP session."""
         self._session.close()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _dry_run_result(self, request: OrderRequest) -> OrderResult:
         """Simulate a successful fill without hitting the API."""
         now = datetime.now(UTC)
         notional = request.shares * request.limit_price
         logger.info(
-            f"KalshiAdapter [DRY RUN]: {request.action} {request.shares}x "
-            f"{request.exchange_ticker} {request.side} @ {request.limit_price}"
+            "KalshiAdapter [DRY RUN]: %sx %s %s @ %s",
+            request.shares,
+            request.exchange_ticker,
+            request.side,
+            request.limit_price,
         )
         return OrderResult(
             order_id=request.order_id,
@@ -349,25 +312,19 @@ class KalshiAdapter(ExchangeAdapter):
         kalshi_status = order_data.get("status", "").lower()
         exchange_order_id = order_data.get("order_id", "")
 
-        # Map Kalshi status to our OrderStatus
         if kalshi_status in ("executed", "filled"):
             status = OrderStatus.FILLED
         elif kalshi_status == "resting":
-            # Resting = limit order on book, treat as filled at limit
-            # (conservative: in production you'd poll for fill confirmation)
             status = OrderStatus.FILLED
         elif kalshi_status == "canceled":
             status = OrderStatus.CANCELLED
         elif kalshi_status == "pending":
-            # Treat pending as filled for now (Kalshi fills are usually instant)
             status = OrderStatus.FILLED
         else:
             status = OrderStatus.REJECTED
 
         if status == OrderStatus.FILLED:
-            # Extract fill info
             filled_count = order_data.get("place_count", int(request.shares))
-            # Kalshi returns avg price in cents
             avg_price_cents = order_data.get(
                 "avg_price", int(round(float(request.limit_price) * 100))
             )
@@ -382,7 +339,7 @@ class KalshiAdapter(ExchangeAdapter):
                 filled_shares=filled_shares,
                 fill_price=fill_price,
                 notional=notional,
-                fee=Decimal("0"),  # Kalshi fee handling TBD
+                fee=Decimal("0"),
                 filled_at=now,
                 exchange_order_id=exchange_order_id,
                 raw_response=data,
