@@ -1,4 +1,4 @@
-"""CLI interface."""
+"""Forecast command namespace."""
 
 from .main import cli
 

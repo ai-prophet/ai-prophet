@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ai_prophet.agent.stages import ActionStage, SearchStage, StageResult
-from ai_prophet.core.tick_context import CandidateMarket
+from ai_prophet.trade.agent.stages import ActionStage, SearchStage, StageResult
+from ai_prophet.trade.core.tick_context import CandidateMarket
 
 
 @pytest.fixture

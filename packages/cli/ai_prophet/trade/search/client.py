@@ -16,7 +16,7 @@ import trafilatura
 from trafilatura.meta import reset_caches
 
 from ai_prophet._version import __version__ as PACKAGE_VERSION
-from ai_prophet.core.config import SearchConfig
+from ai_prophet.trade.core.config import SearchConfig
 
 logger = logging.getLogger(__name__)
 

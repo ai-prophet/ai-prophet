@@ -10,11 +10,11 @@ from unittest.mock import Mock
 
 from ai_prophet_core.client import ServerAPIClient
 
-from ai_prophet.agent import AgentPipeline
-from ai_prophet.core import ClientDatabase, EventStore, TickContext
-from ai_prophet.core.event_store import EventType, TickState
-from ai_prophet.core.tick_context import CandidateMarket
-from ai_prophet.llm import LLMClient
+from ai_prophet.trade.agent import AgentPipeline
+from ai_prophet.trade.core import ClientDatabase, EventStore, TickContext
+from ai_prophet.trade.core.event_store import EventType, TickState
+from ai_prophet.trade.core.tick_context import CandidateMarket
+from ai_prophet.trade.llm import LLMClient
 
 
 def _make_tick_context(run_id: str, tick_ts: datetime) -> TickContext:

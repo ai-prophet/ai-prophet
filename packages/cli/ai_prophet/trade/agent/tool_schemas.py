@@ -4,7 +4,7 @@ Defines schemas that force the LLM to return valid structured data
 via tool/function calling, eliminating JSON parsing errors.
 """
 
-from ai_prophet.llm import ToolSchema
+from ai_prophet.trade.llm import ToolSchema
 
 REVIEW_TOOL = ToolSchema(
     name="submit_review",

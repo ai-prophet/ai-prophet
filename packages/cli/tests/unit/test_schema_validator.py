@@ -3,7 +3,7 @@
 import jsonschema
 import pytest
 
-from ai_prophet.agent.validator import SchemaValidator
+from ai_prophet.trade.agent.validator import SchemaValidator
 
 
 def test_validate_review_valid():

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from ai_prophet.memory import LocalReasoningStore
+from ai_prophet.trade.memory import LocalReasoningStore
 
 
 def test_local_memory_store_append_and_read_recent(tmp_path):

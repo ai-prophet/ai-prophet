@@ -32,16 +32,16 @@ from ai_prophet_core.client import (
     TradeIntentRequest,
 )
 
-from ai_prophet.agent.reasoning_memory import build_memory_context
-from ai_prophet.core.config import ClientConfig
-from ai_prophet.core.tick_context import CandidateMarket, Position, TickContext
-from ai_prophet.live_betting_adapter import (
+from ai_prophet.trade.agent.reasoning_memory import build_memory_context
+from ai_prophet.trade.core.config import ClientConfig
+from ai_prophet.trade.core.tick_context import CandidateMarket, Position, TickContext
+from ai_prophet.trade.live_betting_adapter import (
     build_live_betting_reasoning,
     execute_live_betting_strategy,
     is_live_betting_model,
 )
-from ai_prophet.memory import LocalReasoningStore
-from ai_prophet.trace import TraceSink
+from ai_prophet.trade.memory import LocalReasoningStore
+from ai_prophet.trade.trace import TraceSink
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +93,10 @@ def _parse_tick_id(tick_id: str) -> datetime:
 class ExperimentRunner:
     """Stateless orchestrator for a benchmark experiment.
 
-    The CLI is the supported out-of-the-box interface for this package.
-    Direct embedding is supported for advanced use cases, but non-CLI callers
-    are expected to provide explicit pipeline wiring via ``build_pipeline``.
+    The ``prophet trade`` CLI is the supported out-of-the-box interface for
+    this trade benchmark package. Direct embedding is supported for advanced
+    use cases, but non-CLI callers are expected to provide explicit pipeline
+    wiring via ``build_pipeline``.
     """
 
     def __init__(
@@ -603,6 +604,20 @@ class ExperimentRunner:
             logger.info(
                 f"Participant {idx}: {result.accepted} accepted, {result.rejected} rejected"
             )
+            if result.rejected and result.rejections:
+                for rejection in result.rejections:
+                    logger.warning(
+                        "Participant %s trade intent rejected: intent_id=%s reason=%s",
+                        idx,
+                        rejection.intent_id,
+                        rejection.reason,
+                    )
+            elif result.rejected:
+                logger.warning(
+                    "Participant %s reported %s rejected intents without rejection details",
+                    idx,
+                    result.rejected,
+                )
 
     def _finalize(self, idx: int, tick_id: str, status: str, **kwargs) -> None:
         if status != "TIMEOUT" and self._is_timed_out(idx, tick_id):

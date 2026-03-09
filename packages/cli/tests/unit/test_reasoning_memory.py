@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 from ai_prophet_core.client_models import ReasoningEntry
 
-from ai_prophet.agent.reasoning_memory import build_memory_context
-from ai_prophet.agent.stages import ActionStage, ForecastStage, ReviewStage, StageResult
-from ai_prophet.core.tick_context import CandidateMarket, TickContext
+from ai_prophet.trade.agent.reasoning_memory import build_memory_context
+from ai_prophet.trade.agent.stages import ActionStage, ForecastStage, ReviewStage, StageResult
+from ai_prophet.trade.core.tick_context import CandidateMarket, TickContext
 
 
 def test_build_memory_context_distills_recent_market_history():

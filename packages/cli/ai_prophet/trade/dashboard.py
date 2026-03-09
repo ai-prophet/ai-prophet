@@ -1,13 +1,13 @@
-"""Lightweight local dashboard — minimal server with proxy.
+"""Lightweight dashboard for the Prophet Arena trade benchmark.
 
 Serves HTML at / and proxies /api/* to the core API so CORS is
 never an issue regardless of server config. The slug filter is
 baked into the HTML at generation time.
 
 Usage:
-    ai-prophet dashboard
-    ai-prophet dashboard --slug my_experiment
-    ai-prophet eval run -m openai:gpt-5.2 --slug test --dashboard
+    prophet trade dashboard
+    prophet trade dashboard --slug my_experiment
+    prophet trade eval run -m openai:gpt-5.2 --slug test --dashboard
 """
 
 import json
@@ -87,7 +87,7 @@ _HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PA Dashboard</title>
+<title>Trade Benchmark Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -127,7 +127,7 @@ td.clip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200p
 <body>
 <main>
   <div class="header">
-    <h1>PA DASHBOARD</h1>
+    <h1>TRADE BENCHMARK DASHBOARD</h1>
     <span class="meta" id="hdr">connecting...</span>
   </div>
   <div id="err" class="hide" style="color:var(--red);margin-bottom:16px;font-size:12px"></div>

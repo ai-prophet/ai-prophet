@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 import requests
 
-from ai_prophet.core.tick_context import CandidateMarket
-from ai_prophet.live_betting_adapter import execute_live_betting_strategy
+from ai_prophet.trade.core.tick_context import CandidateMarket
+from ai_prophet.trade.live_betting_adapter import execute_live_betting_strategy
 from ai_prophet_core.betting.adapters.base import OrderRequest, OrderStatus
 from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
@@ -77,7 +77,7 @@ def test_live_betting_strategy_closes_llm_client(monkeypatch):
         "ai_prophet_core.betting.config.get_pipeline_config",
         lambda _model_spec: {"provider": "openai", "api_model": "gpt-5.2"},
     )
-    monkeypatch.setattr("ai_prophet.llm.create_llm_client", lambda **_kwargs: fake_llm)
+    monkeypatch.setattr("ai_prophet.trade.llm.create_llm_client", lambda **_kwargs: fake_llm)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     markets = [

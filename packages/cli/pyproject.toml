@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-prophet"
 version = "0.1.2"
-description = "Prophet Arena benchmark runner and AI Prophet CLI"
+description = "AI Prophet ecosystem CLI and Prophet Arena trade benchmark runner"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -57,7 +57,7 @@ Homepage = "https://www.prophetarena.co"
 Documentation = "https://www.prophetarena.co"
 
 [project.scripts]
-ai-prophet = "ai_prophet.cli.main:cli"
+prophet = "ai_prophet.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]

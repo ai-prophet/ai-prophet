@@ -14,7 +14,7 @@ Use :func:`create_llm_client` to get the right client for a provider string.
 import logging
 import os
 
-from ai_prophet.core.config import LLMConfig
+from ai_prophet.trade.core.config import LLMConfig
 
 from .anthropic_client import AnthropicClient
 from .base import (

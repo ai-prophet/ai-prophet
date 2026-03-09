@@ -4,7 +4,7 @@ import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from ai_prophet.runner import ExperimentRunner
+from ai_prophet.trade.runner import ExperimentRunner
 
 
 class _FakeMarket:
@@ -51,7 +51,7 @@ def test_process_tick_timeout_ignores_late_finalize(monkeypatch):
         time.sleep(0.05)
         runner._finalize(idx, tick_id, "COMPLETED")
 
-    monkeypatch.setattr("ai_prophet.runner.PARTICIPANT_TICK_BUDGET_SEC", 0.01)
+    monkeypatch.setattr("ai_prophet.trade.runner.PARTICIPANT_TICK_BUDGET_SEC", 0.01)
     monkeypatch.setattr(runner, "_process_participant", late_participant_finalize)
 
     runner._process_tick("2026-03-01T12:00:00+00:00", "snap-1")

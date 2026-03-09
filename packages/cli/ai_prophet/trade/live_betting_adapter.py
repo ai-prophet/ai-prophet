@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from ai_prophet.core.tick_context import CandidateMarket
+from ai_prophet.trade.core.tick_context import CandidateMarket
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def execute_live_betting_strategy(
     try:
         from ai_prophet_core.betting.config import get_pipeline_config
         from ai_prophet_core.betting.strategy import compute_bet
-        from ai_prophet.llm import create_llm_client
+        from ai_prophet.trade.llm import create_llm_client
 
         config = get_pipeline_config(model_spec)
         if not config:
@@ -172,7 +172,7 @@ def _batch_forecast_markets(
     markets: list[CandidateMarket],
 ) -> dict[str, float]:
     """Forecast probabilities for all candidate markets in one LLM call."""
-    from ai_prophet.llm import LLMMessage, LLMRequest
+    from ai_prophet.trade.llm import LLMMessage, LLMRequest
 
     markets_list = "\n".join([f"- {m.question}" for m in markets])
     json_example = ",\n        ".join([f'"{m.market_id}": <probability_0_to_1>' for m in markets])

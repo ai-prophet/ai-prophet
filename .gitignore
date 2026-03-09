@@ -9,6 +9,9 @@ __pycache__/
 .venv/
 .venv*/
 venv/
+.env
+.env.*
+env/
 
 # Packaging/build
 build/

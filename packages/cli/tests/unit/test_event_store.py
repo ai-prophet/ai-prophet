@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from ai_prophet.core.database import ClientDatabase
-from ai_prophet.core.event_store import EventStore, EventType, TickState
+from ai_prophet.trade.core.database import ClientDatabase
+from ai_prophet.trade.core.event_store import EventStore, EventType, TickState
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-from ai_prophet.core.config import ClientConfig
+from ai_prophet.trade.core.config import ClientConfig
 
 
 def test_get_uses_bundled_defaults_without_cwd_override(monkeypatch, tmp_path):

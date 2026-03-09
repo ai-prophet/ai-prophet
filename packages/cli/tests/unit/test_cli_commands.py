@@ -3,16 +3,26 @@ from types import SimpleNamespace
 
 from click.testing import CliRunner
 
-from ai_prophet.cli.main import cli
-from ai_prophet.core.config import ClientConfig
-from ai_prophet.core.credentials import Credentials
+from ai_prophet.main import cli
+from ai_prophet.trade.core.config import ClientConfig
+from ai_prophet.trade.core.credentials import Credentials
+
+
+def test_root_help_lists_top_level_commands():
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["help"])
+
+    assert result.exit_code == 0
+    assert "trade" in result.output
+    assert "forecast" in result.output
 
 
 def test_health_command_reports_service_status(monkeypatch):
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "ai_prophet.cli.main._load_runtime_credentials",
+        "ai_prophet.trade.main._load_runtime_credentials",
         lambda: Credentials(server_url="http://example.test"),
     )
 
@@ -26,9 +36,9 @@ def test_health_command_reports_service_status(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr("ai_prophet.cli.main.ServerAPIClient", FakeServerAPIClient)
+    monkeypatch.setattr("ai_prophet.trade.main.ServerAPIClient", FakeServerAPIClient)
 
-    result = runner.invoke(cli, ["health"])
+    result = runner.invoke(cli, ["trade", "health"])
 
     assert result.exit_code == 0
     assert "Checking: http://example.test" in result.output
@@ -49,14 +59,14 @@ def test_eval_run_passes_explicit_runtime_config_to_runner(monkeypatch):
 
     monkeypatch.delenv("PA_MEMORY_DIR", raising=False)
     monkeypatch.delenv("PA_MEMORY_MAX_ROWS", raising=False)
-    monkeypatch.setattr("ai_prophet.cli.main.ClientConfig.load_runtime", lambda: runtime_config)
+    monkeypatch.setattr("ai_prophet.trade.main.ClientConfig.load_runtime", lambda: runtime_config)
     monkeypatch.setattr(
-        "ai_prophet.cli.main._load_runtime_credentials",
+        "ai_prophet.trade.main._load_runtime_credentials",
         lambda: Credentials(server_url="http://example.test", openai_api_key="openai-key"),
     )
-    monkeypatch.setattr("ai_prophet.cli.main._get_shared_live_hook", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("ai_prophet.trade.main._get_shared_live_hook", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "ai_prophet.cli.main._make_pipeline_builder",
+        "ai_prophet.trade.main._make_pipeline_builder",
         lambda creds, client_config, verbose, api_url: captured.update(
             {
                 "builder_creds": creds,
@@ -86,12 +96,12 @@ def test_eval_run_passes_explicit_runtime_config_to_runner(monkeypatch):
         def run(self):
             captured["runner_ran"] = True
 
-    monkeypatch.setattr("ai_prophet.cli.main.ServerAPIClient", FakeServerAPIClient)
-    monkeypatch.setattr("ai_prophet.cli.main.ExperimentRunner", FakeRunner)
+    monkeypatch.setattr("ai_prophet.trade.main.ServerAPIClient", FakeServerAPIClient)
+    monkeypatch.setattr("ai_prophet.trade.main.ExperimentRunner", FakeRunner)
 
     result = runner.invoke(
         cli,
-        ["eval", "run", "-m", "openai:gpt-5.2", "-s", "smoke_test", "--max-ticks", "1"],
+        ["trade", "eval", "run", "-m", "openai:gpt-5.2", "-s", "smoke_test", "--max-ticks", "1"],
     )
 
     assert result.exit_code == 0

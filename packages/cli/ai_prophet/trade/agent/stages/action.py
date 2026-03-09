@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ai_prophet.core import TickContext
-from ai_prophet.core.tick_context import CandidateMarket
-from ai_prophet.llm import LLMClient, LLMMessage
+from ai_prophet.trade.core import TickContext
+from ai_prophet.trade.core.tick_context import CandidateMarket
+from ai_prophet.trade.llm import LLMClient, LLMMessage
 
 from ..tool_schemas import TRADE_DECISION_TOOL
 from ..utils import format_portfolio_summary, format_position_for_market

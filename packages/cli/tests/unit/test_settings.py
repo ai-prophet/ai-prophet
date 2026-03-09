@@ -2,7 +2,7 @@
 
 import os
 
-from ai_prophet.core.credentials import Credentials, load_dotenv_file
+from ai_prophet.trade.core.credentials import Credentials, load_dotenv_file
 
 
 def test_default_credentials():

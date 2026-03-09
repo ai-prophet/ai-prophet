@@ -1,9 +1,9 @@
-"""CLI for Prophet Arena client.
+"""Trade CLI for the Prophet Arena benchmark.
 
 Usage:
-    ai-prophet eval run -m openai:gpt-4o -m anthropic:claude-4 --slug prod_001
-    ai-prophet health
-    ai-prophet progress <id>
+    prophet trade eval run -m openai:gpt-4o -m anthropic:claude-4 --slug prod_001
+    prophet trade health
+    prophet trade progress <id>
 """
 
 import logging
@@ -15,17 +15,17 @@ from pathlib import Path
 import click
 from ai_prophet_core.client import ServerAPIClient
 
-from ai_prophet.agent.pipeline import AgentPipeline
-from ai_prophet.cli.dashboard import open_dashboard
-from ai_prophet.core.config import ClientConfig
-from ai_prophet.core.credentials import (
+from ai_prophet.trade.agent.pipeline import AgentPipeline
+from ai_prophet.trade.core.config import ClientConfig
+from ai_prophet.trade.core.credentials import (
     Credentials,
     load_dotenv_file,
     normalize_provider_name,
 )
-from ai_prophet.llm import create_llm_client
-from ai_prophet.runner import ExperimentRunner, compute_config_hash
-from ai_prophet.search import SearchClient
+from ai_prophet.trade.dashboard import open_dashboard
+from ai_prophet.trade.llm import create_llm_client
+from ai_prophet.trade.runner import ExperimentRunner, compute_config_hash
+from ai_prophet.trade.search import SearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +77,20 @@ def _setup_logging(verbose: bool = False):
     logging.getLogger("trafilatura.main_extractor").setLevel(logging.WARNING)
 
 
-@click.group()
-def cli():
-    """Prophet Arena Client."""
-    pass
+@click.group(name="trade", invoke_without_command=True)
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """Prophet Arena trade benchmark commands."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
-@cli.group(name="eval")
-def eval_group():
-    """Evaluation commands."""
-    pass
+@cli.group(name="eval", invoke_without_command=True)
+@click.pass_context
+def eval_group(ctx: click.Context) -> None:
+    """Trade benchmark evaluation commands."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
 def _run_options(command_func):
@@ -427,7 +431,7 @@ def dashboard(api_url, slug):
     creds = _load_runtime_credentials()
     api_url = api_url or creds.server_url
 
-    click.echo("PA Dashboard")
+    click.echo("Trade Benchmark Dashboard")
     open_dashboard(api_url=api_url, slug=slug or "")
 
 

@@ -1,10 +1,12 @@
-# Prophet Arena Client
+# AI Prophet CLI
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyPI: ai-prophet](https://img.shields.io/badge/PyPI-ai--prophet-blue.svg)](https://pypi.org/project/ai-prophet/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ai-prophet/ai-prophet/blob/main/LICENSE)
 
-AI Prophet entry point.
+The `prophet` CLI is the entrypoint for the AI Prophet ecosystem.
+Today, the primary shipped namespace is `prophet trade`, which runs the
+Prophet Arena trade benchmark.
 
 ## Installation
 
@@ -27,7 +29,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
 
 # Run a benchmark: 2 models, 2 replicates each, 96 ticks
-ai-prophet eval run \
+prophet trade eval run \
   -m anthropic:claude-sonnet-4 \
   -m openai:gpt-5.2 \
   --replicates 2 \
@@ -35,7 +37,9 @@ ai-prophet eval run \
   --max-ticks 96
 ```
 
-This creates 4 participants (2 models × 2 reps) and runs 96 fifteen-minute ticks against the Prophet Arena API. Restarting with the same `--slug` resumes from where it left off.
+This creates 4 participants (2 models × 2 reps) and runs 96 fifteen-minute
+ticks against the Prophet Arena API. Restarting with the same `--slug`
+resumes from where it left off.
 
 ## How It Works
 
@@ -53,7 +57,9 @@ Optional local components (`ClientDatabase`, `EventStore`, trace sink, local rea
 ## CLI Reference
 
 ```bash
-ai-prophet eval run [OPTIONS]
+prophet help
+
+prophet trade eval run [OPTIONS]
   -m, --models TEXT       Model spec: provider:model (required, repeatable)
   -s, --slug TEXT         Experiment slug (stable across restarts)
   -r, --replicates INT    Replicates per model (default: 1)
@@ -65,12 +71,12 @@ ai-prophet eval run [OPTIONS]
   --api-url URL           Core API URL (default: hosted Prophet Arena API)
   -v, --verbose           Verbose output
 
-ai-prophet health          # Check API connectivity
-ai-prophet progress <id>   # Show experiment progress
-ai-prophet dashboard       # Open local results dashboard
+prophet trade              # Show trade subcommand help
+prophet trade health       # Check API connectivity
+prophet trade progress <id>   # Show experiment progress
+prophet trade dashboard    # Open local results dashboard
+prophet forecast           # Placeholder namespace; not implemented yet
 ```
-
-Legacy alias: `ai-prophet run` maps to `ai-prophet eval run`.
 
 ## Supported LLM Providers
 
@@ -87,7 +93,7 @@ For unknown providers, set `{PROVIDER}_API_KEY` as well (e.g. `TOGETHER_API_KEY=
 
 ## Configuration
 
-Default config is bundled with the package. The `ai-prophet` CLI loads
+Default config is bundled with the package. The `prophet` CLI loads
 `config.local.yaml` from your working directory when present:
 
 ```yaml
@@ -127,12 +133,12 @@ implicitly load `.env` files.
 
 ## Python Integration
 
-The supported public interface for `ai-prophet` is the `ai-prophet` CLI.
+The supported public interface for `ai-prophet` is the `prophet` CLI.
 
 If you need Python access to the Prophet Arena API, use `ai-prophet-core` for
-the typed SDK and API client. `ExperimentRunner` remains available for
-advanced embedding, but it expects explicit pipeline wiring and is not the
-stable integration surface for this package.
+the typed SDK and API client. `ai_prophet.trade.ExperimentRunner` remains
+available for advanced embedding, but it expects explicit pipeline wiring and
+is not the stable integration surface for this package.
 
 ## License
 

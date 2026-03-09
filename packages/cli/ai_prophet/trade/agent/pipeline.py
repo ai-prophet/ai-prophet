@@ -9,11 +9,11 @@ from typing import Any
 
 from ai_prophet_core.client import ServerAPIClient
 
-from ai_prophet.core import EventStore, TickContext, TickState
-from ai_prophet.core.config import ClientConfig
-from ai_prophet.llm import LLMClient
-from ai_prophet.llm.base import vprint
-from ai_prophet.search import SearchClient
+from ai_prophet.trade.core import EventStore, TickContext, TickState
+from ai_prophet.trade.core.config import ClientConfig
+from ai_prophet.trade.llm import LLMClient
+from ai_prophet.trade.llm.base import vprint
+from ai_prophet.trade.search import SearchClient
 
 from .stages import (
     ActionStage,

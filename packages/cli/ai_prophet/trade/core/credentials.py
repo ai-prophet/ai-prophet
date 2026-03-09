@@ -1,4 +1,4 @@
-"""Credentials and deployment config for PA Client.
+"""Credentials and deployment config for the trade benchmark client.
 
 Secrets (API keys) and deployment overrides (server URL) come from the process
 environment. CLI entrypoints may choose to load a `.env` file before building
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-# Hosted Prophet Arena API — default benchmark endpoint.
+# Hosted Prophet Arena API — default trade benchmark endpoint.
 DEFAULT_API_URL = "https://api.prophetarena.co"
 _PROVIDER_ALIASES = {
     "google": "gemini",

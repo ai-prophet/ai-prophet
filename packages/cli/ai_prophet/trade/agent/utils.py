@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ai_prophet.core import TickContext
+    from ai_prophet.trade.core import TickContext
 
 
 def format_portfolio_summary(tick_ctx: TickContext, include_positions: bool = True) -> str:
