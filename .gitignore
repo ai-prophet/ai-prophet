@@ -36,3 +36,9 @@ htmlcov/
 
 # OS/editor
 .DS_Store
+
+# AI Coding tools & files
+docs/
+.cursor/
+.cursorrules
+.claude/
