@@ -40,3 +40,11 @@ benchmark:
   deadline_buffer_seconds: 180
   result_timeout_seconds: 300
   process_join_timeout: 10
+
+mini_prophet:
+  enabled: false
+  step_limit: 20
+  search_limit: 3
+  cost_limit: 1.0
+  context_window: 10
+  show_current_time: true

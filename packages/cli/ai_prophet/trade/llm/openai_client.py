@@ -131,12 +131,21 @@ class OpenAIClient(LLMClient):
         self._log_request(request)
 
         # Build request body for Responses API
-        body: dict[str, Any] = {
-            "model": self.model,
-            "input": [
+        if request.raw_messages is not None:
+            # raw_messages are in OpenAI format — use directly, stripping extra keys
+            input_messages = [
+                {k: v for k, v in msg.items() if k != "extra"}
+                for msg in request.raw_messages
+            ]
+        else:
+            input_messages = [
                 {"role": msg.role, "content": msg.content}
                 for msg in request.messages
-            ],
+            ]
+
+        body: dict[str, Any] = {
+            "model": self.model,
+            "input": input_messages,
             "reasoning": {
                 "effort": self.reasoning_effort,
             },
@@ -149,8 +158,20 @@ class OpenAIClient(LLMClient):
         if request.max_tokens or self.max_tokens:
             body["max_output_tokens"] = request.max_tokens or self.max_tokens
 
-        # Add tool if specified - GPT-5.2 Responses API tool format
-        if request.tool:
+        # Tool preparation
+        if request.tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": self._add_additional_properties(dict(t.parameters)),
+                    "strict": True,
+                }
+                for t in request.tools
+            ]
+            # No tool_choice — let model choose
+        elif request.tool:
             # Recursively add additionalProperties: false to all object schemas for strict mode
             params = self._add_additional_properties(dict(request.tool.parameters))
 
@@ -204,8 +225,8 @@ class OpenAIClient(LLMClient):
 
                 data = response.json()
 
-                # Extract response content and tool output
-                tool_output = None
+                # Extract response content and tool calls
+                tool_calls: list[dict[str, Any]] = []
                 content = ""
                 finish_reason = "stop"
 
@@ -232,15 +253,19 @@ class OpenAIClient(LLMClient):
                     # Handle function/tool calls
                     elif item_type == "function_call":
                         try:
-                            args = item.get("arguments", "{}")
-                            if isinstance(args, str):
-                                tool_output = json.loads(args)
-                            else:
-                                tool_output = args
-                            logger.debug(f"Tool output received: {list(tool_output.keys())}")
+                            args_raw = item.get("arguments", "{}")
+                            parsed_args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                            tool_calls.append({
+                                "name": item.get("name", ""),
+                                "arguments": parsed_args,
+                                "id": item.get("call_id", item.get("id", "")),
+                            })
+                            logger.debug(f"Tool call: {item.get('name')}")
                         except json.JSONDecodeError as e:
                             logger.warning(f"Failed to parse function arguments: {e}")
-                            content = args  # Fall back to raw string
+                            content = args_raw  # Fall back to raw string
+
+                tool_output = tool_calls[0]["arguments"] if tool_calls else None
 
                 # Get usage stats
                 usage = data.get("usage", {})
@@ -261,6 +286,7 @@ class OpenAIClient(LLMClient):
                     total_tokens=total_tokens,
                     finish_reason=finish_reason,
                     tool_output=tool_output,
+                    tool_calls=tool_calls or None,
                 )
 
                 self._log_response(llm_response)

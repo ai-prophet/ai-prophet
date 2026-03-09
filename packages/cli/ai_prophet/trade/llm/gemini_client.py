@@ -122,8 +122,13 @@ class GeminiClient(LLMClient):
         """
         self._log_request(request)
 
-        # Convert messages to Gemini format
-        system_instruction, contents = self._convert_messages_to_gemini(request.messages)
+        # Message preparation
+        if request.raw_messages is not None:
+            system_instruction, contents = self._convert_openai_messages_to_gemini(
+                request.raw_messages
+            )
+        else:
+            system_instruction, contents = self._convert_messages_to_gemini(request.messages)
 
         # Build request body (let model use its default temperature)
         body: dict[str, Any] = {
@@ -141,8 +146,23 @@ class GeminiClient(LLMClient):
         if "gemini-3" in self.model:
             body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "low"}
 
-        # Add tool if specified
-        if request.tool:
+        # Tool preparation
+        if request.tools:
+            body["tools"] = [{
+                "functionDeclarations": [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                    for t in request.tools
+                ]
+            }]
+            # AUTO mode — let model choose which tool to call
+            body["toolConfig"] = {
+                "functionCallingConfig": {"mode": "AUTO"}
+            }
+        elif request.tool:
             body["tools"] = [self._build_tool_config(request.tool)]
             # Use ANY mode with allowed function names for strict function calling
             body["toolConfig"] = {
@@ -252,22 +272,29 @@ class GeminiClient(LLMClient):
                         logger.info(f"  Part {i} keys: {list(part.keys())}")
 
                 # Check for tool calls - handle various Gemini response formats
-                tool_output = None
+                tool_calls: list[dict[str, Any]] = []
                 content = ""
 
                 for part in content_parts:
+                    fc = None
                     # Standard function call format
                     if "functionCall" in part:
                         fc = part["functionCall"]
-                        tool_output = fc.get("args", {})
-                        logger.debug(f"Tool output from functionCall: {list(tool_output.keys()) if tool_output else 'empty'}")
                     # Alternative: function_call (snake_case)
                     elif "function_call" in part:
                         fc = part["function_call"]
-                        tool_output = fc.get("args", {})
-                        logger.debug(f"Tool output from function_call: {list(tool_output.keys()) if tool_output else 'empty'}")
+
+                    if fc:
+                        tool_calls.append({
+                            "name": fc.get("name", ""),
+                            "arguments": fc.get("args", {}),
+                            "id": fc.get("id", f"gemini_{len(tool_calls)}"),
+                        })
+                        logger.debug(f"Tool call: {fc.get('name')}")
                     elif "text" in part:
                         content += part["text"]
+
+                tool_output = tool_calls[0]["arguments"] if tool_calls else None
 
                 # If no tool output but we have text, try to parse it as JSON
                 if tool_output is None and content and request.tool:
@@ -309,6 +336,7 @@ class GeminiClient(LLMClient):
                     total_tokens=total_tokens,
                     finish_reason=finish_reason,
                     tool_output=tool_output,
+                    tool_calls=tool_calls or None,
                 )
 
                 total_duration = time.monotonic() - call_start
@@ -349,6 +377,66 @@ class GeminiClient(LLMClient):
                 raise LLMError(f"Unexpected error: {e}") from e
 
         raise last_error or LLMError("Request failed after all retries")
+
+    @staticmethod
+    def _convert_openai_messages_to_gemini(
+        raw: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Convert OpenAI-format messages to Gemini format.
+
+        Returns (system_instruction, contents).
+        """
+        system_parts: list[str] = []
+        contents: list[dict[str, Any]] = []
+
+        for msg in raw:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                if content:
+                    system_parts.append(content)
+                continue
+
+            if role == "tool":
+                # Tool result → user message with functionResponse part
+                contents.append({
+                    "role": "user",
+                    "parts": [{
+                        "functionResponse": {
+                            "name": msg.get("name", "tool"),
+                            "response": {"output": content},
+                        }
+                    }],
+                })
+                continue
+
+            if role == "assistant":
+                parts: list[dict[str, Any]] = []
+                if content:
+                    parts.append({"text": content})
+                for tc in msg.get("tool_calls", []):
+                    func = tc.get("function", {})
+                    args_raw = func.get("arguments", "{}")
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    parts.append({
+                        "functionCall": {
+                            "name": func.get("name", ""),
+                            "args": args,
+                        }
+                    })
+                if parts:
+                    contents.append({"role": "model", "parts": parts})
+                continue
+
+            if role == "user":
+                contents.append({
+                    "role": "user",
+                    "parts": [{"text": content}],
+                })
+
+        system_instruction = "\n\n".join(system_parts) if system_parts else None
+        return system_instruction, contents
 
     def close(self) -> None:
         """Close underlying HTTP client."""

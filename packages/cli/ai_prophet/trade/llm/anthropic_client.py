@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -80,15 +81,19 @@ class AnthropicClient(LLMClient):
         """
         self._log_request(request)
 
-        # Extract system message (Anthropic requires separate system param)
-        system_message = None
-        messages = []
+        # Message preparation
+        if request.raw_messages is not None:
+            system_message, messages = self._convert_openai_messages(request.raw_messages)
+        else:
+            # Extract system message (Anthropic requires separate system param)
+            system_message = None
+            messages = []
 
-        for msg in request.messages:
-            if msg.role == "system":
-                system_message = msg.content
-            else:
-                messages.append({"role": msg.role, "content": msg.content})
+            for msg in request.messages:
+                if msg.role == "system":
+                    system_message = msg.content
+                else:
+                    messages.append({"role": msg.role, "content": msg.content})
 
         # Build API call kwargs (let model use its default temperature)
         kwargs: dict[str, Any] = {
@@ -100,8 +105,18 @@ class AnthropicClient(LLMClient):
         if system_message:
             kwargs["system"] = system_message
 
-        # Add tool if specified
-        if request.tool:
+        # Tool preparation
+        if request.tools:
+            kwargs["tools"] = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                }
+                for t in request.tools
+            ]
+            # No tool_choice — let model choose
+        elif request.tool:
             kwargs["tools"] = [{
                 "name": request.tool.name,
                 "description": request.tool.description,
@@ -117,16 +132,22 @@ class AnthropicClient(LLMClient):
             try:
                 response = self.client.messages.create(**kwargs)
 
-                # Extract response content and tool output
+                # Extract response content and tool calls
                 content = ""
-                tool_output = None
+                tool_calls: list[dict[str, Any]] = []
 
                 for block in response.content:
                     if block.type == "text":
                         content += block.text
                     elif block.type == "tool_use":
-                        tool_output = block.input
-                        logger.debug(f"Tool output received: {list(tool_output.keys())}")
+                        tool_calls.append({
+                            "name": block.name,
+                            "arguments": block.input,
+                            "id": block.id,
+                        })
+                        logger.debug(f"Tool call: {block.name}")
+
+                tool_output = tool_calls[0]["arguments"] if tool_calls else None
 
                 llm_response = LLMResponse(
                     content=content,
@@ -136,6 +157,7 @@ class AnthropicClient(LLMClient):
                     total_tokens=response.usage.input_tokens + response.usage.output_tokens,
                     finish_reason=response.stop_reason or "stop",
                     tool_output=tool_output,
+                    tool_calls=tool_calls or None,
                 )
 
                 self._log_response(llm_response)
@@ -167,6 +189,82 @@ class AnthropicClient(LLMClient):
                 raise LLMError(f"Unexpected error: {e}") from e
 
         raise last_error or LLMError("Request failed after all retries")
+
+    @staticmethod
+    def _convert_openai_messages(
+        raw: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Convert OpenAI-format messages to Anthropic format.
+
+        Returns (system_message, messages) where messages are Anthropic-native.
+        Adjacent same-role messages are merged as required by the Anthropic API.
+        """
+        system_parts: list[str] = []
+        converted: list[dict[str, Any]] = []
+
+        for msg in raw:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "system":
+                if content:
+                    system_parts.append(content)
+                continue
+
+            if role == "tool":
+                # Tool result → user message with tool_result content block
+                entry: dict[str, Any] = {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg.get("tool_call_id", ""),
+                            "content": content if isinstance(content, str) else json.dumps(content),
+                        }
+                    ],
+                }
+                converted.append(entry)
+                continue
+
+            if role == "assistant" and msg.get("tool_calls"):
+                # Assistant with tool_calls → tool_use content blocks
+                blocks: list[dict[str, Any]] = []
+                if content:
+                    blocks.append({"type": "text", "text": content})
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    args_raw = func.get("arguments", "{}")
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": func.get("name", ""),
+                        "input": args,
+                    })
+                converted.append({"role": "assistant", "content": blocks})
+                continue
+
+            # Regular user/assistant text message
+            if role in ("user", "assistant"):
+                converted.append({"role": role, "content": content})
+
+        # Merge adjacent same-role messages (Anthropic requirement)
+        merged: list[dict[str, Any]] = []
+        for entry in converted:
+            if merged and merged[-1]["role"] == entry["role"]:
+                prev_content = merged[-1]["content"]
+                cur_content = entry["content"]
+                # Normalize both to list-of-blocks form
+                if isinstance(prev_content, str):
+                    prev_content = [{"type": "text", "text": prev_content}]
+                if isinstance(cur_content, str):
+                    cur_content = [{"type": "text", "text": cur_content}]
+                merged[-1]["content"] = prev_content + cur_content
+            else:
+                merged.append(entry)
+
+        system_message = "\n\n".join(system_parts) if system_parts else None
+        return system_message, merged
 
     def close(self) -> None:
         """Close underlying SDK client if supported."""

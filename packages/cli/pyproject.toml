@@ -37,6 +37,12 @@ dependencies = [
     
     # Core SDK
     "ai-prophet-core>=0.1.2,<0.2.0",
+
+    # Mini-Prophet
+    "mini-prophet @ git+https://github.com/ai-prophet/mini-prophet.git@v0.1.7",
+
+    # Search backend for mini-prophet
+    "exa-py>=1.0",
 ]
 
 [project.optional-dependencies]
