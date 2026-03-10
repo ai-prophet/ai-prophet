@@ -1,0 +1,482 @@
+"""
+Betting engine — the main entry point for the betting module.
+
+Takes probabilistic predictions as input, runs them through a pluggable
+:class:`~ai_prophet_core.betting.strategy.BettingStrategy`, places orders
+via the exchange adapter, and logs everything to the database.
+
+Usage::
+
+    from ai_prophet_core.betting import BettingEngine
+
+    engine = BettingEngine(dry_run=True)
+    results = engine.process_forecasts(
+        tick_ts=tick_ts,
+        forecasts={"kalshi:TICKER": 0.72},
+        market_prices={"kalshi:TICKER": (0.55, 0.45)},
+        source="my-model",
+    )
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy.engine import Engine
+
+from .config import KalshiConfig
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BetResult:
+    """Outcome of a single market bet attempt."""
+
+    market_id: str
+    signal: BetSignal | None
+    order_placed: bool
+    order_id: str | None = None
+    status: str | None = None
+    filled_shares: float = 0.0
+    fill_price: float = 0.0
+    exchange_order_id: str | None = None
+    error: str | None = None
+
+
+class BettingEngine:
+    """Evaluate predictions, place bets, log to DB.
+
+    This is the single integration point for the betting module.
+    The :class:`ExperimentRunner` (or any caller) feeds forecasts
+    produced by the trading pipeline into :meth:`process_forecasts`,
+    and the engine handles strategy evaluation, order placement, and
+    database logging.
+
+    Args:
+        strategy: A :class:`BettingStrategy` instance.  Defaults to
+            :class:`DefaultBettingStrategy`.
+        db_engine: SQLAlchemy engine for persistence.  ``None`` disables
+            DB logging (useful in tests / notebooks).
+        dry_run: When ``True`` the exchange adapter simulates fills.
+        kalshi_config: Explicit Kalshi credentials.  Defaults to env vars.
+        enabled: Master kill-switch.
+    """
+
+    def __init__(
+        self,
+        strategy: BettingStrategy | None = None,
+        db_engine: Engine | None = None,
+        dry_run: bool = True,
+        kalshi_config: KalshiConfig | None = None,
+        enabled: bool = True,
+    ) -> None:
+        self.strategy = strategy or DefaultBettingStrategy()
+        self.dry_run = dry_run
+        self.enabled = enabled
+        self._engine = db_engine
+        self._kalshi_config = kalshi_config or KalshiConfig.from_env()
+        self._adapter = None
+
+        if self._engine is not None:
+            self._init_tables()
+
+        logger.info(
+            "BettingEngine initialized: strategy=%s, mode=%s, enabled=%s, db=%s",
+            self.strategy.name,
+            "DRY RUN" if dry_run else "LIVE",
+            self.enabled,
+            "yes" if self._engine else "none",
+        )
+
+    # ── public API ────────────────────────────────────────────────────
+
+    def process_forecasts(
+        self,
+        tick_ts: datetime,
+        forecasts: dict[str, float],
+        market_prices: dict[str, tuple[float, float]],
+        source: str = "",
+    ) -> list[BetResult]:
+        """Run the full predict → evaluate → place → log cycle.
+
+        Args:
+            tick_ts: Timestamp of the current tick.
+            forecasts: ``{market_id: p_yes}`` predictions.
+            market_prices: ``{market_id: (yes_ask, no_ask)}`` live quotes.
+            source: Identifier for the prediction source (model name, etc.).
+
+        Returns:
+            A :class:`BetResult` for every market in *forecasts*.
+        """
+        if not self.enabled:
+            return []
+
+        results: list[BetResult] = []
+
+        for market_id, p_yes in forecasts.items():
+            prices = market_prices.get(market_id)
+            if prices is None:
+                logger.warning(
+                    "[BETTING] No prices for %s, skipping", market_id,
+                )
+                results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
+                continue
+
+            yes_ask, no_ask = prices
+
+            # 1. Persist the prediction
+            prediction_id = self._save_prediction(
+                tick_ts=tick_ts,
+                market_id=market_id,
+                source=source,
+                p_yes=p_yes,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+            )
+
+            # 2. Evaluate strategy
+            signal = self.strategy.evaluate(
+                market_id=market_id,
+                p_yes=p_yes,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+            )
+
+            if signal is None:
+                logger.info(
+                    "[BETTING] %s on %s: p_yes=%.3f → SKIP",
+                    source, market_id, p_yes,
+                )
+                results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
+                continue
+
+            # 3. Persist signal
+            signal_id = self._save_signal(prediction_id, signal)
+
+            logger.info(
+                "[BETTING] %s on %s: p_yes=%.3f → %s %.4f @ %.3f",
+                source, market_id, p_yes,
+                signal.side.upper(), signal.shares, signal.price,
+            )
+
+            # 4. Place order
+            result = self._place_and_log_order(
+                tick_ts=tick_ts,
+                market_id=market_id,
+                signal=signal,
+                signal_id=signal_id,
+            )
+            results.append(result)
+
+        return results
+
+    def on_forecast(
+        self,
+        tick_ts: datetime,
+        market_id: str,
+        p_yes: float,
+        yes_ask: float,
+        no_ask: float,
+        question: str = "",
+        source: str = "",
+    ) -> BetResult | None:
+        """Convenience method for single-market callback use.
+
+        Matches the signature expected by the pipeline's ``on_forecast``
+        callback so it can be wired directly::
+
+            pipeline_config["on_forecast"] = engine.on_forecast
+        """
+        if not self.enabled:
+            return None
+
+        results = self.process_forecasts(
+            tick_ts=tick_ts,
+            forecasts={market_id: p_yes},
+            market_prices={market_id: (yes_ask, no_ask)},
+            source=source,
+        )
+        return results[0] if results else None
+
+    def close(self) -> None:
+        """Release resources."""
+        if self._adapter:
+            try:
+                self._adapter.close()
+            except Exception:
+                pass
+
+    # ── internals ─────────────────────────────────────────────────────
+
+    def _init_tables(self) -> None:
+        from .db_schema import Base
+
+        if self._engine is not None:
+            Base.metadata.create_all(self._engine, checkfirst=True)
+
+    def _get_adapter(self):
+        if self._adapter is not None:
+            return self._adapter
+
+        from .adapters.kalshi import KalshiAdapter
+
+        self._adapter = KalshiAdapter(
+            api_key_id=self._kalshi_config.api_key_id,
+            private_key_base64=self._kalshi_config.private_key_base64,
+            base_url=self._kalshi_config.base_url,
+            dry_run=self.dry_run,
+        )
+        return self._adapter
+
+    def _place_and_log_order(
+        self,
+        tick_ts: datetime,
+        market_id: str,
+        signal: BetSignal,
+        signal_id: int | None,
+    ) -> BetResult:
+        """Convert a signal into an exchange order, persist the result."""
+        from .adapters.base import OrderRequest
+
+        ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
+        count = max(1, round(abs(signal.shares) * 100))
+        price_cents = max(1, min(99, round(signal.price * 100)))
+
+        adapter = self._get_adapter()
+        order_id = str(uuid.uuid4())
+
+        order_req = OrderRequest(
+            order_id=order_id,
+            intent_id=f"bet-{order_id[:8]}",
+            market_id=market_id,
+            exchange_ticker=ticker,
+            action="BUY",
+            side=signal.side.upper(),
+            shares=Decimal(str(count)),
+            limit_price=Decimal(str(signal.price)),
+        )
+
+        try:
+            order_result = adapter.submit_order(order_req)
+            status = order_result.status.value
+            filled_shares = float(order_result.filled_shares)
+            fill_price = float(order_result.fill_price)
+            exchange_oid = order_result.exchange_order_id
+            error = order_result.rejection_reason
+        except Exception as e:
+            logger.error("[BETTING] Order submission failed: %s", e, exc_info=True)
+            status = "ERROR"
+            filled_shares = 0.0
+            fill_price = 0.0
+            exchange_oid = None
+            error = str(e)
+
+        logger.info(
+            "[BETTING] Order %s: %s %s×%s @ %sc → %s (filled=%s @ %s)",
+            order_id[:8], signal.side.upper(), count, ticker,
+            price_cents, status, filled_shares, fill_price,
+        )
+
+        self._save_order(
+            signal_id=signal_id,
+            order_id=order_id,
+            ticker=ticker,
+            side=signal.side,
+            count=count,
+            price_cents=price_cents,
+            status=status,
+            filled_shares=filled_shares,
+            fill_price=fill_price,
+            exchange_order_id=exchange_oid,
+        )
+
+        return BetResult(
+            market_id=market_id,
+            signal=signal,
+            order_placed=True,
+            order_id=order_id,
+            status=status,
+            filled_shares=filled_shares,
+            fill_price=fill_price,
+            exchange_order_id=exchange_oid,
+            error=error,
+        )
+
+    # ── DB persistence ────────────────────────────────────────────────
+
+    def _save_prediction(
+        self,
+        tick_ts: datetime,
+        market_id: str,
+        source: str,
+        p_yes: float,
+        yes_ask: float,
+        no_ask: float,
+    ) -> int | None:
+        if self._engine is None:
+            return None
+
+        from .db import get_session
+        from .db_schema import BettingPrediction
+
+        now = datetime.now(UTC)
+        row = BettingPrediction(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            source=source,
+            p_yes=p_yes,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            created_at=now,
+        )
+        try:
+            with get_session(self._engine) as session:
+                session.add(row)
+                session.flush()
+                return row.id
+        except Exception as e:
+            logger.warning("Failed to persist prediction: %s", e, exc_info=True)
+            return None
+
+    def _save_signal(
+        self,
+        prediction_id: int | None,
+        signal: BetSignal,
+    ) -> int | None:
+        if self._engine is None or prediction_id is None:
+            return None
+
+        from .db import get_session
+        from .db_schema import BettingSignal
+
+        now = datetime.now(UTC)
+        metadata_json = json.dumps(signal.metadata) if signal.metadata else None
+        row = BettingSignal(
+            prediction_id=prediction_id,
+            strategy_name=self.strategy.name,
+            side=signal.side,
+            shares=signal.shares,
+            price=signal.price,
+            cost=signal.cost,
+            metadata_json=metadata_json,
+            created_at=now,
+        )
+        try:
+            with get_session(self._engine) as session:
+                session.add(row)
+                session.flush()
+                return row.id
+        except Exception as e:
+            logger.warning("Failed to persist signal: %s", e, exc_info=True)
+            return None
+
+    def _save_order(
+        self,
+        signal_id: int | None,
+        order_id: str,
+        ticker: str,
+        side: str,
+        count: int,
+        price_cents: int,
+        status: str,
+        filled_shares: float,
+        fill_price: float,
+        exchange_order_id: str | None,
+    ) -> None:
+        if self._engine is None or signal_id is None:
+            return
+
+        from .db import get_session
+        from .db_schema import BettingOrder
+
+        now = datetime.now(UTC)
+        row = BettingOrder(
+            signal_id=signal_id,
+            order_id=order_id,
+            ticker=ticker,
+            side=side,
+            count=count,
+            price_cents=price_cents,
+            status=status,
+            filled_shares=filled_shares,
+            fill_price=fill_price,
+            exchange_order_id=exchange_order_id,
+            dry_run=self.dry_run,
+            created_at=now,
+        )
+        try:
+            with get_session(self._engine) as session:
+                session.add(row)
+        except Exception as e:
+            logger.warning("Failed to persist order: %s", e, exc_info=True)
+
+    # ── query helpers ─────────────────────────────────────────────────
+
+    def get_recent_predictions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent predictions from the DB."""
+        if self._engine is None:
+            return []
+
+        from .db import get_session
+        from .db_schema import BettingPrediction
+
+        with get_session(self._engine) as session:
+            rows = (
+                session.query(BettingPrediction)
+                .order_by(BettingPrediction.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": row.id,
+                    "tick_ts": row.tick_ts.isoformat(),
+                    "market_id": row.market_id,
+                    "source": row.source,
+                    "p_yes": row.p_yes,
+                    "yes_ask": row.yes_ask,
+                    "no_ask": row.no_ask,
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ]
+
+    def get_recent_orders(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent betting orders from the DB."""
+        if self._engine is None:
+            return []
+
+        from .db import get_session
+        from .db_schema import BettingOrder
+
+        with get_session(self._engine) as session:
+            rows = (
+                session.query(BettingOrder)
+                .order_by(BettingOrder.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": row.id,
+                    "order_id": row.order_id,
+                    "ticker": row.ticker,
+                    "side": row.side,
+                    "count": row.count,
+                    "price_cents": row.price_cents,
+                    "status": row.status,
+                    "filled_shares": row.filled_shares,
+                    "fill_price": row.fill_price,
+                    "dry_run": row.dry_run,
+                    "created_at": row.created_at.isoformat(),
+                }
+                for row in rows
+            ]

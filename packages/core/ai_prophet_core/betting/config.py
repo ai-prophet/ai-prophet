@@ -20,7 +20,6 @@ LIVE_BETTING_LOAD_DOTENV_ENV = "LIVE_BETTING_LOAD_DOTENV"
 KALSHI_API_KEY_ID_ENV = "KALSHI_API_KEY_ID"
 KALSHI_BASE_URL_ENV = "KALSHI_BASE_URL"
 KALSHI_PRIVATE_KEY_B64_ENV = "KALSHI_PRIVATE_KEY_B64"
-KALSHI_PRIVATE_KEY_LEGACY_ENV = "KALSHI_API_KEY"
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -62,9 +61,7 @@ class KalshiConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "KalshiConfig":
         env_map = os.environ if env is None else env
-        private_key_base64 = env_map.get(KALSHI_PRIVATE_KEY_B64_ENV) or env_map.get(
-            KALSHI_PRIVATE_KEY_LEGACY_ENV, ""
-        )
+        private_key_base64 = env_map.get(KALSHI_PRIVATE_KEY_B64_ENV, "")
         return cls(
             api_key_id=env_map.get(KALSHI_API_KEY_ID_ENV, ""),
             private_key_base64=private_key_base64,
@@ -110,46 +107,3 @@ class LiveBettingSettings:
         )
 
 
-MODEL_CONFIGS = {
-    "gemini-3": {
-        "provider": "google",
-        "api_model": "gemini-3-pro-preview",
-        "avoid_market_search": False,
-        "include_market_stats": True,
-    },
-    "gemini-3-no-search": {
-        "provider": "google",
-        "api_model": "gemini-3-pro-preview",
-        "avoid_market_search": True,
-        "include_market_stats": False,
-    },
-    "anthropic/claude-opus-4.6": {
-        "provider": "anthropic",
-        "api_model": "claude-opus-4-6",
-        "avoid_market_search": False,
-        "include_market_stats": True,
-    },
-    "anthropic/claude-opus-4.6-no-search": {
-        "provider": "anthropic",
-        "api_model": "claude-opus-4-6",
-        "avoid_market_search": True,
-        "include_market_stats": False,
-    },
-}
-
-PIPELINE_MODEL_SPECS = {
-    "google:gemini-3-pro-preview": "gemini-3",
-    "google:gemini-3-pro-preview-no-search": "gemini-3-no-search",
-    "anthropic:claude-opus-4-6": "anthropic/claude-opus-4.6",
-    "anthropic:claude-opus-4-6-no-search": "anthropic/claude-opus-4.6-no-search",
-}
-
-BETTING_MODEL_SPECS = list(PIPELINE_MODEL_SPECS.keys())
-
-
-def get_pipeline_config(model_spec: str) -> dict | None:
-    """Get the MODEL_CONFIGS entry for a pipeline model spec."""
-    config_name = PIPELINE_MODEL_SPECS.get(model_spec)
-    if config_name is None:
-        return None
-    return MODEL_CONFIGS.get(config_name)

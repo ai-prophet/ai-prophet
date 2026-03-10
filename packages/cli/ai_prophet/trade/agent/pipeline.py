@@ -256,9 +256,9 @@ class AgentPipeline:
     ) -> None:
         """Fire the on_forecast callback for each forecasted market.
 
-        The callback receives (market_id, p_yes, yes_ask, no_ask, question)
-        for each market with a forecast. Errors are logged but never
-        propagate — live betting must not break the pipeline.
+        The callback receives (tick_ts, market_id, p_yes, yes_ask, no_ask,
+        question) for each market with a forecast. Errors are logged but
+        never propagate — betting must not break the pipeline.
         """
         callback = self.on_forecast
         if callback is None:

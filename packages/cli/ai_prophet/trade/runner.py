@@ -35,11 +35,6 @@ from ai_prophet_core.client import (
 from ai_prophet.trade.agent.reasoning_memory import build_memory_context
 from ai_prophet.trade.core.config import ClientConfig
 from ai_prophet.trade.core.tick_context import CandidateMarket, Position, TickContext
-from ai_prophet.trade.live_betting_adapter import (
-    build_live_betting_reasoning,
-    execute_live_betting_strategy,
-    is_live_betting_model,
-)
 from ai_prophet.trade.memory import LocalReasoningStore
 from ai_prophet.trade.trace import TraceSink
 
@@ -110,7 +105,7 @@ class ExperimentRunner:
         trace_dir: Path | None = None,
         build_pipeline: Callable | None = None,
         publish_reasoning: bool = False,
-        live_betting_hook: Any = None,
+        betting_engine: Any = None,
         client_config: ClientConfig | None = None,
         memory_dir: Path | None = None,
         memory_max_rows: int = 1000,
@@ -126,7 +121,7 @@ class ExperimentRunner:
             trace_dir: Directory for local trace files.
             build_pipeline: Callable(participant_cfg) -> AgentPipeline. None = headless mode.
             publish_reasoning: If True, persist per-stage reasoning in plan_json.
-            live_betting_hook: Optional hook for Kalshi live betting integration.
+            betting_engine: Optional BettingEngine for exchange betting integration.
             client_config: Explicit runtime config for defaults and prompt memory limits.
             memory_dir: Directory for local reasoning memory files.
             memory_max_rows: Max reasoning rows persisted per participant.
@@ -143,7 +138,7 @@ class ExperimentRunner:
         self.lease_owner_id = str(uuid.uuid4())
         self.build_pipeline = build_pipeline
         self.publish_reasoning = publish_reasoning
-        self.live_betting_hook = live_betting_hook
+        self.betting_engine = betting_engine
         self.memory_dir = (memory_dir or Path("~/.pa_memory")).expanduser()
         self.memory_max_rows = memory_max_rows
 
@@ -405,35 +400,6 @@ class ExperimentRunner:
         exp_id = self._require_experiment_id()
 
         cfg = self.participants[idx]
-        model_spec = cfg["model"]
-
-        if self._is_live_betting_model(model_spec):
-            logger.info(f"Participant {idx}: using live_betting strategy")
-            intents, forecasts = self._execute_live_betting_strategy(
-                model_spec=model_spec,
-                tick_dt=tick_ts,
-                candidate_markets=list(candidate_markets),
-            )
-            sorted_intents = prepare_intents(intents)
-            live_reasoning = self._build_live_betting_reasoning(
-                candidate_markets=candidate_markets,
-                forecasts=forecasts,
-                intents=sorted_intents,
-            )
-            live_plan_json: dict = {
-                "intents": sorted_intents,
-                "tick_id": tick_id,
-                "snapshot_id": snapshot_id,
-            }
-            if self.publish_reasoning and live_reasoning:
-                live_plan_json["reasoning"] = live_reasoning
-            if self.trace_sink:
-                self.trace_sink.write(
-                    self.slug, exp_id, idx, tick_id,
-                    stage="plan", event_type="plan_generated",
-                    payload=live_plan_json,
-                )
-            return live_plan_json, live_reasoning
 
         build_pipeline = self.build_pipeline
         if build_pipeline is None:
@@ -547,34 +513,6 @@ class ExperimentRunner:
             )
 
         return plan_json, result.reasoning
-
-    def _is_live_betting_model(self, model_spec: str) -> bool:
-        """Return True when this participant uses live_betting strategy."""
-        return is_live_betting_model(model_spec)
-
-    def _execute_live_betting_strategy(
-        self,
-        model_spec: str,
-        tick_dt: datetime,
-        candidate_markets: list[CandidateMarket],
-    ) -> tuple[list[dict], dict[str, float]]:
-        """Execute live_betting strategy in a single batched forecast pass."""
-        return execute_live_betting_strategy(
-            model_spec=model_spec,
-            tick_ts=tick_dt,
-            candidate_markets=candidate_markets,
-            experiment_id=str(self.experiment_id or ""),
-            live_betting_hook=self.live_betting_hook,
-        )
-
-    def _build_live_betting_reasoning(
-        self,
-        candidate_markets: tuple[CandidateMarket, ...],
-        forecasts: dict[str, float],
-        intents: list[dict],
-    ) -> dict[str, Any]:
-        """Build compact reasoning payload for live-betting participants."""
-        return build_live_betting_reasoning(candidate_markets, forecasts, intents)
 
     def _submit_intents(
         self, idx: int, tick_id: str, snapshot_id: str, raw_intents: list[dict],

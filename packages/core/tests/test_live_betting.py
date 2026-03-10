@@ -14,7 +14,12 @@ from ai_prophet_core.betting.config import (
     KalshiConfig,
     LiveBettingSettings,
 )
-from ai_prophet_core.betting.hook import LiveBettingHook
+from ai_prophet_core.betting.engine import BettingEngine
+from ai_prophet_core.betting.strategy import (
+    BetSignal,
+    BettingStrategy,
+    DefaultBettingStrategy,
+)
 
 
 def _make_order() -> OrderRequest:
@@ -30,12 +35,14 @@ def _make_order() -> OrderRequest:
     )
 
 
+# ── Settings tests ──────────────────────────────────────────────────
+
+
 def test_live_betting_settings_from_env_prefers_explicit_private_key_name(monkeypatch):
     monkeypatch.setenv("LIVE_BETTING_ENABLED", "true")
     monkeypatch.setenv("LIVE_BETTING_DRY_RUN", "false")
     monkeypatch.setenv("KALSHI_API_KEY_ID", "key-id")
     monkeypatch.setenv("KALSHI_PRIVATE_KEY_B64", "new-key")
-    monkeypatch.delenv("KALSHI_API_KEY", raising=False)
 
     settings = LiveBettingSettings.from_env()
 
@@ -50,26 +57,69 @@ def test_live_betting_settings_from_env_prefers_explicit_private_key_name(monkey
     )
 
 
-def test_live_betting_settings_from_env_supports_legacy_private_key_name(monkeypatch):
-    monkeypatch.delenv("KALSHI_PRIVATE_KEY_B64", raising=False)
-    monkeypatch.setenv("KALSHI_API_KEY", "legacy-key")
-
-    settings = LiveBettingSettings.from_env()
-
-    assert settings.kalshi.private_key_base64 == "legacy-key"
+# ── Strategy tests ──────────────────────────────────────────────────
 
 
-def test_hook_disabled_noops_without_hidden_env_state():
-    engine = create_engine("sqlite:///:memory:")
-    hook = LiveBettingHook(
-        betting_model_names=["model-a"],
-        db_engine=engine,
-        enabled=False,
-        dry_run=True,
+def test_default_strategy_buy_yes():
+    strategy = DefaultBettingStrategy()
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.72, yes_ask=0.55, no_ask=0.45)
+    assert signal is not None
+    assert signal.side == "yes"
+    assert signal.shares > 0
+
+
+def test_default_strategy_buy_no():
+    strategy = DefaultBettingStrategy()
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.30, yes_ask=0.55, no_ask=0.45)
+    assert signal is not None
+    assert signal.side == "no"
+    assert signal.shares > 0
+
+
+def test_default_strategy_skip_within_spread():
+    strategy = DefaultBettingStrategy()
+    # With yes_ask=0.60, no_ask=0.45: lower=0.55, upper=0.60 → p_yes=0.57 is inside
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.57, yes_ask=0.60, no_ask=0.45)
+    assert signal is None
+
+
+def test_default_strategy_skip_wide_spread():
+    strategy = DefaultBettingStrategy(max_spread=1.0)
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.72, yes_ask=0.55, no_ask=0.50)
+    assert signal is None
+
+
+def test_custom_strategy():
+    class AlwaysBetYes(BettingStrategy):
+        name = "always-yes"
+
+        def evaluate(self, market_id, p_yes, yes_ask, no_ask):
+            return BetSignal(side="yes", shares=1.0, price=yes_ask, cost=yes_ask)
+
+    strategy = AlwaysBetYes()
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.50, yes_ask=0.55, no_ask=0.45)
+    assert signal is not None
+    assert signal.side == "yes"
+    assert signal.shares == 1.0
+
+
+# ── Engine tests ────────────────────────────────────────────────────
+
+
+def test_engine_disabled_returns_empty():
+    engine = BettingEngine(enabled=False)
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST": 0.72},
+        market_prices={"kalshi:TEST": (0.55, 0.45)},
+        source="test-model",
     )
+    assert results == []
 
-    result = hook.on_forecast(
-        model_name="model-a",
+
+def test_engine_on_forecast_disabled_returns_none():
+    engine = BettingEngine(enabled=False)
+    result = engine.on_forecast(
         tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
         market_id="kalshi:TEST-MARKET",
         p_yes=0.72,
@@ -77,60 +127,168 @@ def test_hook_disabled_noops_without_hidden_env_state():
         no_ask=0.45,
         question="Test market?",
     )
-
     assert result is None
 
 
-def test_hook_dedupes_duplicate_model_forecasts(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    hook = LiveBettingHook(
-        betting_model_names=["model-a", "model-b"],
-        db_engine=engine,
-        enabled=True,
+def test_engine_processes_forecast_and_places_order(monkeypatch):
+    db_engine = create_engine("sqlite:///:memory:")
+    engine = BettingEngine(
+        db_engine=db_engine,
         dry_run=True,
+        enabled=True,
     )
 
-    saved_decisions: list[dict] = []
-    placed_orders: list[tuple[str, str, int, float]] = []
-
-    monkeypatch.setattr(
-        hook,
-        "_save_bet_decision",
-        lambda **kwargs: saved_decisions.append(kwargs),
+    # Mock the adapter to avoid real API calls
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("17"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-123",
+        rejection_reason=None,
     )
-    monkeypatch.setattr(
-        hook,
-        "_place_kalshi_order",
-        lambda ticker, side, count, price: placed_orders.append((ticker, side, count, price))
-        or {
-            "order_id": "order-1",
-            "status": "DRY_RUN",
-            "filled_shares": 0.0,
-            "fill_price": 0.0,
-            "exchange_order_id": "dry-run-order-1",
-        },
+    engine._adapter = mock_adapter
+
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
     )
-    monkeypatch.setattr(hook, "_save_kalshi_order", lambda **_kwargs: None)
 
-    tick_ts = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
-    kwargs = {
-        "tick_ts": tick_ts,
-        "market_id": "kalshi:TEST-MARKET",
-        "p_yes": 0.72,
-        "yes_ask": 0.55,
-        "no_ask": 0.45,
-        "question": "Test market?",
-    }
+    assert len(results) == 1
+    result = results[0]
+    assert result.market_id == "kalshi:TEST-MKT"
+    assert result.order_placed is True
+    assert result.signal is not None
+    assert result.signal.side == "yes"
+    mock_adapter.submit_order.assert_called_once()
 
-    assert hook.on_forecast(model_name="model-a", **kwargs) is None
-    assert hook.on_forecast(model_name="model-a", **kwargs) is None
 
-    result = hook.on_forecast(model_name="model-b", **kwargs)
-    assert result is not None
-    assert hook.on_forecast(model_name="model-a", **kwargs) is None
+def test_engine_skips_when_strategy_returns_none(monkeypatch):
+    db_engine = create_engine("sqlite:///:memory:")
+    engine = BettingEngine(
+        db_engine=db_engine,
+        dry_run=True,
+        enabled=True,
+    )
 
-    assert len(saved_decisions) == 2
-    assert len(placed_orders) == 1
+    # p_yes=0.57 within bid-ask band [0.55, 0.60] → strategy skips
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.57},
+        market_prices={"kalshi:TEST-MKT": (0.60, 0.45)},
+        source="test-model",
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.signal is None
+    assert result.order_placed is False
+
+
+def test_engine_with_custom_strategy():
+    class AlwaysBetYes(BettingStrategy):
+        name = "always-yes"
+
+        def evaluate(self, market_id, p_yes, yes_ask, no_ask):
+            return BetSignal(side="yes", shares=1.0, price=yes_ask, cost=yes_ask)
+
+    db_engine = create_engine("sqlite:///:memory:")
+    engine = BettingEngine(
+        strategy=AlwaysBetYes(),
+        db_engine=db_engine,
+        dry_run=True,
+        enabled=True,
+    )
+
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("100"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-123",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    # Even with p_yes=0.50 (default strategy would skip), custom strategy bets
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.50},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="custom-model",
+    )
+
+    assert len(results) == 1
+    assert results[0].order_placed is True
+    assert results[0].signal is not None
+    assert results[0].signal.side == "yes"
+
+
+def test_engine_logs_to_db():
+    db_engine = create_engine("sqlite:///:memory:")
+    engine = BettingEngine(
+        db_engine=db_engine,
+        dry_run=True,
+        enabled=True,
+    )
+
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("17"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-123",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
+    )
+
+    # Verify predictions logged
+    predictions = engine.get_recent_predictions(limit=10)
+    assert len(predictions) == 1
+    assert predictions[0]["market_id"] == "kalshi:TEST-MKT"
+    assert predictions[0]["source"] == "test-model"
+    assert predictions[0]["p_yes"] == 0.72
+
+    # Verify orders logged
+    orders = engine.get_recent_orders(limit=10)
+    assert len(orders) == 1
+    assert orders[0]["status"] == "DRY_RUN"
+
+
+def test_engine_no_db_works():
+    """Engine works fine without a DB engine (no persistence)."""
+    engine = BettingEngine(db_engine=None, dry_run=True, enabled=True)
+
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("17"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-123",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
+    )
+    assert len(results) == 1
+    assert results[0].order_placed is True
+
+
+# ── Kalshi adapter tests ────────────────────────────────────────────
 
 
 def test_kalshi_adapter_network_error_returns_rejected(monkeypatch):

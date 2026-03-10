@@ -15,7 +15,6 @@ from ..config import (
     DEFAULT_KALSHI_BASE_URL,
     KALSHI_API_KEY_ID_ENV,
     KALSHI_PRIVATE_KEY_B64_ENV,
-    KALSHI_PRIVATE_KEY_LEGACY_ENV,
 )
 from .base import (
     ExchangeAdapter,
@@ -36,17 +35,12 @@ class KalshiAdapter(ExchangeAdapter):
         api_key_id: str = "",
         private_key_base64: str = "",
         *,
-        private_key_b64: str | None = None,
         base_url: str = DEFAULT_KALSHI_BASE_URL,
         dry_run: bool = False,
         timeout_sec: int = 30,
     ):
-        # Support the legacy parameter and env name while we transition the public API.
-        env_private_key = os.getenv(KALSHI_PRIVATE_KEY_B64_ENV, "") or os.getenv(
-            KALSHI_PRIVATE_KEY_LEGACY_ENV, ""
-        )
         self._api_key_id = api_key_id or os.getenv(KALSHI_API_KEY_ID_ENV, "")
-        self._private_key_base64 = private_key_base64 or private_key_b64 or env_private_key
+        self._private_key_base64 = private_key_base64 or os.getenv(KALSHI_PRIVATE_KEY_B64_ENV, "")
         self._base_url = base_url
         self._dry_run = dry_run
         self._timeout = timeout_sec
@@ -58,7 +52,7 @@ class KalshiAdapter(ExchangeAdapter):
         if not self._private_key_base64:
             logger.warning(
                 "KalshiAdapter: No private key configured "
-                "(set KALSHI_PRIVATE_KEY_B64 or pass private_key_base64)"
+                "(set KALSHI_PRIVATE_KEY_B64 env var or pass private_key_base64)"
             )
 
     @property
@@ -81,8 +75,7 @@ class KalshiAdapter(ExchangeAdapter):
         if not self._private_key_base64:
             raise RuntimeError(
                 "Kalshi private key not configured. "
-                "Set KALSHI_PRIVATE_KEY_B64 (preferred) or KALSHI_API_KEY "
-                "(legacy alias), or pass private_key_base64."
+                "Set KALSHI_PRIVATE_KEY_B64 or pass private_key_base64."
             )
 
         from cryptography.hazmat.backends import default_backend

@@ -1,31 +1,29 @@
-"""Live betting utilities for forecast aggregation and exchange execution."""
+"""Betting module — pluggable strategy, exchange execution, and DB logging."""
 
 from .config import (
-    BETTING_MODEL_SPECS,
     DEFAULT_KALSHI_BASE_URL,
     KALSHI_BASE_URL,
     KalshiConfig,
     LiveBettingSettings,
     MAX_SPREAD,
-    MODEL_CONFIGS,
-    PIPELINE_MODEL_SPECS,
-    get_pipeline_config,
     load_live_betting_dotenv,
 )
-from .hook import LiveBettingHook
-from .strategy import compute_bet
+from .engine import BetResult, BettingEngine
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy
 
 __all__ = [
-    "MODEL_CONFIGS",
+    # Engine
+    "BettingEngine",
+    "BetResult",
+    # Strategy
+    "BettingStrategy",
+    "DefaultBettingStrategy",
+    "BetSignal",
+    # Config
     "MAX_SPREAD",
     "DEFAULT_KALSHI_BASE_URL",
     "KALSHI_BASE_URL",
-    "PIPELINE_MODEL_SPECS",
-    "BETTING_MODEL_SPECS",
     "KalshiConfig",
     "LiveBettingSettings",
     "load_live_betting_dotenv",
-    "get_pipeline_config",
-    "compute_bet",
-    "LiveBettingHook",
 ]
