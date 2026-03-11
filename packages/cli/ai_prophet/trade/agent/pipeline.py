@@ -17,6 +17,7 @@ from ai_prophet.trade.search import SearchClient
 
 from .stages import (
     ActionStage,
+    BellwetherStage,
     ForecastStage,
     PipelineStage,
     ReviewStage,
@@ -85,6 +86,7 @@ class AgentPipeline:
         self.api_client = api_client
         self.config = config or {}
         self.search_client: SearchClient | None = None
+        self.bellwether_client = None
 
         runtime_config = client_config or ClientConfig.get()
 
@@ -110,6 +112,10 @@ class AgentPipeline:
         # Optional callback fired after forecast stage with per-market results
         self.on_forecast: Callable[..., None] | None = self.config.get("on_forecast")
 
+        # Optional Bellwether client for cross-platform enrichment
+        bellwether_client = self.config.get("bellwether_client")
+        self.bellwether_client = bellwether_client
+
         # Initialize stages
         self.stages: list[PipelineStage] = [
             ReviewStage(
@@ -122,6 +128,25 @@ class AgentPipeline:
                 max_queries_per_market=max_queries,
                 max_results_per_query=max_results,
             ),
+        ]
+
+        # Insert Bellwether stage between SEARCH and FORECAST when client is available
+        if bellwether_client is not None:
+            min_sim = self.config.get(
+                "bellwether_min_title_similarity",
+                runtime_config.bellwether.min_title_similarity,
+            )
+            self.stages.append(
+                BellwetherStage(
+                    bellwether_client=bellwether_client,
+                    min_title_similarity=min_sim,
+                )
+            )
+            logger.info("Bellwether enrichment enabled")
+        else:
+            logger.info("Bellwether enrichment disabled (no bellwether_client provided)")
+
+        self.stages.extend([
             ForecastStage(
                 llm_client=llm_client,
             ),
@@ -129,7 +154,7 @@ class AgentPipeline:
                 llm_client=llm_client,
                 min_size_usd=min_size,
             ),
-        ]
+        ])
         logger.debug(f"Initialized {len(self.stages)} pipeline stages: {[s.name for s in self.stages]}")
 
     def execute(
@@ -244,6 +269,12 @@ class AgentPipeline:
             pass
         try:
             close = getattr(self.search_client, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+        try:
+            close = getattr(self.bellwether_client, "close", None)
             if callable(close):
                 close()
         except Exception:
@@ -398,6 +429,10 @@ def _extract_reasoning(
             mid: {"summary": s.get("summary", "")}
             for mid, s in search.data.get("summaries", {}).items()
         }
+
+    bellwether = stage_results.get("bellwether")
+    if bellwether and bellwether.success:
+        reasoning["bellwether"] = bellwether.data.get("enrichments", {})
 
     forecast = stage_results.get("forecast")
     if forecast and forecast.success:

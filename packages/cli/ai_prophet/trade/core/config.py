@@ -72,6 +72,16 @@ class MemoryConfig:
 
 
 @dataclass
+class BellwetherConfig:
+    """Bellwether cross-platform data configuration."""
+    base_url: str = "https://bellwether.live"
+    timeout: int = 10
+    max_retries: int = 2
+    retry_backoff: float = 0.5
+    min_title_similarity: float = 0.4
+
+
+@dataclass
 class ClientConfig:
     """Full client configuration."""
     search: SearchConfig = field(default_factory=SearchConfig)
@@ -80,6 +90,7 @@ class ClientConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
+    bellwether: BellwetherConfig = field(default_factory=BellwetherConfig)
 
     # Singleton instance (class-level, not per-instance)
     _instance: ClassVar[ClientConfig | None] = None
@@ -95,6 +106,7 @@ class ClientConfig:
             server=ServerConfig(**config_data.get("server", {})),
             memory=MemoryConfig(**config_data.get("memory", {})),
             benchmark=BenchmarkConfig(**config_data.get("benchmark", {})),
+            bellwether=BellwetherConfig(**config_data.get("bellwether", {})),
         )
 
     @classmethod

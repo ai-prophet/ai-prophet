@@ -44,6 +44,7 @@ class Credentials:
     gemini_api_key: str | None = None
     xai_api_key: str | None = None
     brave_api_key: str | None = None
+    bellwether_api_key: str | None = None
     verbose: bool = False
 
     @classmethod
@@ -63,6 +64,7 @@ class Credentials:
             gemini_api_key=(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
             xai_api_key=os.getenv("XAI_API_KEY"),
             brave_api_key=os.getenv("BRAVE_API_KEY"),
+            bellwether_api_key=os.getenv("BELLWETHER_API_KEY"),
             verbose=os.getenv("PA_VERBOSE", "").lower() in ("true", "1", "yes"),
         )
 
@@ -118,6 +120,7 @@ class Credentials:
             f"gemini={_mask(self.gemini_api_key)}, "
             f"xai={_mask(self.xai_api_key)}, "
             f"brave={_mask(self.brave_api_key)}, "
+            f"bellwether={_mask(self.bellwether_api_key)}, "
             f"verbose={self.verbose})"
         )
 

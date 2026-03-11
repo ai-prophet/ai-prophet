@@ -40,3 +40,10 @@ benchmark:
   deadline_buffer_seconds: 180
   result_timeout_seconds: 300
   process_join_timeout: 10
+
+bellwether:
+  base_url: "https://bellwether.live"
+  timeout: 10
+  max_retries: 2
+  retry_backoff: 0.5
+  min_title_similarity: 0.4

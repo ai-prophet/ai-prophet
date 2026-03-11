@@ -27,6 +27,8 @@ from ai_prophet.trade.llm import create_llm_client
 from ai_prophet.trade.runner import ExperimentRunner, compute_config_hash
 from ai_prophet.trade.search import SearchClient
 
+from ai_prophet_core.bellwether_client import BellwetherClient
+
 logger = logging.getLogger(__name__)
 
 
@@ -282,10 +284,23 @@ def _make_pipeline_builder(
                 api_key=creds.brave_api_key,
                 config=client_config.search,
             )
+
+        bellwether_client = None
+        if creds.bellwether_api_key:
+            bw_cfg = client_config.bellwether
+            bellwether_client = BellwetherClient(
+                base_url=bw_cfg.base_url,
+                timeout=bw_cfg.timeout,
+                max_retries=bw_cfg.max_retries,
+                retry_backoff=bw_cfg.retry_backoff,
+                api_key=creds.bellwether_api_key,
+            )
+
         api_client = ServerAPIClient(base_url=api_url)
 
         pipeline_config: dict = {
             "search_client": search_client,
+            "bellwether_client": bellwether_client,
             "max_queries_per_market": client_config.search.max_queries_per_market,
             "max_results_per_query": client_config.search.max_results_per_query,
             "max_markets": client_config.pipeline.max_markets,

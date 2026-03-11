@@ -65,6 +65,15 @@ from .models import (
     TradeIntent,
     TradeSide,
 )
+from .bellwether_client import BellwetherAPIError, BellwetherClient
+from .bellwether_models import (
+    BellwetherEventMetrics,
+    BellwetherPlatformPrices,
+    BellwetherRobustness,
+    BellwetherSearchResponse,
+    BellwetherSearchResult,
+    BellwetherVWAPDetails,
+)
 from .schemas import SchemaLoader, get_loader, is_valid_schema, validate_schema
 from .time import get_current_tick, get_next_tick, get_previous_tick, is_tick_boundary, normalize_tick
 
@@ -133,4 +142,12 @@ __all__ = [
     "is_valid_schema",
     "SchemaLoader",
     "get_loader",
+    "BellwetherClient",
+    "BellwetherAPIError",
+    "BellwetherSearchResult",
+    "BellwetherSearchResponse",
+    "BellwetherPlatformPrices",
+    "BellwetherRobustness",
+    "BellwetherVWAPDetails",
+    "BellwetherEventMetrics",
 ]

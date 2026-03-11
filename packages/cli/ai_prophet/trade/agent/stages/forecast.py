@@ -97,6 +97,12 @@ class ForecastStage(PipelineStage):
                 data={"forecasts": {}},
             )
 
+        # Collect Bellwether enrichments if available
+        bellwether_enrichments: dict[str, Any] = {}
+        bellwether_result = previous_results.get("bellwether")
+        if bellwether_result and bellwether_result.success:
+            bellwether_enrichments = bellwether_result.data.get("enrichments", {})
+
         # Generate forecasts for each market
         forecasts: dict[str, dict[str, Any]] = {}
 
@@ -105,7 +111,8 @@ class ForecastStage(PipelineStage):
 
             try:
                 # Generate probability forecast
-                forecast = self._generate_forecast(market_id, summary, tick_ctx)
+                bw_data = bellwether_enrichments.get(market_id)
+                forecast = self._generate_forecast(market_id, summary, tick_ctx, bellwether_data=bw_data)
 
                 # Normalize obvious LLM misformats before validation.
                 if "p_yes" in forecast:
@@ -142,6 +149,7 @@ class ForecastStage(PipelineStage):
         market_id: str,
         summary: dict[str, Any],
         tick_ctx: TickContext,
+        bellwether_data: dict[str, Any] | None = None,
     ) -> dict:
         """Generate probability forecast for a market using tool calling.
 
@@ -170,14 +178,39 @@ class ForecastStage(PipelineStage):
         key_points = "\n".join([f"- {kp}" for kp in summary.get("key_points", [])])
         open_questions = summary.get("open_questions", [])
         open_questions_text = "\n".join([f"- {q}" for q in open_questions]) if open_questions else "None identified"
+        # Build cross-platform data block from Bellwether
+        bellwether_block = ""
+        if bellwether_data:
+            lines = ["CROSS-PLATFORM DATA (Bellwether):"]
+            bw_price = bellwether_data.get("bellwether_price")
+            if bw_price is not None:
+                lines.append(f"- VWAP Price: {bw_price:.0%}")
+            poly = bellwether_data.get("polymarket_price")
+            kalshi = bellwether_data.get("kalshi_price")
+            if poly is not None or kalshi is not None:
+                parts = []
+                if poly is not None:
+                    parts.append(f"Polymarket: {poly:.0%}")
+                if kalshi is not None:
+                    parts.append(f"Kalshi: {kalshi:.0%}")
+                lines.append(f"- {', '.join(parts)}")
+            reportability = bellwether_data.get("reportability")
+            if reportability:
+                lines.append(f"- Reportability: {reportability}")
+            cost = bellwether_data.get("cost_to_move_5c")
+            if cost is not None:
+                lines.append(f"- Cost to move 5c: ${cost:,.0f}")
+            bellwether_block = "\n" + "\n".join(lines) + "\n"
+
         memory_by_market = getattr(tick_ctx, "memory_by_market", None) or {}
         market_memory = memory_by_market.get(market_id, "")
         memory_block = f"\n\nRECENT MEMORY:\n{market_memory}" if market_memory else ""
         logger.info(
-            "Forecast prompt market_id=%s memory_in_prompt=%s memory_chars=%d",
+            "Forecast prompt market_id=%s memory_in_prompt=%s memory_chars=%d bellwether=%s",
             market_id,
             bool(memory_block),
             len(market_memory),
+            bool(bellwether_block),
         )
 
         system_prompt = """You are an expert forecaster specialized in calibrated probability estimation.
@@ -217,7 +250,7 @@ KEY POINTS:
 
 OPEN QUESTIONS/UNCERTAINTIES:
 {open_questions_text}
-
+{bellwether_block}
 Based on this research, what is your probability estimate that this event resolves YES?
 Think carefully about base rates and calibration.{memory_block}"""
 
