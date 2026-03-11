@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -10,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from ai_prophet_core.client import ServerAPIClient
+from miniprophet.eval.types import ForecastResult
 
 from ai_prophet.trade.agent import AgentPipeline
 from ai_prophet.trade.core import ClientDatabase, EventStore, TickContext
@@ -17,7 +17,6 @@ from ai_prophet.trade.core.config import ClientConfig, MiniProphetConfig
 from ai_prophet.trade.core.event_store import EventType
 from ai_prophet.trade.core.tick_context import CandidateMarket
 from ai_prophet.trade.llm import LLMClient
-from ai_prophet.trade.llm.base import LLMResponse
 
 
 def _make_tick_context(run_id: str, tick_ts: datetime) -> TickContext:
@@ -53,17 +52,10 @@ def _make_tick_context(run_id: str, tick_ts: datetime) -> TickContext:
 
 
 def _make_llm_client() -> Mock:
-    """Create a mock LLM client that handles both legacy and mini-prophet flows.
-
-    For the mini-prophet path, ``generate()`` is used (via the bridge).
-    For review/action stages, ``generate_json()`` is used (via tool calling).
-    """
+    """Create a mock LLM client for review/action stages."""
     client = Mock(spec=LLMClient)
     client.provider = "mock"
     client.model = "mock-model"
-
-    # Track how many generate() calls have been made to simulate the agent loop
-    call_counter = {"n": 0}
 
     def _generate_json(messages, tool=None, **kwargs):
         tool_name = getattr(tool, "name", None)
@@ -86,33 +78,25 @@ def _make_llm_client() -> Mock:
             }
         raise AssertionError(f"Unexpected tool call: {tool_name}")
 
-    def _generate(request):
-        """Simulate the agent loop: first call does submit."""
-        call_counter["n"] += 1
-        # On the first agent generate() call, submit the forecast
-        return LLMResponse(
-            content="",
-            model="mock-model",
-            prompt_tokens=100,
-            completion_tokens=50,
-            total_tokens=150,
-            finish_reason="tool_use",
-            tool_output=None,
-            tool_calls=[
-                {
-                    "name": "submit",
-                    "arguments": {
-                        "probabilities": {"Yes": 0.72, "No": 0.28},
-                        "rationale": "Mock forecast: evidence supports Yes.",
-                    },
-                    "id": f"call_{call_counter['n']}",
-                },
-            ],
-        )
-
     client.generate_json = Mock(side_effect=_generate_json)
-    client.generate = Mock(side_effect=_generate)
     return client
+
+
+def _mock_batch_forecast(problems, **kwargs):
+    """Mock batch_forecast that populates rationale_store and returns results."""
+    rationale_store = kwargs.get("agent_kwargs", {}).get("rationale_store", {})
+    results = []
+    for p in problems:
+        rationale_store[p.title] = "Mock: evidence supports Yes."
+        results.append(
+            ForecastResult(
+                task_id=p.task_id,
+                title=p.title,
+                status="submitted",
+                submission={"Yes": 0.72, "No": 0.28},
+            )
+        )
+    return results
 
 
 def test_mini_prophet_pipeline_produces_trade_intent():
@@ -130,7 +114,6 @@ def test_mini_prophet_pipeline_produces_trade_intent():
         api_client.base_url = "http://test.example.com"
         llm_client = _make_llm_client()
 
-        # Build a config with mini_prophet enabled
         ClientConfig.reset()
         config = ClientConfig.defaults()
         config.mini_prophet = MiniProphetConfig(
@@ -154,14 +137,9 @@ def test_mini_prophet_pipeline_produces_trade_intent():
 
         tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
 
-        # Patch the actual agent run to avoid needing exa-py / real search
-        with patch.object(
-            pipeline.stages[1],
-            "_run_agent_for_market",
-            return_value=(
-                {"submission": {"Yes": 0.72, "No": 0.28}},
-                "Mock: evidence supports Yes.",
-            ),
+        with patch(
+            "ai_prophet.trade.agent.mini_prophet.stage.batch_forecast",
+            side_effect=_mock_batch_forecast,
         ):
             result = pipeline.execute(tick_ctx, run_id=run_id)
 
@@ -171,7 +149,6 @@ def test_mini_prophet_pipeline_produces_trade_intent():
         assert intent["action"] == "BUY"
         assert intent["side"] == "YES"
 
-        # Clean up singleton
         ClientConfig.reset()
 
 
@@ -203,13 +180,24 @@ def test_mini_prophet_pipeline_event_store_logging():
 
         tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
 
-        with patch.object(
-            pipeline.stages[1],
-            "_run_agent_for_market",
-            return_value=(
-                {"submission": {"Yes": 0.65, "No": 0.35}},
-                "Moderate evidence for Yes.",
-            ),
+        def _mock_with_different_prob(problems, **kwargs):
+            rs = kwargs.get("agent_kwargs", {}).get("rationale_store", {})
+            results = []
+            for p in problems:
+                rs[p.title] = "Moderate evidence for Yes."
+                results.append(
+                    ForecastResult(
+                        task_id=p.task_id,
+                        title=p.title,
+                        status="submitted",
+                        submission={"Yes": 0.65, "No": 0.35},
+                    )
+                )
+            return results
+
+        with patch(
+            "ai_prophet.trade.agent.mini_prophet.stage.batch_forecast",
+            side_effect=_mock_with_different_prob,
         ):
             pipeline.execute(tick_ctx, run_id=run_id)
 

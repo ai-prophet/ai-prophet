@@ -88,31 +88,96 @@ class OpenAIClient(LLMClient):
             timeout=120.0,
         )
 
-    def _add_additional_properties(self, schema: dict) -> dict:
-        """Recursively add additionalProperties: false to all object schemas.
+    @staticmethod
+    def _convert_chat_to_responses(raw_messages: list[dict]) -> list[dict]:
+        """Convert Chat Completions format messages to Responses API format.
 
-        GPT-5 strict mode requires this on all object definitions.
+        Chat Completions uses:
+          - assistant messages with ``tool_calls`` list
+          - ``{"role": "tool", "tool_call_id": "...", "content": "..."}``
+
+        Responses API uses:
+          - ``{"type": "function_call", "call_id": "...", "name": "...", "arguments": "..."}``
+          - ``{"type": "function_call_output", "call_id": "...", "output": "..."}``
+        """
+        # First pass: collect all call_ids from assistant tool_calls
+        known_call_ids: set[str] = set()
+        for msg in raw_messages:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    cid = tc.get("id", "")
+                    if cid:
+                        known_call_ids.add(cid)
+
+        # Second pass: convert, dropping orphaned tool results
+        items: list[dict] = []
+        extra_keys = {"extra"}  # mini-prophet attaches this
+
+        for msg in raw_messages:
+            role = msg.get("role", "")
+
+            if role == "tool":
+                call_id = msg.get("tool_call_id", "")
+                if call_id not in known_call_ids:
+                    # Orphaned tool result (its assistant message was
+                    # truncated by the context manager) — skip it.
+                    continue
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": msg.get("content", ""),
+                })
+
+            elif role == "assistant" and msg.get("tool_calls"):
+                content = msg.get("content")
+                if content:
+                    items.append({"role": "assistant", "content": content})
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    items.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id", ""),
+                        "name": func.get("name", ""),
+                        "arguments": func.get("arguments", "{}"),
+                    })
+
+            else:
+                items.append({
+                    k: v for k, v in msg.items() if k not in extra_keys
+                })
+
+        return items
+
+    def _enforce_strict_schema(self, schema: dict) -> dict:
+        """Recursively enforce GPT-5 strict mode requirements on JSON schemas.
+
+        Strict mode requires:
+        - ``additionalProperties: false`` on all object schemas
+        - ``required`` must list every key in ``properties``
         """
         if not isinstance(schema, dict):
             return schema
 
         result = dict(schema)
 
-        # If this is an object schema, add additionalProperties: false
         if result.get("type") == "object":
             if "additionalProperties" not in result:
                 result["additionalProperties"] = False
 
+            # Strict mode: required must include every property key
+            if "properties" in result:
+                result["required"] = sorted(result["properties"].keys())
+
         # Recursively process properties
         if "properties" in result:
             result["properties"] = {
-                k: self._add_additional_properties(v)
+                k: self._enforce_strict_schema(v)
                 for k, v in result["properties"].items()
             }
 
         # Recursively process items (for arrays)
         if "items" in result:
-            result["items"] = self._add_additional_properties(result["items"])
+            result["items"] = self._enforce_strict_schema(result["items"])
 
         return result
 
@@ -132,11 +197,9 @@ class OpenAIClient(LLMClient):
 
         # Build request body for Responses API
         if request.raw_messages is not None:
-            # raw_messages are in OpenAI format — use directly, stripping extra keys
-            input_messages = [
-                {k: v for k, v in msg.items() if k != "extra"}
-                for msg in request.raw_messages
-            ]
+            # raw_messages are in Chat Completions format — convert to
+            # Responses API format (function_call / function_call_output items)
+            input_messages = self._convert_chat_to_responses(request.raw_messages)
         else:
             input_messages = [
                 {"role": msg.role, "content": msg.content}
@@ -160,20 +223,21 @@ class OpenAIClient(LLMClient):
 
         # Tool preparation
         if request.tools:
+            # Multi-tool choice (mini-prophet bridge) — no strict mode because
+            # external tool schemas may use bare objects, optional properties, etc.
             body["tools"] = [
                 {
                     "type": "function",
                     "name": t.name,
                     "description": t.description,
-                    "parameters": self._add_additional_properties(dict(t.parameters)),
-                    "strict": True,
+                    "parameters": dict(t.parameters),
                 }
                 for t in request.tools
             ]
             # No tool_choice — let model choose
         elif request.tool:
             # Recursively add additionalProperties: false to all object schemas for strict mode
-            params = self._add_additional_properties(dict(request.tool.parameters))
+            params = self._enforce_strict_schema(dict(request.tool.parameters))
 
             body["tools"] = [{
                 "type": "function",

@@ -83,6 +83,19 @@ def review_result():
     )
 
 
+def _make_forecast_result(submission=None, status="submitted", error=None):
+    """Helper to build a mock ForecastResult."""
+    from miniprophet.eval.types import ForecastResult
+
+    return ForecastResult(
+        task_id="market_123",
+        title="Will it rain tomorrow?",
+        status=status,
+        submission=submission,
+        error=error,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -110,17 +123,23 @@ class TestMiniProphetForecastStage:
         result = stage.execute(tick_ctx, {"review": bad_review})
         assert result.success is False
 
-    @patch(
-        "ai_prophet.trade.agent.mini_prophet.stage.MiniProphetForecastStage._run_agent_for_market"
-    )
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
     def test_produces_forecast_format(
-        self, mock_run, stage, tick_ctx, review_result
+        self, mock_batch, stage, tick_ctx, review_result
     ):
         """Verify output has the expected {p_yes, rationale} shape."""
-        mock_run.return_value = (
-            {"submission": {"Yes": 0.72, "No": 0.28}},
-            "Evidence strongly favors Yes.",
-        )
+        mock_batch.return_value = [
+            _make_forecast_result(submission={"Yes": 0.72, "No": 0.28}),
+        ]
+
+        # Simulate rationale_store being populated by the agent
+        def side_effect(problems, **kwargs):
+            kwargs["agent_kwargs"]["rationale_store"]["Will it rain tomorrow?"] = (
+                "Evidence strongly favors Yes."
+            )
+            return mock_batch.return_value
+
+        mock_batch.side_effect = side_effect
 
         result = stage.execute(tick_ctx, {"review": review_result})
 
@@ -130,30 +149,32 @@ class TestMiniProphetForecastStage:
         assert forecasts["market_123"]["p_yes"] == 0.72
         assert "Evidence strongly favors" in forecasts["market_123"]["rationale"]
 
-    @patch(
-        "ai_prophet.trade.agent.mini_prophet.stage.MiniProphetForecastStage._run_agent_for_market"
-    )
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
     def test_handles_agent_error_gracefully(
-        self, mock_run, stage, tick_ctx, review_result
+        self, mock_batch, stage, tick_ctx, review_result
     ):
-        """When the agent raises, fallback to market price."""
-        mock_run.side_effect = RuntimeError("Agent crashed")
+        """When the agent fails, fallback to market price."""
+        mock_batch.return_value = [
+            _make_forecast_result(
+                submission=None, status="RuntimeError", error="Agent crashed"
+            ),
+        ]
 
         result = stage.execute(tick_ctx, {"review": review_result})
 
         assert result.success is True
         forecasts = result.data["forecasts"]
         assert forecasts["market_123"]["p_yes"] == 0.50  # market.yes_mark
-        assert "Agent error" in forecasts["market_123"]["rationale"]
+        assert "Agent status" in forecasts["market_123"]["rationale"]
 
-    @patch(
-        "ai_prophet.trade.agent.mini_prophet.stage.MiniProphetForecastStage._run_agent_for_market"
-    )
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
     def test_handles_missing_submission(
-        self, mock_run, stage, tick_ctx, review_result
+        self, mock_batch, stage, tick_ctx, review_result
     ):
-        """When agent returns empty result (limits exceeded), use default."""
-        mock_run.return_value = ({}, "")
+        """When agent returns no submission (limits exceeded), use default."""
+        mock_batch.return_value = [
+            _make_forecast_result(submission={}, status="limits_exceeded"),
+        ]
 
         result = stage.execute(tick_ctx, {"review": review_result})
 
