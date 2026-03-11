@@ -9,7 +9,7 @@ from .config import (
     load_live_betting_dotenv,
 )
 from .engine import BetResult, BettingEngine
-from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot
 
 __all__ = [
     # Engine
@@ -19,6 +19,7 @@ __all__ = [
     "BettingStrategy",
     "DefaultBettingStrategy",
     "BetSignal",
+    "PortfolioSnapshot",
     # Config
     "MAX_SPREAD",
     "DEFAULT_KALSHI_BASE_URL",

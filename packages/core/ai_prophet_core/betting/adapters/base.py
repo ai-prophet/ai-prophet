@@ -81,6 +81,10 @@ class ExchangeAdapter(ABC):
     def get_balance(self) -> Decimal:
         ...
 
+    def get_order(self, exchange_order_id: str) -> OrderResult | None:
+        """Poll for current order status. Override in subclasses that support it."""
+        return None
+
     def validate_order(self, request: OrderRequest) -> str | None:
         if request.shares <= 0:
             return "Shares must be positive"

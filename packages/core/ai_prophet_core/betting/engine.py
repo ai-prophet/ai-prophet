@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,8 +31,8 @@ from typing import Any
 
 from sqlalchemy.engine import Engine
 
-from .config import KalshiConfig
-from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy
+from .config import MAX_MARKETS_PER_TICK, KalshiConfig
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,12 @@ class BettingEngine:
         dry_run: bool = True,
         kalshi_config: KalshiConfig | None = None,
         enabled: bool = True,
+        max_markets_per_tick: int = MAX_MARKETS_PER_TICK,
     ) -> None:
         self.strategy = strategy or DefaultBettingStrategy()
         self.dry_run = dry_run
         self.enabled = enabled
+        self.max_markets_per_tick = max_markets_per_tick
         self._engine = db_engine
         self._kalshi_config = kalshi_config or KalshiConfig.from_env()
         self._adapter = None
@@ -104,6 +107,7 @@ class BettingEngine:
         forecasts: dict[str, float],
         market_prices: dict[str, tuple[float, float]],
         source: str = "",
+        portfolio: PortfolioSnapshot | None = None,
     ) -> list[BetResult]:
         """Run the full predict → evaluate → place → log cycle.
 
@@ -112,6 +116,7 @@ class BettingEngine:
             forecasts: ``{market_id: p_yes}`` predictions.
             market_prices: ``{market_id: (yes_ask, no_ask)}`` live quotes.
             source: Identifier for the prediction source (model name, etc.).
+            portfolio: Optional portfolio snapshot for strategy context.
 
         Returns:
             A :class:`BetResult` for every market in *forecasts*.
@@ -119,7 +124,12 @@ class BettingEngine:
         if not self.enabled:
             return []
 
+        # Make portfolio context available to the strategy
+        self.strategy._portfolio = portfolio
+
         results: list[BetResult] = []
+        # Collect evaluated signals before placing orders (for cap enforcement)
+        pending_orders: list[tuple[str, float, float, BetSignal, int | None]] = []
 
         for market_id, p_yes in forecasts.items():
             prices = market_prices.get(market_id)
@@ -167,7 +177,30 @@ class BettingEngine:
                 signal.side.upper(), signal.shares, signal.price,
             )
 
-            # 4. Place order
+            pending_orders.append((market_id, p_yes, yes_ask, signal, signal_id))
+
+        # 4. Cap to max_markets_per_tick, keeping highest-edge signals
+        if len(pending_orders) > self.max_markets_per_tick:
+            logger.warning(
+                "[BETTING] %d signals exceed max_markets_per_tick=%d, "
+                "keeping top %d by edge",
+                len(pending_orders), self.max_markets_per_tick,
+                self.max_markets_per_tick,
+            )
+            pending_orders.sort(
+                key=lambda t: abs(t[1] - t[2]),  # abs(p_yes - yes_ask)
+                reverse=True,
+            )
+            dropped = pending_orders[self.max_markets_per_tick:]
+            pending_orders = pending_orders[:self.max_markets_per_tick]
+            for mid, _, _, sig, _ in dropped:
+                results.append(BetResult(
+                    market_id=mid, signal=sig, order_placed=False,
+                    error="Dropped: exceeded max_markets_per_tick",
+                ))
+
+        # 5. Place orders
+        for market_id, _p_yes, _, signal, signal_id in pending_orders:
             result = self._place_and_log_order(
                 tick_ts=tick_ts,
                 market_id=market_id,
@@ -187,6 +220,7 @@ class BettingEngine:
         no_ask: float,
         question: str = "",
         source: str = "",
+        portfolio: PortfolioSnapshot | None = None,
     ) -> BetResult | None:
         """Convenience method for single-market callback use.
 
@@ -203,6 +237,7 @@ class BettingEngine:
             forecasts={market_id: p_yes},
             market_prices={market_id: (yes_ask, no_ask)},
             source=source,
+            portfolio=portfolio,
         )
         return results[0] if results else None
 
@@ -247,10 +282,12 @@ class BettingEngine:
         from .adapters.base import OrderRequest
 
         ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
+
+        adapter = self._get_adapter()
+
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
 
-        adapter = self._get_adapter()
         order_id = str(uuid.uuid4())
 
         order_req = OrderRequest(
@@ -266,6 +303,18 @@ class BettingEngine:
 
         try:
             order_result = adapter.submit_order(order_req)
+
+            # Poll if order is resting/pending (live mode only)
+            from .adapters.base import OrderStatus
+            if (
+                order_result.status == OrderStatus.PENDING
+                and order_result.exchange_order_id
+                and not self.dry_run
+            ):
+                order_result = self._poll_order_status(
+                    adapter, order_result,
+                )
+
             status = order_result.status.value
             filled_shares = float(order_result.filled_shares)
             fill_price = float(order_result.fill_price)
@@ -309,6 +358,42 @@ class BettingEngine:
             exchange_order_id=exchange_oid,
             error=error,
         )
+
+    def _poll_order_status(
+        self,
+        adapter,
+        initial_result,
+        max_polls: int = 5,
+        interval_sec: float = 2.0,
+    ):
+        """Poll exchange for order fill status after a PENDING submission."""
+        from .adapters.base import OrderStatus
+
+        exchange_oid = initial_result.exchange_order_id
+        for attempt in range(max_polls):
+            time.sleep(interval_sec)
+            polled = adapter.get_order(exchange_oid)
+            if polled is None:
+                break
+            if polled.status in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELLED,
+                OrderStatus.REJECTED,
+            ):
+                # Preserve original order/intent IDs
+                polled.order_id = initial_result.order_id
+                polled.intent_id = initial_result.intent_id
+                return polled
+            logger.debug(
+                "[BETTING] Poll %d/%d for %s: still %s",
+                attempt + 1, max_polls, exchange_oid, polled.status.value,
+            )
+
+        logger.info(
+            "[BETTING] Order %s still pending after %d polls",
+            exchange_oid, max_polls,
+        )
+        return initial_result
 
     # ── DB persistence ────────────────────────────────────────────────
 

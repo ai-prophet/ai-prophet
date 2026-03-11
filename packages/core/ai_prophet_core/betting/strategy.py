@@ -10,7 +10,26 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any
+
 from .config import MAX_SPREAD
+
+
+@dataclass(frozen=True)
+class PortfolioSnapshot:
+    """Lightweight portfolio state available to strategies during evaluation.
+
+    The engine sets this on the strategy before calling :meth:`evaluate`,
+    so custom strategies can access it via ``self.portfolio``.
+    """
+
+    cash: Decimal = Decimal("0")
+    equity: Decimal = Decimal("0")
+    total_pnl: Decimal = Decimal("0")
+    position_count: int = 0
+    market_position_shares: Decimal = Decimal("0")
+    market_position_side: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +77,12 @@ class BettingStrategy(ABC):
     """
 
     name: str = "base"
+    _portfolio: PortfolioSnapshot | None = None
+
+    @property
+    def portfolio(self) -> PortfolioSnapshot | None:
+        """Current portfolio state, set by the engine before each evaluation."""
+        return self._portfolio
 
     @abstractmethod
     def evaluate(

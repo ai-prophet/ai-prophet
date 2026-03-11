@@ -294,10 +294,31 @@ def _make_pipeline_builder(
 
         # Wire betting engine as on_forecast callback for all participants
         if betting_engine is not None:
+            from ai_prophet_core.betting.strategy import PortfolioSnapshot
+
             def on_forecast_cb(
                 tick_ts, market_id, p_yes, yes_ask, no_ask, question,
+                cash=None, equity=None, total_pnl=None, positions=(),
                 _source=model_spec, _engine=betting_engine,
             ):
+                portfolio = None
+                if cash is not None:
+                    from decimal import Decimal
+                    mkt_pos_shares = Decimal("0")
+                    mkt_pos_side = None
+                    for pos in positions:
+                        if pos.market_id == market_id:
+                            mkt_pos_shares = pos.shares
+                            mkt_pos_side = pos.side
+                            break
+                    portfolio = PortfolioSnapshot(
+                        cash=cash,
+                        equity=equity,
+                        total_pnl=total_pnl,
+                        position_count=len(positions),
+                        market_position_shares=mkt_pos_shares,
+                        market_position_side=mkt_pos_side,
+                    )
                 _engine.on_forecast(
                     tick_ts=tick_ts,
                     market_id=market_id,
@@ -306,6 +327,7 @@ def _make_pipeline_builder(
                     no_ask=no_ask,
                     question=question,
                     source=_source,
+                    portfolio=portfolio,
                 )
 
             pipeline_config["on_forecast"] = on_forecast_cb

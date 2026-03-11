@@ -251,9 +251,12 @@ class KalshiAdapter(ExchangeAdapter):
             logger.error("KalshiAdapter: failed to fetch positions - %s", e)
             return []
 
-    def get_market(self, ticker: str) -> dict[str, Any] | None:
-        """Fetch a single market by ticker for live quotes."""
-        path = f"/trade-api/v2/markets/{ticker}"
+    def get_order(self, exchange_order_id: str) -> OrderResult | None:
+        """Poll Kalshi for the current status of an order."""
+        if self._dry_run:
+            return None
+
+        path = f"/trade-api/v2/portfolio/orders/{exchange_order_id}"
         headers = self._sign_request("GET", path)
 
         try:
@@ -264,9 +267,22 @@ class KalshiAdapter(ExchangeAdapter):
             )
             response.raise_for_status()
             data = response.json()
-            return data.get("market")
+            stub_request = OrderRequest(
+                order_id="poll",
+                intent_id="poll",
+                market_id="",
+                exchange_ticker="",
+                action="BUY",
+                side="YES",
+                shares=Decimal("1"),
+                limit_price=Decimal("0.50"),
+            )
+            return self._parse_order_response(stub_request, data)
         except requests.exceptions.RequestException as e:
-            logger.error("KalshiAdapter: failed to fetch market %s - %s", ticker, e)
+            logger.error(
+                "KalshiAdapter: failed to poll order %s - %s",
+                exchange_order_id, e,
+            )
             return None
 
     def close(self) -> None:
@@ -307,12 +323,10 @@ class KalshiAdapter(ExchangeAdapter):
 
         if kalshi_status in ("executed", "filled"):
             status = OrderStatus.FILLED
-        elif kalshi_status == "resting":
-            status = OrderStatus.FILLED
+        elif kalshi_status in ("resting", "pending"):
+            status = OrderStatus.PENDING
         elif kalshi_status == "canceled":
             status = OrderStatus.CANCELLED
-        elif kalshi_status == "pending":
-            status = OrderStatus.FILLED
         else:
             status = OrderStatus.REJECTED
 
@@ -334,6 +348,15 @@ class KalshiAdapter(ExchangeAdapter):
                 notional=notional,
                 fee=Decimal("0"),
                 filled_at=now,
+                exchange_order_id=exchange_order_id,
+                raw_response=data,
+            )
+
+        if status == OrderStatus.PENDING:
+            return OrderResult(
+                order_id=request.order_id,
+                intent_id=request.intent_id,
+                status=status,
                 exchange_order_id=exchange_order_id,
                 raw_response=data,
             )

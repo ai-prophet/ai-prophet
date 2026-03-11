@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 
 MAX_SPREAD = 1.03
 
+# Maximum number of markets to place orders on per tick.
+# Change this to limit how many bets the engine places in a single tick.
+MAX_MARKETS_PER_TICK = 10
+
 DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com"
 KALSHI_BASE_URL = DEFAULT_KALSHI_BASE_URL
 

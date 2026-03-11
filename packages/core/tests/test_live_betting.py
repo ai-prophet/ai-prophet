@@ -19,6 +19,7 @@ from ai_prophet_core.betting.strategy import (
     BetSignal,
     BettingStrategy,
     DefaultBettingStrategy,
+    PortfolioSnapshot,
 )
 
 
@@ -322,3 +323,184 @@ def test_kalshi_adapter_http_error_returns_rejected(monkeypatch):
     result = adapter.submit_order(_make_order())
     assert result.status == OrderStatus.REJECTED
     assert "Kalshi API error 503" in (result.rejection_reason or "")
+
+
+# ── New tests: order status fix ────────────────────────────────────
+
+
+def test_parse_order_resting_returns_pending():
+    """Resting orders should map to PENDING, not FILLED."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {"order": {"status": "resting", "order_id": "ex-123"}}
+    result = adapter._parse_order_response(_make_order(), data)
+    assert result.status == OrderStatus.PENDING
+    assert result.exchange_order_id == "ex-123"
+    assert result.filled_shares == Decimal("0")
+
+
+def test_parse_order_pending_returns_pending():
+    """Pending orders should map to PENDING, not FILLED."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {"order": {"status": "pending", "order_id": "ex-456"}}
+    result = adapter._parse_order_response(_make_order(), data)
+    assert result.status == OrderStatus.PENDING
+    assert result.filled_shares == Decimal("0")
+
+
+def test_poll_order_fills_after_retries(monkeypatch):
+    """Engine should poll pending orders and detect fill."""
+    engine = BettingEngine(db_engine=None, dry_run=False, enabled=True)
+
+    # submit_order returns PENDING
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.PENDING,
+        filled_shares=Decimal("0"),
+        fill_price=Decimal("0"),
+        exchange_order_id="ex-789",
+        rejection_reason=None,
+    )
+    # get_order returns PENDING once, then FILLED
+    poll_results = [
+        Mock(
+            status=OrderStatus.PENDING,
+            filled_shares=Decimal("0"),
+            fill_price=Decimal("0"),
+            exchange_order_id="ex-789",
+            order_id="poll",
+            intent_id="poll",
+        ),
+        Mock(
+            status=OrderStatus.FILLED,
+            filled_shares=Decimal("3"),
+            fill_price=Decimal("0.55"),
+            exchange_order_id="ex-789",
+            order_id="poll",
+            intent_id="poll",
+            rejection_reason=None,
+        ),
+    ]
+    mock_adapter.get_order.side_effect = poll_results
+    mock_adapter.get_market.return_value = None
+    engine._adapter = mock_adapter
+
+    # Patch sleep to avoid real delays
+    monkeypatch.setattr("ai_prophet_core.betting.engine.time.sleep", lambda _: None)
+
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
+    )
+
+    assert len(results) == 1
+    assert results[0].status == "FILLED"
+    assert mock_adapter.get_order.call_count == 2
+
+
+# ── New tests: portfolio context ───────────────────────────────────
+
+
+def test_strategy_receives_portfolio():
+    """Custom strategy can access portfolio context via self.portfolio."""
+    captured = {}
+
+    class PortfolioAwareStrategy(BettingStrategy):
+        name = "portfolio-aware"
+
+        def evaluate(self, market_id, p_yes, yes_ask, no_ask):
+            captured["portfolio"] = self.portfolio
+            return BetSignal(side="yes", shares=0.1, price=yes_ask, cost=0.1 * yes_ask)
+
+    engine = BettingEngine(
+        strategy=PortfolioAwareStrategy(),
+        db_engine=None,
+        dry_run=True,
+        enabled=True,
+    )
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("10"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-123",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    portfolio = PortfolioSnapshot(
+        cash=Decimal("500"),
+        equity=Decimal("1000"),
+        total_pnl=Decimal("50"),
+        position_count=3,
+    )
+
+    engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
+        portfolio=portfolio,
+    )
+
+    assert captured["portfolio"] is not None
+    assert captured["portfolio"].cash == Decimal("500")
+    assert captured["portfolio"].position_count == 3
+
+
+# ── New tests: max markets per tick ────────────────────────────────
+
+
+def test_max_markets_per_tick_caps_orders():
+    """When more signals than max, only top-edge ones are placed."""
+
+    class AlwaysBet(BettingStrategy):
+        name = "always-bet"
+
+        def evaluate(self, market_id, p_yes, yes_ask, no_ask):
+            return BetSignal(
+                side="yes", shares=0.1, price=yes_ask, cost=0.1 * yes_ask,
+            )
+
+    engine = BettingEngine(
+        strategy=AlwaysBet(),
+        db_engine=None,
+        dry_run=True,
+        enabled=True,
+        max_markets_per_tick=2,
+    )
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("10"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-123",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    forecasts = {
+        "kalshi:MKT-A": 0.72,  # edge = |0.72 - 0.55| = 0.17
+        "kalshi:MKT-B": 0.90,  # edge = |0.90 - 0.55| = 0.35 (biggest)
+        "kalshi:MKT-C": 0.60,  # edge = |0.60 - 0.55| = 0.05 (smallest)
+    }
+    prices = {
+        "kalshi:MKT-A": (0.55, 0.45),
+        "kalshi:MKT-B": (0.55, 0.45),
+        "kalshi:MKT-C": (0.55, 0.45),
+    }
+
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts=forecasts,
+        market_prices=prices,
+        source="test-model",
+    )
+
+    placed = [r for r in results if r.order_placed]
+    dropped = [r for r in results if not r.order_placed and r.signal is not None]
+
+    assert len(placed) == 2
+    assert len(dropped) == 1
+    assert mock_adapter.submit_order.call_count == 2

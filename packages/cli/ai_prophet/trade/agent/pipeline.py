@@ -276,6 +276,10 @@ class AgentPipeline:
                     yes_ask=market_info.yes_ask,
                     no_ask=market_info.no_ask,
                     question=market_info.question,
+                    cash=tick_ctx.cash,
+                    equity=tick_ctx.equity,
+                    total_pnl=tick_ctx.total_pnl,
+                    positions=tick_ctx.positions,
                 )
             except Exception as e:
                 logger.warning(f"on_forecast hook error for {market_id}: {e}")
