@@ -169,7 +169,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
 
     click.echo()
 
-    hook = _get_shared_live_hook(model_configs)
+    engine = _get_betting_engine()
 
     runner = ExperimentRunner(
         api_url=api_url,
@@ -179,9 +179,9 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
         n_ticks=max_ticks,
         starting_cash=starting_cash,
         trace_dir=trace_path,
-        build_pipeline=_make_pipeline_builder(creds, client_config, verbose, api_url),
+        build_pipeline=_make_pipeline_builder(creds, client_config, verbose, api_url, engine),
         publish_reasoning=publish_reasoning,
-        live_betting_hook=hook,
+        betting_engine=engine,
         client_config=client_config,
         memory_dir=Path(os.environ.get("PA_MEMORY_DIR", "~/.pa_memory")).expanduser(),
         memory_max_rows=int(os.environ.get("PA_MEMORY_MAX_ROWS", "1000")),
@@ -208,66 +208,42 @@ def eval_run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publ
     _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose)
 
 
-_live_hook_holder: dict = {}
+_engine_holder: dict = {}
 
-def _get_shared_live_hook(model_configs: list[dict] | None = None):
-    """Create or return the shared LiveBettingHook.
-
-    Args:
-        model_configs: List of participant model config dicts from the experiment.
-            Used to filter BETTING_MODEL_SPECS to only models actually running.
-    """
-    if "hook" in _live_hook_holder:
-        return _live_hook_holder["hook"]
+def _get_betting_engine():
+    """Create or return the shared BettingEngine."""
+    if "engine" in _engine_holder:
+        return _engine_holder["engine"]
 
     try:
-        from ai_prophet_core.betting.config import BETTING_MODEL_SPECS, LiveBettingSettings
+        from ai_prophet_core.betting import BettingEngine, LiveBettingSettings
         from ai_prophet_core.betting.db import create_db_engine
-        from ai_prophet_core.betting.hook import LiveBettingHook
 
         settings = LiveBettingSettings.from_env()
 
         if not settings.enabled:
-            click.echo("[LIVE BETTING] Hook DISABLED (LIVE_BETTING_ENABLED=false)")
-            _live_hook_holder["hook"] = None
+            click.echo("[BETTING] Engine DISABLED (LIVE_BETTING_ENABLED=false)")
+            _engine_holder["engine"] = None
             return None
 
-        # Only count betting models that are actually in this experiment
-        if model_configs:
-            experiment_models = {cfg["model"] for cfg in model_configs}
-            active_betting_models = [
-                m for m in BETTING_MODEL_SPECS if m in experiment_models
-            ]
-        else:
-            active_betting_models = BETTING_MODEL_SPECS
-
-        if not active_betting_models:
-            click.echo("[LIVE BETTING] Hook DISABLED — no betting models in experiment")
-            _live_hook_holder["hook"] = None
-            return None
-
-        click.echo(
-            f"[LIVE BETTING] Hook ENABLED — dry_run={settings.dry_run}, "
-            f"models={active_betting_models} ({len(active_betting_models)} of {len(BETTING_MODEL_SPECS)} configured)"
-        )
-
-        # Use the same DATABASE_URL as the core_api / benchmark_server
         db_engine = create_db_engine()
 
-        hook = LiveBettingHook(
-            betting_model_names=active_betting_models,
+        engine = BettingEngine(
             db_engine=db_engine,
-            enabled=settings.enabled,
             dry_run=settings.dry_run,
             kalshi_config=settings.kalshi,
+            enabled=settings.enabled,
         )
-        click.echo("[LIVE BETTING] Hook created successfully")
-        _live_hook_holder["hook"] = hook
-        return hook
+        click.echo(
+            f"[BETTING] Engine ENABLED — strategy={engine.strategy.name}, "
+            f"dry_run={settings.dry_run}"
+        )
+        _engine_holder["engine"] = engine
+        return engine
     except Exception as e:
-        click.echo(f"[LIVE BETTING] Hook FAILED to create: {type(e).__name__}: {e}", err=True)
-        logger.warning(f"Live betting hook unavailable: {e}", exc_info=True)
-        _live_hook_holder["hook"] = None
+        click.echo(f"[BETTING] Engine FAILED to create: {type(e).__name__}: {e}", err=True)
+        logger.warning("Betting engine unavailable: %s", e, exc_info=True)
+        _engine_holder["engine"] = None
         return None
 
 def _make_pipeline_builder(
@@ -275,36 +251,17 @@ def _make_pipeline_builder(
     client_config: ClientConfig,
     verbose: bool,
     api_url: str,
+    betting_engine=None,
 ):
     """Return a callable that builds an AgentPipeline for a participant config.
 
-    For live-betting models (identified by PIPELINE_MODEL_SPECS in
-    ai_prophet_core.betting.config), the pipeline is configured with the
-    model's avoid_market_search / include_market_stats flags, and an
-    on_forecast callback is wired to the shared LiveBettingHook.
+    When a betting engine is provided, every pipeline gets an ``on_forecast``
+    callback that feeds predictions into the engine for bet placement.
     """
     def builder(participant_cfg: dict):
         model_spec = participant_cfg["model"]
-
-        # Check if this is a live-betting model with custom config
-        betting_cfg = None
-        try:
-            from ai_prophet_core.betting.config import get_pipeline_config
-            betting_cfg = get_pipeline_config(model_spec)
-            if betting_cfg:
-                logger.info(f"Loaded betting config for {model_spec}: provider={betting_cfg['provider']}, model={betting_cfg['api_model']}")
-        except Exception as e:
-            logger.warning(f"Could not load betting config for {model_spec}: {e}")
-
-        # Resolve provider and model name
-        if betting_cfg:
-            # Use the actual api_model from betting config
-            provider = betting_cfg["provider"]
-            llm_provider = normalize_provider_name(provider)
-            model_name = betting_cfg["api_model"]
-        else:
-            provider, model_name = _split_model_spec(model_spec)
-            llm_provider = normalize_provider_name(provider)
+        provider, model_name = _split_model_spec(model_spec)
+        llm_provider = normalize_provider_name(provider)
 
         api_key = creds.get_api_key(llm_provider)
         if not api_key:
@@ -325,10 +282,8 @@ def _make_pipeline_builder(
                 api_key=creds.brave_api_key,
                 config=client_config.search,
             )
-        # IMPORTANT: use the resolved api_url (CLI flag overrides env defaults).
         api_client = ServerAPIClient(base_url=api_url)
 
-        # Build pipeline config
         pipeline_config: dict = {
             "search_client": search_client,
             "max_queries_per_market": client_config.search.max_queries_per_market,
@@ -337,26 +292,45 @@ def _make_pipeline_builder(
             "min_size_usd": client_config.pipeline.min_size_usd,
         }
 
-        # Add live-betting callback if this is a betting model
-        if betting_cfg:
-            # Wire the on_forecast hook (shared instance)
-            hook = _get_shared_live_hook()
-            if hook:
-                def on_forecast_cb(
-                    tick_ts, market_id, p_yes, yes_ask, no_ask, question,
-                    _model=model_spec, _hook=hook,
-                ):
-                    _hook.on_forecast(
-                        model_name=_model,
-                        tick_ts=tick_ts,
-                        market_id=market_id,
-                        p_yes=p_yes,
-                        yes_ask=yes_ask,
-                        no_ask=no_ask,
-                        question=question,
-                    )
+        # Wire betting engine as on_forecast callback for all participants
+        if betting_engine is not None:
+            from ai_prophet_core.betting.strategy import PortfolioSnapshot
 
-                pipeline_config["on_forecast"] = on_forecast_cb
+            def on_forecast_cb(
+                tick_ts, market_id, p_yes, yes_ask, no_ask, question,
+                cash=None, equity=None, total_pnl=None, positions=(),
+                _source=model_spec, _engine=betting_engine,
+            ):
+                portfolio = None
+                if cash is not None:
+                    from decimal import Decimal
+                    mkt_pos_shares = Decimal("0")
+                    mkt_pos_side = None
+                    for pos in positions:
+                        if pos.market_id == market_id:
+                            mkt_pos_shares = pos.shares
+                            mkt_pos_side = pos.side
+                            break
+                    portfolio = PortfolioSnapshot(
+                        cash=cash,
+                        equity=equity,
+                        total_pnl=total_pnl,
+                        position_count=len(positions),
+                        market_position_shares=mkt_pos_shares,
+                        market_position_side=mkt_pos_side,
+                    )
+                _engine.on_forecast(
+                    tick_ts=tick_ts,
+                    market_id=market_id,
+                    p_yes=p_yes,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                    question=question,
+                    source=_source,
+                    portfolio=portfolio,
+                )
+
+            pipeline_config["on_forecast"] = on_forecast_cb
 
         pipeline = AgentPipeline(
             llm_client=llm_client,

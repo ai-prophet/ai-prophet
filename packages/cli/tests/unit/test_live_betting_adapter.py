@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import requests
 
 from ai_prophet.trade.core.tick_context import CandidateMarket
-from ai_prophet.trade.live_betting_adapter import execute_live_betting_strategy
+from ai_prophet.trade.live_betting_adapter import build_betting_reasoning
 from ai_prophet_core.betting.adapters.base import OrderRequest, OrderStatus
 from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
@@ -59,28 +58,8 @@ def test_kalshi_adapter_http_error_returns_rejected(monkeypatch):
     assert "Kalshi API error 503" in (result.rejection_reason or "")
 
 
-def test_live_betting_strategy_closes_llm_client(monkeypatch):
-    class _FakeLLMClient:
-        def __init__(self):
-            self.closed = False
-
-        def generate(self, _request):
-            return SimpleNamespace(
-                content='{"rationale":"test","probabilities":{"m1":0.70}}'
-            )
-
-        def close(self):
-            self.closed = True
-
-    fake_llm = _FakeLLMClient()
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.config.get_pipeline_config",
-        lambda _model_spec: {"provider": "openai", "api_model": "gpt-5.2"},
-    )
-    monkeypatch.setattr("ai_prophet.trade.llm.create_llm_client", lambda **_kwargs: fake_llm)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-
-    markets = [
+def test_build_betting_reasoning():
+    markets = (
         CandidateMarket(
             market_id="m1",
             question="Will X happen?",
@@ -94,15 +73,21 @@ def test_live_betting_strategy_closes_llm_client(monkeypatch):
             no_mark=0.50,
             volume_24h=1000.0,
             quote_ts=datetime(2026, 2, 20, 5, 30, tzinfo=UTC),
-        )
+        ),
+    )
+    forecasts = {"m1": 0.70}
+    intents = [
+        {
+            "market_id": "m1",
+            "action": "BUY",
+            "side": "YES",
+            "shares": "0.15",
+            "rationale": "test",
+        }
     ]
 
-    execute_live_betting_strategy(
-        model_spec="openai:gpt-5.2",
-        tick_ts=datetime(2026, 2, 20, 6, 0, tzinfo=UTC),
-        candidate_markets=markets,
-        experiment_id="exp-1",
-    )
-
-    assert fake_llm.closed is True
-
+    reasoning = build_betting_reasoning(markets, forecasts, intents)
+    assert "candidates" in reasoning
+    assert "forecasts" in reasoning
+    assert "decisions" in reasoning
+    assert reasoning["decisions"]["m1"]["recommendation"] == "BUY_YES"
