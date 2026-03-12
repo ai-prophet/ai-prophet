@@ -100,16 +100,6 @@ class OpenAIClient(LLMClient):
           - ``{"type": "function_call", "call_id": "...", "name": "...", "arguments": "..."}``
           - ``{"type": "function_call_output", "call_id": "...", "output": "..."}``
         """
-        # First pass: collect all call_ids from assistant tool_calls
-        known_call_ids: set[str] = set()
-        for msg in raw_messages:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    cid = tc.get("id", "")
-                    if cid:
-                        known_call_ids.add(cid)
-
-        # Second pass: convert, dropping orphaned tool results
         items: list[dict] = []
         extra_keys = {"extra"}  # mini-prophet attaches this
 
@@ -117,14 +107,9 @@ class OpenAIClient(LLMClient):
             role = msg.get("role", "")
 
             if role == "tool":
-                call_id = msg.get("tool_call_id", "")
-                if call_id not in known_call_ids:
-                    # Orphaned tool result (its assistant message was
-                    # truncated by the context manager) — skip it.
-                    continue
                 items.append({
                     "type": "function_call_output",
-                    "call_id": call_id,
+                    "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", ""),
                 })
 
