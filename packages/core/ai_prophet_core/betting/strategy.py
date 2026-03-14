@@ -156,3 +156,85 @@ class DefaultBettingStrategy(BettingStrategy):
         cost = shares * price
 
         return BetSignal(side=side, shares=shares, price=price, cost=cost)
+
+
+class RebalancingStrategy(BettingStrategy):
+    """Rebalancing strategy that maintains (p - q) units of contract.
+
+    At each time step *t* the desired YES position is ``p^t - q^t`` where
+    ``p^t`` is the model's probability and ``q^t`` is the market YES ask.
+    The trade executed each tick is the delta:
+
+        s^t = (p^t - q^t) - (p^{t-1} - q^{t-1})
+
+    Positive delta → buy YES contracts.
+    Negative delta → buy NO contracts (reduce YES exposure).
+
+    The strategy keeps an internal ``_prev`` dict keyed by market_id so it
+    can compute the delta across consecutive calls to :meth:`evaluate`.
+    """
+
+    name = "rebalancing"
+
+    def __init__(self, max_spread: float = MAX_SPREAD, min_trade: float = 0.005) -> None:
+        self.max_spread = max_spread
+        self.min_trade = min_trade
+        self._prev: dict[str, float] = {}  # market_id → previous (p - q)
+
+    def evaluate(
+        self,
+        market_id: str,
+        p_yes: float,
+        yes_ask: float,
+        no_ask: float,
+    ) -> BetSignal | None:
+        spread = yes_ask + no_ask
+        if spread > self.max_spread:
+            return None
+
+        # Within-spread filter: if prediction sits inside the bid-ask band,
+        # there is no edge — skip without updating state.
+        lower_bound = 1.0 - no_ask
+        upper_bound = yes_ask
+        if lower_bound <= p_yes <= upper_bound:
+            return None
+
+        # Current desired position: p^t - q^t
+        current_target = p_yes - yes_ask
+
+        # Previous desired position (0 if first observation)
+        prev_target = self._prev.get(market_id, 0.0)
+
+        # Record for next tick
+        self._prev[market_id] = current_target
+
+        # Trade = delta in desired position
+        delta = current_target - prev_target
+
+        if abs(delta) < self.min_trade:
+            return None
+
+        if delta > 0:
+            # Increase YES exposure
+            side = "yes"
+            shares = delta
+            price = yes_ask
+        else:
+            # Decrease YES exposure → buy NO
+            side = "no"
+            shares = abs(delta)
+            price = no_ask
+
+        cost = shares * price
+
+        return BetSignal(
+            side=side,
+            shares=shares,
+            price=price,
+            cost=cost,
+            metadata={
+                "current_target": round(current_target, 6),
+                "prev_target": round(prev_target, 6),
+                "delta": round(delta, 6),
+            },
+        )

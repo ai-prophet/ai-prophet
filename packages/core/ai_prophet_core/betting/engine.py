@@ -32,7 +32,7 @@ from typing import Any
 from sqlalchemy.engine import Engine
 
 from .config import MAX_MARKETS_PER_TICK, KalshiConfig
-from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
 
 logger = logging.getLogger(__name__)
 
