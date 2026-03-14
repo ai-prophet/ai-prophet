@@ -83,11 +83,21 @@ def _make_llm_client() -> Mock:
 
 
 def _mock_batch_forecast(problems, **kwargs):
-    """Mock batch_forecast that populates rationale_store and returns results."""
-    rationale_store = kwargs.get("agent_kwargs", {}).get("rationale_store", {})
+    """Mock batch_forecast that populates rationale_store/sources_store and returns results."""
+    agent_kwargs = kwargs.get("agent_kwargs", {})
+    rationale_store = agent_kwargs.get("rationale_store", {})
+    sources_store = agent_kwargs.get("sources_store", {})
     results = []
     for p in problems:
         rationale_store[p.title] = "Mock: evidence supports Yes."
+        sources_store[p.title] = {
+            "sources": {
+                "S1": {"url": "https://example.com", "title": "Mock Source", "snippet": "Details here", "date": "2026-01-20"},
+            },
+            "source_board": [
+                {"source_id": "S1", "note": "Supports Yes", "reaction": {"Yes": "positive"}},
+            ],
+        }
         results.append(
             ForecastResult(
                 task_id=p.task_id,
@@ -181,10 +191,13 @@ def test_mini_prophet_pipeline_event_store_logging():
         tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
 
         def _mock_with_different_prob(problems, **kwargs):
-            rs = kwargs.get("agent_kwargs", {}).get("rationale_store", {})
+            agent_kwargs = kwargs.get("agent_kwargs", {})
+            rs = agent_kwargs.get("rationale_store", {})
+            ss = agent_kwargs.get("sources_store", {})
             results = []
             for p in problems:
                 rs[p.title] = "Moderate evidence for Yes."
+                ss[p.title] = {"sources": {}, "source_board": []}
                 results.append(
                     ForecastResult(
                         task_id=p.task_id,

@@ -9,6 +9,19 @@ from typing import Any
 from ai_prophet.trade.llm.base import LLMClient, LLMRequest, ToolSchema
 
 
+FORMAT_ERROR_TEMPLATE = "Error: {error}. Please make a valid tool call."
+
+
+def _build_action(tc: dict[str, Any]) -> dict[str, Any]:
+    """Build a mini-prophet action dict from our internal tool-call representation."""
+    args = tc["arguments"]
+    return {
+        "name": tc["name"],
+        "arguments": json.dumps(args) if not isinstance(args, str) else args,
+        "tool_call_id": tc["id"],
+    }
+
+
 class LLMClientBridge:
     """Wraps an ai-prophet LLMClient to satisfy the mini-prophet Model protocol.
 
@@ -55,31 +68,26 @@ class LLMClientBridge:
             "content": response.content or "",
         }
 
-        if response.tool_calls:
-            # Rebuild OpenAI-style tool_calls for message history
-            result["tool_calls"] = _rebuild_openai_tool_calls(response.tool_calls)
+        # Enforce single tool call per step (same as LitellmModel).
+        # Raises FormatError (InterruptAgentFlow) on 0 or 2+ tool calls,
+        # which the agent loop catches and retries.
+        from miniprophet.models.utils import parse_single_action
 
-            # Build actions list for mini-prophet
-            actions = []
-            for tc in response.tool_calls:
-                args = tc["arguments"]
-                actions.append({
-                    "name": tc["name"],
-                    "arguments": json.dumps(args) if not isinstance(args, str) else args,
-                    "tool_call_id": tc["id"],
-                })
+        actions = parse_single_action(
+            response.tool_calls,
+            FORMAT_ERROR_TEMPLATE,
+            _build_action,
+        )
+        # parse_single_action guarantees exactly 1 action here
+        result["tool_calls"] = _rebuild_openai_tool_calls(
+            [response.tool_calls[0]]  # type: ignore[index]
+        )
 
-            result["extra"] = {
-                "actions": actions,
-                "cost": 0.0,
-                "timestamp": time.time(),
-            }
-        else:
-            result["extra"] = {
-                "actions": [],
-                "cost": 0.0,
-                "timestamp": time.time(),
-            }
+        result["extra"] = {
+            "actions": actions,
+            "cost": 0.0,
+            "timestamp": time.time(),
+        }
 
         return result
 

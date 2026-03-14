@@ -53,7 +53,9 @@ class TradingForecastAgent:
         market_info: dict[str, dict] | None = None,
         mp_config: MiniProphetConfig | None = None,
         rationale_store: dict[str, str] | None = None,
+        sources_store: dict[str, dict] | None = None,
         context_manager: Any | None = None,
+        cancel_event: Any | None = None,
         **kwargs: Any,
     ) -> None:
         from miniprophet.agent.default import DefaultForecastAgent
@@ -62,6 +64,7 @@ class TradingForecastAgent:
         self._market_info = market_info or {}
         self._mp_config = mp_config
         self._rationale_store = rationale_store if rationale_store is not None else {}
+        self._sources_store = sources_store if sources_store is not None else {}
 
         # Attributes inspected by EvalBatchAgentWrapper for cost tracking
         self.messages: list[dict] = []
@@ -82,14 +85,24 @@ class TradingForecastAgent:
         new_env = ForecastEnvironment(tools=tools, board=board)
 
         cfg = mp_config
+        step_limit = cfg.step_limit if cfg else 20
+        search_limit = cfg.search_limit if cfg else 3
+
+        system_prompt = (
+            SYSTEM_TEMPLATE
+            .replace("__STEP_LIMIT__", str(step_limit))
+            .replace("__SEARCH_LIMIT__", str(search_limit))
+        )
+
         self._agent = DefaultForecastAgent(
             model=model,
             env=new_env,
             context_manager=context_manager,
-            system_template=SYSTEM_TEMPLATE,
+            cancel_event=cancel_event,
+            system_template=system_prompt,
             instance_template=INSTANCE_TEMPLATE,  # seed queries injected in run()
-            step_limit=cfg.step_limit if cfg else 20,
-            search_limit=cfg.search_limit if cfg else 3,
+            step_limit=step_limit,
+            search_limit=search_limit,
             cost_limit=cfg.cost_limit if cfg else 1.0,
             show_current_time=cfg.show_current_time if cfg else True,
         )
@@ -136,6 +149,12 @@ class TradingForecastAgent:
                 break
 
         self._rationale_store[title] = rationale
+
+        # Extract sources from the agent's environment
+        try:
+            self._sources_store[title] = self._agent.env.serialize_sources_state()
+        except Exception:
+            logger.debug("Failed to extract sources for %s", title, exc_info=True)
 
         # Propagate cost/stats for EvalBatchAgentWrapper
         self.messages = self._agent.messages
@@ -219,11 +238,12 @@ class MiniProphetForecastStage(PipelineStage):
 
         if not problems:
             return StageResult(
-                stage_name=self.name, success=True, data={"forecasts": {}}
+                stage_name=self.name, success=True, data={"forecasts": {}, "sources": {}}
             )
 
         workers = min(len(problems), self.config.batch_workers)
         rationale_store: dict[str, str] = {}
+        sources_store: dict[str, dict] = {}
 
         logger.info(
             "Running batch_forecast: %d markets, %d workers, timeout=%ds",
@@ -233,10 +253,13 @@ class MiniProphetForecastStage(PipelineStage):
         # Wrap the pipeline's LLMClient as a mini-prophet Model
         bridge = LLMClientBridge(self.llm_client)
 
-        # Override the mini-prophet config to use Exa as the default search backend
+        # Override mini-prophet config from our MiniProphetConfig
         override_config = {
             "search": {
-                "search_class": "exa",
+                "search_class": self.config.search_class,
+            },
+            "agent": {
+                "search_limit": self.config.search_limit,
             },
         }
 
@@ -251,6 +274,7 @@ class MiniProphetForecastStage(PipelineStage):
                 "market_info": market_info,
                 "mp_config": self.config,
                 "rationale_store": rationale_store,
+                "sources_store": sources_store,
             },
         )
 
@@ -274,8 +298,29 @@ class MiniProphetForecastStage(PipelineStage):
 
             forecasts[mid] = {"p_yes": p_yes, "rationale": rationale}
 
+        # Build per-market sources from sources_store
+        sources: dict[str, dict] = {}
+        concise = self.config.concise_sources
+        for title, src_data in sources_store.items():
+            info = market_info.get(title)
+            if not info:
+                continue
+            mid = info["market_id"]
+            if concise:
+                # Strip snippet from each source entry
+                filtered_sources = {
+                    sid: {k: v for k, v in s.items() if k != "snippet"}
+                    for sid, s in src_data.get("sources", {}).items()
+                }
+                sources[mid] = {
+                    "sources": filtered_sources,
+                    "source_board": src_data.get("source_board", []),
+                }
+            else:
+                sources[mid] = src_data
+
         return StageResult(
             stage_name=self.name,
             success=True,
-            data={"forecasts": forecasts},
+            data={"forecasts": forecasts, "sources": sources},
         )

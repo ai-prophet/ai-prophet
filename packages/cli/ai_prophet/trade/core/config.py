@@ -81,7 +81,9 @@ class MiniProphetConfig:
     context_window: int = 6
     show_current_time: bool = True
     batch_workers: int = 5       # Parallel workers for batch_forecast (0 = sequential)
-    batch_timeout: float = 180.0  # Per-market timeout in seconds
+    batch_timeout: float = 120.0  # Per-market timeout in seconds
+    search_class: str = "exa"    # Search backend: exa, perplexity, brave, tavily
+    concise_sources: bool = True  # Strip snippet; False = include full content
 
 
 @dataclass

@@ -132,11 +132,19 @@ class TestMiniProphetForecastStage:
             _make_forecast_result(submission={"Yes": 0.72, "No": 0.28}),
         ]
 
-        # Simulate rationale_store being populated by the agent
+        # Simulate rationale_store and sources_store being populated by the agent
         def side_effect(problems, **kwargs):
             kwargs["agent_kwargs"]["rationale_store"]["Will it rain tomorrow?"] = (
                 "Evidence strongly favors Yes."
             )
+            kwargs["agent_kwargs"]["sources_store"]["Will it rain tomorrow?"] = {
+                "sources": {
+                    "S1": {"url": "https://weather.com", "title": "Weather Report", "snippet": "Rain expected", "date": "2026-01-20"},
+                },
+                "source_board": [
+                    {"source_id": "S1", "note": "Confirms rain", "reaction": {"Yes": "positive"}},
+                ],
+            }
             return mock_batch.return_value
 
         mock_batch.side_effect = side_effect
@@ -148,6 +156,42 @@ class TestMiniProphetForecastStage:
         assert "market_123" in forecasts
         assert forecasts["market_123"]["p_yes"] == 0.72
         assert "Evidence strongly favors" in forecasts["market_123"]["rationale"]
+
+        # Default concise_sources=True strips snippet
+        sources = result.data["sources"]
+        assert "market_123" in sources
+        assert "snippet" not in sources["market_123"]["sources"]["S1"]
+        assert sources["market_123"]["sources"]["S1"]["url"] == "https://weather.com"
+        assert len(sources["market_123"]["source_board"]) == 1
+
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
+    def test_concise_sources_false_includes_snippet(
+        self, mock_batch, mock_llm_client, tick_ctx, review_result
+    ):
+        """When concise_sources=False, snippet is preserved."""
+        cfg = MiniProphetConfig(enabled=True, concise_sources=False)
+        stage = MiniProphetForecastStage(llm_client=mock_llm_client, config=cfg)
+
+        mock_batch.return_value = [
+            _make_forecast_result(submission={"Yes": 0.72, "No": 0.28}),
+        ]
+
+        def side_effect(problems, **kwargs):
+            kwargs["agent_kwargs"]["rationale_store"]["Will it rain tomorrow?"] = "r"
+            kwargs["agent_kwargs"]["sources_store"]["Will it rain tomorrow?"] = {
+                "sources": {
+                    "S1": {"url": "https://weather.com", "title": "Weather", "snippet": "Rain expected", "date": "2026-01-20"},
+                },
+                "source_board": [],
+            }
+            return mock_batch.return_value
+
+        mock_batch.side_effect = side_effect
+
+        result = stage.execute(tick_ctx, {"review": review_result})
+
+        sources = result.data["sources"]
+        assert sources["market_123"]["sources"]["S1"]["snippet"] == "Rain expected"
 
     @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
     def test_handles_agent_error_gracefully(
@@ -190,3 +234,4 @@ class TestMiniProphetForecastStage:
 
         assert result.success is True
         assert len(result.data["forecasts"]) == 0
+        assert len(result.data["sources"]) == 0

@@ -44,9 +44,11 @@ benchmark:
 mini_prophet:
   enabled: false
   step_limit: 20
-  search_limit: 3
+  search_limit: 5
   cost_limit: 1.0
   context_window: 10
   show_current_time: true
   batch_workers: 2
   batch_timeout: 180.0
+  search_class: exa             # exa, perplexity, brave, tavily
+  concise_sources: true          # true = title+url only; false = include snippets
