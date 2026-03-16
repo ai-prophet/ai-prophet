@@ -591,7 +591,14 @@ export const api = {
   getPredictions: (marketId: string) =>
     fetchJSON<PredictionTimeSeries>(`/predictions/${encodeURIComponent(marketId)}`).catch(() => null),
   getPriceHistory: (marketId: string) =>
-    fetchJSON<PriceHistoryPoint[]>(`/market-price-history/${encodeURIComponent(marketId)}`).catch(() => []),
+    fetchJSON<{ market_id: string; series: PriceHistoryPoint[]; count: number }>(
+      `/market-price-history/${encodeURIComponent(marketId)}`
+    )
+      .then((data) => data?.series ?? [])
+      .catch((e) => {
+        console.warn("Failed to fetch price history:", e);
+        return [];
+      }),
 
   clearAllData: () =>
     fetch(`${API_URL}/data/clear`, { method: "DELETE" }).then((r) => r.json()),
