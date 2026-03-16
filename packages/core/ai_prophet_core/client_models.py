@@ -263,3 +263,44 @@ class ProgressResponse(BaseModel):
         if not self.last_activity_at:
             return None
         return datetime.fromisoformat(self.last_activity_at)
+
+
+# --- Forecast Models ---------------------------------------------------------
+
+class ForecastEventResponse(BaseModel):
+    """A forecast event returned by the server."""
+    id: int
+    event_ticker: str
+    market_ticker: str
+    title: str
+    subtitle: str | None = None
+    description: str | None = None
+    category: str
+    rules: str | None = None
+    close_time: datetime
+    actual_outcome: float | None = None
+    resolved_at: datetime | None = None
+
+
+class ForecastSubmitRequest(BaseModel):
+    """Request body for submitting predictions."""
+    team_name: str
+    predictions: list[dict]
+
+
+class ForecastSubmitResponse(BaseModel):
+    """Response after submitting predictions."""
+    submission_id: int
+    team_name: str
+    n_predictions: int
+    submitted_at: datetime
+
+
+class ForecastScoreEntry(BaseModel):
+    """A single entry on the leaderboard."""
+    id: int
+    team_name: str
+    brier_score: float
+    n_predictions: int
+    n_matched: int
+    scored_at: datetime

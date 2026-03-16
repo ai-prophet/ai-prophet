@@ -23,6 +23,10 @@ from .client_models import (
     CreateExperimentResponse,
     FinalizeRequest,
     FinalizeResponse,
+    ForecastEventResponse,
+    ForecastScoreEntry,
+    ForecastSubmitRequest,
+    ForecastSubmitResponse,
     HealthResponse,
     PlanRequest,
     PutPlanResponse,
@@ -380,6 +384,30 @@ class ServerAPIClient:
         )
         response = self._post("/trade_intents", json=req.model_dump(mode="json"))
         return self._parse_response(response, TradeSubmissionResult)
+
+    # --- Forecast -------------------------------------------------------------
+
+    def get_forecast_events(self, status: str = "all") -> list[ForecastEventResponse]:
+        """Fetch forecast events. status: 'all', 'open', or 'closed'."""
+        response = self._get("/forecast/events", params={"status": status})
+        payload = response.json()
+        return [ForecastEventResponse.model_validate(item) for item in payload]
+
+    def submit_forecast(
+        self,
+        team_name: str,
+        predictions: list[dict],
+    ) -> ForecastSubmitResponse:
+        """Submit predictions for open forecast events."""
+        req = ForecastSubmitRequest(team_name=team_name, predictions=predictions)
+        response = self._post("/forecast/submit", json=req.model_dump(mode="json"))
+        return self._parse_response(response, ForecastSubmitResponse)
+
+    def get_forecast_leaderboard(self) -> list[ForecastScoreEntry]:
+        """Fetch the forecast leaderboard."""
+        response = self._get("/forecast/scores")
+        payload = response.json()
+        return [ForecastScoreEntry.model_validate(item) for item in payload]
 
     # --- Utilities ------------------------------------------------------------
 
