@@ -372,7 +372,7 @@ function ExpandedTimeline({ activity }: { activity: MarketActivity }) {
                       mkt: {(pred.yes_ask * 100).toFixed(0)}c
                     </span>
                     <span className="text-accent">
-                      model: {(pred.p_yes * 100).toFixed(0)}%
+                      {pred.source === "aggregated" ? "agg" : pred.source?.split(":").pop()?.slice(0, 12) ?? "model"}: {(pred.p_yes * 100).toFixed(0)}%
                     </span>
                     <span className={pnlCls(pred.p_yes - pred.yes_ask)}>
                       edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}

@@ -426,14 +426,12 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
 
 # ── Kalshi market fetcher ─────────────────────────────────────────
 
-def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10,
-                         min_price: float = 0.10, max_price: float = 0.90) -> list[dict]:
+def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) -> list[dict]:
     """Fetch active binary markets from Kalshi via the events endpoint.
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
-    pages, collects candidates closing within 30 days with prices in the
-    ``[min_price, max_price]`` band, then returns the top ``max_markets``
-    ranked by volume and proximity to 50%.
+    pages, collects candidates closing within 30 days, then returns the top
+    ``max_markets`` ranked by volume (with a soft bonus for prices near 50%).
     """
     base_url = adapter._base_url
     path = "/trade-api/v2/events"
@@ -499,16 +497,15 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10,
                 if yes_ask is None and last_price is None:
                     continue
 
-                # Filter out extreme-odds markets (no edge opportunity)
                 price = float(yes_ask) if yes_ask is not None else float(last_price)
-                if price < min_price or price > max_price:
-                    continue
 
                 yes_sub = mkt.get("yes_sub_title", "")
                 market_title = f"{event_title}: {yes_sub}" if yes_sub else event_title
 
                 volume = float(mkt.get("volume_24h_fp", 0) or 0)
 
+                # Rank by volume with a small soft bonus for prices near 50%
+                proximity_bonus = 1.0 - 2.0 * abs(price - 0.5)
                 candidates.append({
                     "ticker": ticker,
                     "event_ticker": mkt.get("event_ticker", ""),
@@ -520,7 +517,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10,
                     "last_price": last_price,
                     "close_time": close_time_str,
                     "volume_24h": volume,
-                    "_score": volume + (1.0 - 2.0 * abs(price - 0.5)),
+                    "_score": volume + proximity_bonus,
                 })
 
         if not cursor:
@@ -528,7 +525,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10,
 
         logger.debug("Page %d: %d candidates so far, fetching more...", page + 1, len(candidates))
 
-    # Rank: prefer higher volume and prices closer to 50%
+    # Rank: prefer higher volume, soft bonus for prices near 50%
     candidates.sort(key=lambda m: m["_score"], reverse=True)
     markets = candidates[:max_markets]
 
@@ -537,10 +534,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10,
         m.pop("_score", None)
 
     logger.info(
-        "Selected %d markets (from %d candidates, %d events, %d pages) "
-        "price band [%.0f%%-%.0f%%]",
+        "Selected %d markets (from %d candidates, %d events, %d pages)",
         len(markets), len(candidates), total_events, page + 1,
-        min_price * 100, max_price * 100,
     )
     return markets
 
@@ -551,24 +546,33 @@ def create_llm_predictor(model_spec: str):
     """Create a function that uses an LLM to predict market probabilities.
 
     Args:
-        model_spec: e.g. "openai:gpt-4o" or "anthropic:claude-sonnet-4-5-20250929"
+        model_spec: Format: "provider:model_name" or "provider:model_name:market"
+            The optional ":market" suffix includes market prices in the prompt.
+            e.g. "gemini:gemini-3.1-pro-preview:market" → with market data
+                 "gemini:gemini-3.1-pro-preview" → without market data
 
     Returns:
         A callable(market_info) -> dict with keys: p_yes, confidence, reasoning
     """
-    if ":" in model_spec:
-        provider, model_name = model_spec.split(":", 1)
+    parts = model_spec.split(":")
+    if len(parts) >= 3:
+        provider = parts[0].lower()
+        model_name = parts[1]
+        include_market = parts[2].lower() in ("market", "mkt", "prices")
+    elif len(parts) == 2:
+        provider = parts[0].lower()
+        model_name = parts[1]
+        include_market = False
     else:
-        provider, model_name = "openai", model_spec
-
-    provider = provider.lower()
+        provider, model_name = "openai", parts[0]
+        include_market = False
 
     if provider == "openai":
-        return _openai_predictor(model_name)
+        return _openai_predictor(model_name, include_market)
     elif provider in ("anthropic", "claude"):
-        return _anthropic_predictor(model_name)
+        return _anthropic_predictor(model_name, include_market)
     elif provider in ("gemini", "google"):
-        return _gemini_predictor(model_name)
+        return _gemini_predictor(model_name, include_market)
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -664,13 +668,13 @@ def _parse_prediction(content: str) -> dict:
     }
 
 
-def _openai_predictor(model_name: str):
+def _openai_predictor(model_name: str, include_market: bool = False):
     """Return a predictor function using OpenAI."""
     import openai
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     def predict(market_info: dict) -> dict:
-        system_prompt, user_prompt = _build_prompts(market_info)
+        system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
         try:
             response = client.chat.completions.create(
                 model=model_name,
@@ -690,13 +694,13 @@ def _openai_predictor(model_name: str):
     return predict
 
 
-def _anthropic_predictor(model_name: str):
+def _anthropic_predictor(model_name: str, include_market: bool = False):
     """Return a predictor function using Anthropic."""
     import anthropic
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     def predict(market_info: dict) -> dict:
-        system_prompt, user_prompt = _build_prompts(market_info)
+        system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
         try:
             response = client.messages.create(
                 model=model_name,
@@ -712,7 +716,7 @@ def _anthropic_predictor(model_name: str):
     return predict
 
 
-def _gemini_predictor(model_name: str):
+def _gemini_predictor(model_name: str, include_market: bool = False):
     """Return a predictor function using Gemini REST API.
 
     Usage: gemini:gemini-2.0-flash, gemini:gemini-3-flash-preview, etc.
@@ -726,7 +730,7 @@ def _gemini_predictor(model_name: str):
     http_client = httpx.Client(timeout=120.0)
 
     def predict(market_info: dict) -> dict:
-        system_prompt, user_prompt = _build_prompts(market_info)
+        system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
 
         body: dict = {
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -808,7 +812,7 @@ def run_cycle(args) -> None:
     """Run one trading cycle: fetch markets → LLM predict → BettingEngine."""
     strategy_name = os.getenv("WORKER_STRATEGY", "default")
     dry_run_override = True if args.dry_run else None
-    max_markets = int(os.getenv("WORKER_MAX_MARKETS", "10"))
+    max_markets = int(os.getenv("WORKER_MAX_MARKETS", "25"))
     models_str = os.getenv("WORKER_MODELS", "gemini:gemini-3.1-pro-preview")
     model_specs = [m.strip() for m in models_str.split(",") if m.strip()]
 
@@ -867,191 +871,260 @@ def run_cycle(args) -> None:
     # Track (market_id, model, edge) for alert checking
     all_edges: list[tuple[str, str, float]] = []
 
-    # 2. For each model, analyze each market and collect predictions
+    # 2. Create all predictors upfront
     tick_ts = datetime.now(UTC)
     total_results = []
+    predictors: dict[str, Any] = {}
 
     for model_spec in model_specs:
-        logger.info("Running predictions with model: %s", model_spec)
         try:
-            predictor = create_llm_predictor(model_spec)
+            predictors[model_spec] = create_llm_predictor(model_spec)
         except Exception as e:
             logger.error("Failed to create predictor for %s: %s", model_spec, e)
             if db_engine:
                 log_system_event(db_engine, "ERROR", f"Predictor init failed for {model_spec}: {e}")
+
+    if not predictors:
+        logger.error("No predictors available, skipping cycle")
+        if betting_engine:
+            betting_engine.close()
+        return
+
+    logger.info("Initialized %d predictors: %s", len(predictors), list(predictors.keys()))
+
+    # 3. For each market, collect predictions from ALL models, then aggregate and trade
+    for market in raw_markets:
+        if _shutdown_requested:
+            logger.info("Shutdown requested, stopping analysis")
+            break
+
+        ticker = market.get("ticker", "")
+        title = market.get("title", "Unknown")
+        subtitle = market.get("subtitle", "")
+        category = market.get("category", "")
+
+        # Prices are already in dollars (0-1 range) from fetch_kalshi_markets
+        yes_ask = market.get("yes_ask")
+        no_ask = market.get("no_ask")
+
+        # Fallback to last_price
+        if yes_ask is None or no_ask is None:
+            last_price = market.get("last_price")
+            if last_price is not None:
+                yes_ask = float(last_price)
+                no_ask = 1.0 - yes_ask
+            else:
+                logger.warning("Skipping %s: no pricing data", ticker)
+                continue
+
+        yes_ask = float(yes_ask)
+        no_ask = float(no_ask)
+        market_id = f"kalshi:{ticker}"
+
+        # Save market snapshot for dashboard
+        if db_engine:
+            expiration = None
+            exp_str = market.get("close_time")
+            if exp_str:
+                try:
+                    expiration = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    pass
+            save_market_snapshot(
+                db_engine, market_id, title, category,
+                yes_ask=yes_ask, no_ask=no_ask,
+                expiration=expiration, ticker=ticker,
+                event_ticker=market.get("event_ticker", ""),
+                volume_24h=float(market.get("volume_24h", 0) or 0),
+            )
+
+            # Skip if we hold a position and market prices haven't changed
+            try:
+                from db_models import TradingPosition as TP, MarketPriceSnapshot as MPS
+                from ai_prophet_core.betting.db import get_session as _gs
+                with _gs(db_engine) as _sess:
+                    _pos = _sess.query(TP).filter_by(market_id=market_id).first()
+                    if _pos and _pos.quantity > 0:
+                        _last = (
+                            _sess.query(MPS)
+                            .filter(MPS.market_id == market_id)
+                            .order_by(MPS.timestamp.desc())
+                            .first()
+                        )
+                        if (_last
+                            and abs(_last.yes_ask - yes_ask) < 1e-6
+                            and abs(_last.no_ask - no_ask) < 1e-6):
+                            logger.info(
+                                "  Skipping %s — market prices unchanged "
+                                "(yes=%.2f, no=%.2f)",
+                                ticker, yes_ask, no_ask,
+                            )
+                            all_market_prices[market_id] = (yes_ask, no_ask)
+                            continue
+            except Exception:
+                pass
+
+            # Save price snapshot (market-only, before LLM prediction)
+            save_price_snapshot(
+                db_engine, market_id, ticker,
+                yes_ask=yes_ask, no_ask=no_ask,
+                volume_24h=float(market.get("volume_24h", 0) or 0),
+            )
+
+        # Collect predictions from ALL models for this market
+        market_info = {
+            "title": title,
+            "subtitle": subtitle,
+            "category": category,
+            "yes_ask": yes_ask,
+            "no_ask": no_ask,
+        }
+
+        logger.info("Analyzing: %s (yes=%.2f, no=%.2f)", title[:60], yes_ask, no_ask)
+
+        model_predictions: dict[str, dict] = {}  # model_spec -> {p_yes, confidence, reasoning, ...}
+
+        for model_spec, predictor in predictors.items():
+            try:
+                prediction = predictor(market_info)
+                p_yes = prediction["p_yes"]
+                confidence = prediction.get("confidence", 0.5)
+                reasoning = prediction.get("reasoning", "")
+
+                logger.info(
+                    "  [%s] p_yes=%.3f (confidence=%.2f) | %s",
+                    model_spec.split(":")[-1], p_yes, confidence, reasoning[:60],
+                )
+
+                model_predictions[model_spec] = {
+                    "p_yes": p_yes,
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                    "analysis": prediction.get("analysis", {}),
+                }
+
+                # Track edge for alert checking
+                edge = abs(p_yes - yes_ask)
+                all_edges.append((market_id, model_spec, edge))
+
+                # Classify decision for logging
+                decision = "HOLD"
+                if p_yes > yes_ask + 0.05:
+                    decision = "BUY_YES"
+                elif p_yes < (1.0 - no_ask) - 0.05:
+                    decision = "BUY_NO"
+
+                # Save individual model run
+                if db_engine:
+                    save_model_run(
+                        db_engine, model_spec, market_id, decision, confidence,
+                        metadata={"p_yes": p_yes, "reasoning": reasoning,
+                                  "analysis": prediction.get("analysis", {}),
+                                  "yes_ask": yes_ask, "no_ask": no_ask},
+                    )
+
+            except Exception as e:
+                logger.error("  [%s] prediction failed: %s", model_spec, e)
+
+        if not model_predictions:
+            logger.warning("  No model predictions for %s, skipping", ticker)
+            all_market_prices[market_id] = (yes_ask, no_ask)
             continue
 
-        model_results = []
+        # Aggregate: simple mean of all model p_yes values
+        p_yes_values = [mp["p_yes"] for mp in model_predictions.values()]
+        aggregated_p_yes = sum(p_yes_values) / len(p_yes_values)
 
-        for market in raw_markets:
-            if _shutdown_requested:
-                logger.info("Shutdown requested, stopping analysis")
-                break
+        # Build per-model breakdown for metadata
+        per_model_breakdown = {
+            ms: {"p_yes": mp["p_yes"], "confidence": mp["confidence"]}
+            for ms, mp in model_predictions.items()
+        }
 
-            ticker = market.get("ticker", "")
-            title = market.get("title", "Unknown")
-            subtitle = market.get("subtitle", "")
-            category = market.get("category", "")
+        logger.info(
+            "  Aggregated p_yes=%.3f from %d models: %s",
+            aggregated_p_yes, len(model_predictions),
+            {ms.split(":")[-1]: f"{mp['p_yes']:.3f}" for ms, mp in model_predictions.items()},
+        )
 
-            # Prices are already in dollars (0-1 range) from fetch_kalshi_markets
-            yes_ask = market.get("yes_ask")
-            no_ask = market.get("no_ask")
+        # Classify aggregated decision
+        agg_decision = "HOLD"
+        if aggregated_p_yes > yes_ask + 0.05:
+            agg_decision = "BUY_YES"
+        elif aggregated_p_yes < (1.0 - no_ask) - 0.05:
+            agg_decision = "BUY_NO"
 
-            # Fallback to last_price
-            if yes_ask is None or no_ask is None:
-                last_price = market.get("last_price")
-                if last_price is not None:
-                    yes_ask = float(last_price)
-                    no_ask = 1.0 - yes_ask
-                else:
-                    logger.warning("Skipping %s: no pricing data", ticker)
-                    continue
-
-            yes_ask = float(yes_ask)
-            no_ask = float(no_ask)
-            market_id = f"kalshi:{ticker}"
-
-            # Save market snapshot for dashboard
-            if db_engine:
-                expiration = None
-                exp_str = market.get("close_time")
-                if exp_str:
-                    try:
-                        expiration = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-                    except (ValueError, AttributeError):
-                        pass
-                save_market_snapshot(
-                    db_engine, market_id, title, category,
-                    yes_ask=yes_ask, no_ask=no_ask,
-                    expiration=expiration, ticker=ticker,
-                    event_ticker=market.get("event_ticker", ""),
-                    volume_24h=float(market.get("volume_24h", 0) or 0),
-                )
-                # Save price snapshot (market-only, before LLM prediction)
-                save_price_snapshot(
-                    db_engine, market_id, ticker,
-                    yes_ask=yes_ask, no_ask=no_ask,
-                    volume_24h=float(market.get("volume_24h", 0) or 0),
-                )
-
-            # Get LLM prediction
-            market_info = {
-                "title": title,
-                "subtitle": subtitle,
-                "category": category,
-                "yes_ask": yes_ask,
-                "no_ask": no_ask,
-            }
-
-            logger.info("Analyzing: %s (yes=%.2f, no=%.2f)", title[:60], yes_ask, no_ask)
-            prediction = predictor(market_info)
-            p_yes = prediction["p_yes"]
-            confidence = prediction.get("confidence", 0.5)
-            reasoning = prediction.get("reasoning", "")
-
-            logger.info(
-                "  → p_yes=%.3f (confidence=%.2f) | %s",
-                p_yes, confidence, reasoning[:80],
+        # Save aggregated model run
+        if db_engine:
+            avg_confidence = sum(mp["confidence"] for mp in model_predictions.values()) / len(model_predictions)
+            save_model_run(
+                db_engine, "aggregated", market_id, agg_decision, avg_confidence,
+                metadata={
+                    "p_yes": aggregated_p_yes,
+                    "models": per_model_breakdown,
+                    "num_models": len(model_predictions),
+                    "yes_ask": yes_ask, "no_ask": no_ask,
+                },
+            )
+            # Save price snapshot with aggregated prediction
+            save_price_snapshot(
+                db_engine, market_id, ticker,
+                yes_ask=yes_ask, no_ask=no_ask,
+                volume_24h=float(market.get("volume_24h", 0) or 0),
+                model_p_yes=aggregated_p_yes,
+                model_name="aggregated",
             )
 
-            # Track edge for alert checking
-            edge = abs(p_yes - yes_ask)
-            all_edges.append((market_id, model_spec, edge))
+        # Build per-market portfolio snapshot from existing position
+        portfolio = None
+        if db_engine:
+            try:
+                from ai_prophet_core.betting.db import get_session
+                from ai_prophet_core.betting.strategy import PortfolioSnapshot
+                from db_models import TradingPosition
 
-            # Classify decision for logging
-            decision = "HOLD"
-            if p_yes > yes_ask + 0.05:
-                decision = "BUY_YES"
-            elif p_yes < (1.0 - no_ask) - 0.05:
-                decision = "BUY_NO"
+                with get_session(db_engine) as session:
+                    pos = session.query(TradingPosition).filter_by(
+                        market_id=market_id
+                    ).first()
+                    if pos:
+                        portfolio = PortfolioSnapshot(
+                            market_position_shares=Decimal(str(pos.quantity)),
+                            market_position_side=pos.contract,
+                        )
 
-            if db_engine:
-                save_model_run(
-                    db_engine, model_spec, market_id, decision, confidence,
-                    metadata={"p_yes": p_yes, "reasoning": reasoning,
-                              "analysis": prediction.get("analysis", {}),
-                              "yes_ask": yes_ask, "no_ask": no_ask},
-                )
-                # Save price snapshot with model prediction attached
-                save_price_snapshot(
-                    db_engine, market_id, ticker,
-                    yes_ask=yes_ask, no_ask=no_ask,
-                    volume_24h=float(market.get("volume_24h", 0) or 0),
-                    model_p_yes=p_yes,
-                    model_name=model_spec,
-                )
+            except Exception as e:
+                logger.debug("Could not load position for portfolio: %s", e)
 
-            # Build per-market portfolio snapshot from existing position
-            portfolio = None
-            if db_engine:
-                try:
-                    from ai_prophet_core.betting.db import get_session
-                    from ai_prophet_core.betting.strategy import PortfolioSnapshot
-                    from db_models import TradingPosition, MarketPriceSnapshot
+        # Feed AGGREGATED prediction into BettingEngine (one trade per market)
+        result = betting_engine.on_forecast(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            p_yes=aggregated_p_yes,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            source="aggregated",
+            portfolio=portfolio,
+        )
+        if result is not None:
+            total_results.append(result)
 
-                    with get_session(db_engine) as session:
-                        pos = session.query(TradingPosition).filter_by(
-                            market_id=market_id
-                        ).first()
-                        if pos:
-                            portfolio = PortfolioSnapshot(
-                                market_position_shares=Decimal(str(pos.quantity)),
-                                market_position_side=pos.contract,
-                            )
+        all_market_prices[market_id] = (yes_ask, no_ask)
 
-                        # Skip if market prices haven't changed since last snapshot
-                        # (no new market information → no reason to re-trade)
-                        if pos and pos.quantity > 0:
-                            last_snap = (
-                                session.query(MarketPriceSnapshot)
-                                .filter(MarketPriceSnapshot.market_id == market_id)
-                                .order_by(MarketPriceSnapshot.timestamp.desc())
-                                .first()
-                            )
-                            if (last_snap
-                                and abs(last_snap.yes_ask - yes_ask) < 1e-6
-                                and abs(last_snap.no_ask - no_ask) < 1e-6):
-                                logger.info(
-                                    "  Skipping %s — market prices unchanged "
-                                    "(yes=%.2f, no=%.2f)",
-                                    ticker, yes_ask, no_ask,
-                                )
-                                all_market_prices[market_id] = (yes_ask, no_ask)
-                                continue
-
-                except Exception as e:
-                    logger.debug("Could not load position for portfolio: %s", e)
-
-            # 3. Feed prediction into BettingEngine per market
-            result = betting_engine.on_forecast(
-                tick_ts=tick_ts,
-                market_id=market_id,
-                p_yes=p_yes,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-                source=model_spec,
-                portfolio=portfolio,
+    # Summarize cycle results
+    if total_results:
+        placed = sum(1 for r in total_results if r.order_placed)
+        skipped = sum(1 for r in total_results if r.signal is None)
+        logger.info(
+            "Cycle results: %d orders placed, %d skipped, %d total across %d markets",
+            placed, skipped, len(total_results), len(raw_markets),
+        )
+        if db_engine:
+            log_system_event(
+                db_engine, "INFO",
+                f"Cycle complete: models={list(predictors.keys())}, placed={placed}, "
+                f"skipped={skipped}, total={len(total_results)}",
             )
-            if result is not None:
-                model_results.append(result)
-
-            all_market_prices[market_id] = (yes_ask, no_ask)
-
-        # Summarize results for this model
-        if model_results:
-            total_results.extend(model_results)
-            placed = sum(1 for r in model_results if r.order_placed)
-            skipped = sum(1 for r in model_results if r.signal is None)
-            logger.info(
-                "Cycle results for %s: %d orders placed, %d skipped, %d total",
-                model_spec, placed, skipped, len(model_results),
-            )
-            if db_engine:
-                log_system_event(
-                    db_engine, "INFO",
-                    f"Cycle complete: model={model_spec}, placed={placed}, "
-                    f"skipped={skipped}, total={len(model_results)}",
-                )
 
     # 3b. Check alert conditions and log to SystemLog
     if db_engine:

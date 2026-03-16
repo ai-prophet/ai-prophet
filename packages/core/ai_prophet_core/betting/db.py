@@ -34,7 +34,7 @@ def create_db_engine(
         max_overflow=max_overflow,
         pool_pre_ping=True,
         pool_recycle=600,
-        connect_args={"options": "-c statement_timeout=30000 -c lock_timeout=10000"},
+        connect_args={"options": "-c statement_timeout=600000 -c lock_timeout=60000"},
         **kwargs,
     )
 

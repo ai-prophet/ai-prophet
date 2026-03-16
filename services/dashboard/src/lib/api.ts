@@ -44,6 +44,8 @@ export interface ModelPrediction {
   confidence: number | null;
   p_yes: number | null;
   timestamp: string;
+  reasoning?: string | null;
+  models?: Record<string, { p_yes: number; confidence: number }> | null;
 }
 
 export interface Market {
@@ -60,6 +62,8 @@ export interface Market {
   volume_24h: number | null;
   updated_at: string;
   model_prediction: ModelPrediction | null;
+  model_predictions?: ModelPrediction[];
+  aggregated_p_yes?: number | null;
 }
 
 export interface Position {
@@ -375,7 +379,15 @@ export const api = {
       }))
     ),
   getMarkets: (limit = 50) => fetchJSON<Market[]>(`/markets?limit=${limit}`),
-  getPositions: () => fetchJSON<Position[]>("/positions"),
+  getPositions: (limit = 50, offset = 0, search?: string) => {
+    let url = `/positions?limit=${limit}&offset=${offset}`;
+    if (search) url += `&search=${encodeURIComponent(search)}`;
+    return fetchJSON<Position[] | { positions: Position[]; total: number; has_more: boolean }>(url)
+      .then((data) => {
+        if (Array.isArray(data)) return { positions: data, total: data.length, has_more: false };
+        return data;
+      });
+  },
   getPnL: (days = 30, marketId?: string, model?: string) => {
     let url = `/pnl?days=${days}`;
     if (marketId) url += `&market_id=${encodeURIComponent(marketId)}`;

@@ -29,6 +29,7 @@ import { RiskMetrics } from "@/components/RiskMetrics";
 import { PnLAttribution } from "@/components/PnLAttribution";
 import { ModelCalibration } from "@/components/ModelCalibration";
 import { AlertsPanel } from "@/components/AlertsPanel";
+import { ModelAggregation } from "@/components/ModelAggregation";
 
 const REFRESH_INTERVAL = 5_000;
 
@@ -51,10 +52,10 @@ export default function Dashboard() {
   const fetchAll = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [t, m, p, pnlData, h, l, b, an, cal, al] = await Promise.all([
+      const [t, m, posData, pnlData, h, l, b, an, cal, al] = await Promise.all([
         api.getTrades(200),
         api.getMarkets(200),
-        api.getPositions(),
+        api.getPositions(200),
         api.getPnL(),
         api.getHealth(),
         api.getSystemLogs(40),
@@ -65,7 +66,7 @@ export default function Dashboard() {
       ]);
       setTrades(t);
       setMarkets(m);
-      setPositions(p);
+      setPositions(posData.positions);
       setPnl(pnlData);
       setHealth(h);
       setLogs(l);
@@ -246,7 +247,15 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Row 4: Position Heatmap */}
+        {/* Row 4: Model Aggregation */}
+        {markets.some((m) => (m.model_predictions?.length ?? 0) > 0) && (
+          <div>
+            <SectionLabel text="Model Predictions" count={markets.filter((m) => (m.model_predictions?.length ?? 0) > 1).length} />
+            <ModelAggregation markets={markets} />
+          </div>
+        )}
+
+        {/* Row 5: Position Heatmap */}
         {positions.length > 0 && (
           <div>
             <SectionLabel text="Position Heatmap" count={positions.length} />
@@ -254,7 +263,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Row 5: Open Positions */}
+        {/* Row 6: Open Positions */}
         <div>
           <SectionLabel text="Open Positions" count={positions.length} />
           <ActivePositions positions={positions} markets={markets} />

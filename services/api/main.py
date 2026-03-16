@@ -298,29 +298,91 @@ def get_markets(
         )
         results = []
         for row in rows:
-            # Get latest model run for this market
-            latest_run = (
+            # Get all model runs from the latest cycle for this market
+            # Find the most recent aggregated run to determine cycle timestamp
+            latest_agg = (
                 session.query(ModelRun)
-                .filter(ModelRun.market_id == row.market_id)
+                .filter(ModelRun.market_id == row.market_id,
+                        ModelRun.model_name == "aggregated")
                 .order_by(ModelRun.timestamp.desc())
                 .first()
             )
-            model_prediction = None
-            if latest_run:
-                p_yes = None
-                if latest_run.metadata_json:
-                    try:
-                        meta = json.loads(latest_run.metadata_json)
-                        p_yes = meta.get("p_yes")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+
+            model_predictions = []
+            aggregated_p_yes = None
+            model_prediction = None  # backward-compat: latest single prediction
+
+            if latest_agg:
+                # Get all model runs from ±60s of the aggregated run
+                cycle_start = latest_agg.timestamp - timedelta(seconds=60)
+                cycle_end = latest_agg.timestamp + timedelta(seconds=5)
+                cycle_runs = (
+                    session.query(ModelRun)
+                    .filter(ModelRun.market_id == row.market_id,
+                            ModelRun.timestamp >= cycle_start,
+                            ModelRun.timestamp <= cycle_end)
+                    .order_by(ModelRun.timestamp.asc())
+                    .all()
+                )
+                for run in cycle_runs:
+                    p_yes = None
+                    reasoning = None
+                    models_breakdown = None
+                    if run.metadata_json:
+                        try:
+                            meta = json.loads(run.metadata_json)
+                            p_yes = meta.get("p_yes")
+                            reasoning = meta.get("reasoning")
+                            models_breakdown = meta.get("models")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    pred = {
+                        "model_name": run.model_name,
+                        "decision": run.decision,
+                        "confidence": run.confidence,
+                        "p_yes": p_yes,
+                        "timestamp": run.timestamp.isoformat(),
+                    }
+                    if run.model_name == "aggregated":
+                        aggregated_p_yes = p_yes
+                        pred["models"] = models_breakdown
+                    else:
+                        pred["reasoning"] = reasoning
+                    model_predictions.append(pred)
+
+                # backward-compat
                 model_prediction = {
-                    "model_name": latest_run.model_name,
-                    "decision": latest_run.decision,
-                    "confidence": latest_run.confidence,
-                    "p_yes": p_yes,
-                    "timestamp": latest_run.timestamp.isoformat(),
+                    "model_name": "aggregated",
+                    "decision": latest_agg.decision,
+                    "confidence": latest_agg.confidence,
+                    "p_yes": aggregated_p_yes,
+                    "timestamp": latest_agg.timestamp.isoformat(),
                 }
+            else:
+                # Fallback: no aggregated run yet, use latest individual run
+                latest_run = (
+                    session.query(ModelRun)
+                    .filter(ModelRun.market_id == row.market_id)
+                    .order_by(ModelRun.timestamp.desc())
+                    .first()
+                )
+                if latest_run:
+                    p_yes = None
+                    if latest_run.metadata_json:
+                        try:
+                            meta = json.loads(latest_run.metadata_json)
+                            p_yes = meta.get("p_yes")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    model_prediction = {
+                        "model_name": latest_run.model_name,
+                        "decision": latest_run.decision,
+                        "confidence": latest_run.confidence,
+                        "p_yes": p_yes,
+                        "timestamp": latest_run.timestamp.isoformat(),
+                    }
+                    model_predictions.append(model_prediction)
+                    aggregated_p_yes = p_yes
 
             results.append({
                 "id": row.id,
@@ -336,6 +398,8 @@ def get_markets(
                 "volume_24h": row.volume_24h,
                 "updated_at": row.updated_at.isoformat(),
                 "model_prediction": model_prediction,
+                "model_predictions": model_predictions,
+                "aggregated_p_yes": aggregated_p_yes,
             })
         return results
 
@@ -344,18 +408,23 @@ def get_markets(
 
 
 @app.get("/positions")
-def get_positions() -> list[dict[str, Any]]:
-    """Current trading positions with market context."""
+def get_positions(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    search: str | None = Query(None, description="Search by market title or ticker"),
+) -> dict[str, Any]:
+    """Current trading positions with market context (paginated)."""
     engine = get_db()
     with get_session(engine) as session:
-        rows = (
-            session.query(TradingPosition)
-            .order_by(TradingPosition.updated_at.desc())
-            .all()
-        )
+        query = session.query(TradingPosition).order_by(TradingPosition.updated_at.desc())
+
+        # Get total count before pagination
+        total = query.count()
+
+        rows = query.offset(offset).limit(limit).all()
+
         results = []
         for row in rows:
-            # Look up market info
             market_title = None
             event_ticker = None
             ticker = None
@@ -364,6 +433,17 @@ def get_positions() -> list[dict[str, Any]]:
                 market_title = mkt.title
                 event_ticker = mkt.event_ticker
                 ticker = mkt.ticker
+
+            # Apply search filter after join (search on title or ticker)
+            if search:
+                needle = search.lower()
+                if not (
+                    (market_title and needle in market_title.lower())
+                    or (ticker and needle in ticker.lower())
+                    or (event_ticker and needle in event_ticker.lower())
+                ):
+                    total -= 1
+                    continue
 
             results.append({
                 "id": row.id,
@@ -380,7 +460,11 @@ def get_positions() -> list[dict[str, Any]]:
                 "realized_trades": row.realized_trades,
                 "updated_at": row.updated_at.isoformat(),
             })
-        return results
+        return {
+            "positions": results,
+            "total": total,
+            "has_more": offset + limit < total,
+        }
 
 
 # ── GET /pnl ─────────────────────────────────────────────────────
@@ -1111,6 +1195,7 @@ def get_market_price_history(
 def get_model_runs(
     limit: int = Query(50, ge=1, le=200),
     model_name: str | None = Query(None),
+    market_id: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """Recent model decisions with prediction data."""
     engine = get_db()
@@ -1118,19 +1203,23 @@ def get_model_runs(
         query = session.query(ModelRun).order_by(ModelRun.timestamp.desc())
         if model_name:
             query = query.filter(ModelRun.model_name == model_name)
+        if market_id:
+            query = query.filter(ModelRun.market_id == market_id)
         rows = query.limit(limit).all()
         results = []
         for row in rows:
             p_yes = None
             reasoning = None
+            models_breakdown = None
             if row.metadata_json:
                 try:
                     meta = json.loads(row.metadata_json)
                     p_yes = meta.get("p_yes")
                     reasoning = meta.get("reasoning")
+                    models_breakdown = meta.get("models")
                 except (json.JSONDecodeError, TypeError):
                     pass
-            results.append({
+            entry = {
                 "id": row.id,
                 "model_name": row.model_name,
                 "timestamp": row.timestamp.isoformat(),
@@ -1139,7 +1228,10 @@ def get_model_runs(
                 "market_id": row.market_id,
                 "p_yes": p_yes,
                 "reasoning": reasoning,
-            })
+            }
+            if models_breakdown:
+                entry["models"] = models_breakdown
+            results.append(entry)
         return results
 
 
@@ -1178,7 +1270,7 @@ def get_kalshi_balance() -> dict[str, Any]:
     """Fetch Kalshi account balance (works in both live and dry-run modes).
 
     In dry-run mode, computes a virtual balance:
-      starting_cash - capital_deployed + realized_pnl
+      kalshi_balance - capital_deployed + realized_pnl
     so the balance decreases when capital is deployed and increases
     when gains are realized.
     """
@@ -1191,12 +1283,12 @@ def get_kalshi_balance() -> dict[str, Any]:
         adapter.close()
 
         if dry_run:
-            starting_cash = float(os.getenv("WORKER_STARTING_CASH", str(real_balance)))
-            with get_session(engine) as session:
+            db_engine = get_db()
+            with get_session(db_engine) as session:
                 positions = session.query(TradingPosition).all()
                 capital_deployed = sum(p.avg_price * p.quantity for p in positions)
                 realized_pnl = sum(p.realized_pnl for p in positions)
-            balance = starting_cash - capital_deployed + realized_pnl
+            balance = real_balance - capital_deployed + realized_pnl
         else:
             balance = real_balance
 
