@@ -1055,11 +1055,13 @@ def run_cycle(args) -> None:
         )
 
         # Classify aggregated decision based on summed edge
-        agg_decision = "HOLD"
-        if aggregated_edge > 0.05:
+        # HOLD if edge is within (-0.01, 0.01) — less than 1 cent, not worth betting
+        if aggregated_edge >= 0.01:
             agg_decision = "BUY_YES"
-        elif aggregated_edge < -0.05:
+        elif aggregated_edge <= -0.01:
             agg_decision = "BUY_NO"
+        else:
+            agg_decision = "HOLD"
 
         # Save aggregated model run
         if db_engine:
@@ -1104,17 +1106,21 @@ def run_cycle(args) -> None:
                 logger.debug("Could not load position for portfolio: %s", e)
 
         # Feed AGGREGATED prediction into BettingEngine (one trade per market)
-        result = betting_engine.on_forecast(
-            tick_ts=tick_ts,
-            market_id=market_id,
-            p_yes=aggregated_p_yes,
-            yes_ask=yes_ask,
-            no_ask=no_ask,
-            source="aggregated",
-            portfolio=portfolio,
-        )
-        if result is not None:
-            total_results.append(result)
+        # Skip betting entirely if edge < 1 cent — not worth the spread
+        if agg_decision == "HOLD":
+            logger.info("  HOLD (edge %.4f < 1c), skipping trade for %s", aggregated_edge, ticker)
+        else:
+            result = betting_engine.on_forecast(
+                tick_ts=tick_ts,
+                market_id=market_id,
+                p_yes=aggregated_p_yes,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+                source="aggregated",
+                portfolio=portfolio,
+            )
+            if result is not None:
+                total_results.append(result)
 
         all_market_prices[market_id] = (yes_ask, no_ask)
 

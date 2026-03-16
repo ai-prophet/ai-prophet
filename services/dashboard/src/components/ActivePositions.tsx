@@ -289,7 +289,7 @@ export function ActivePositions({
                     <td className="px-3 py-2 text-right font-mono text-accent">
                       <span className="flex items-center justify-end gap-1">
                         {predicted != null
-                          ? `${(predicted * 100).toFixed(0)}%`
+                          ? `${(predicted * 100).toFixed(1)}%`
                           : "--"}
                         {hasMultipleModels && (
                           <span className="text-[8px] text-txt-muted">
@@ -302,7 +302,7 @@ export function ActivePositions({
                     {/* Edge = model - market */}
                     <td className={`px-3 py-2 text-right font-mono font-medium ${edge != null ? pnlCls(edge) : "text-txt-muted"}`}>
                       {edge != null
-                        ? `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(0)}pp`
+                        ? `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)}pp`
                         : "--"}
                     </td>
 
@@ -320,11 +320,18 @@ export function ActivePositions({
                   {/* Expanded per-model breakdown */}
                   {isExpanded && hasMultipleModels && (
                     <tr key={`${pos.id}-models`}>
-                      <td colSpan={10} className="px-6 py-2 bg-t-bg/50">
-                        <div className="flex flex-col gap-1">
-                          <div className="text-[9px] text-txt-muted uppercase tracking-wider mb-1">
-                            Per-Model Predictions
+                      <td colSpan={10} className="px-6 py-3 bg-t-bg/50">
+                        <div className="flex flex-col gap-2">
+                          {/* Header with yes_ask context */}
+                          <div className="flex items-center gap-4 text-[9px] text-txt-muted uppercase tracking-wider">
+                            <span>Per-Model Predictions</span>
+                            {yesAsk != null && (
+                              <span className="normal-case tracking-normal">
+                                yes_ask: <span className="text-txt-primary font-mono">{(yesAsk * 100).toFixed(1)}c</span>
+                              </span>
+                            )}
                           </div>
+                          {/* Model rows */}
                           <div className="grid gap-1">
                             {modelPreds.map((pred, i) => {
                               const modelEdge = pred.p_yes != null && yesAsk != null
@@ -335,15 +342,15 @@ export function ActivePositions({
                                   key={pred.model_name}
                                   className="flex items-center gap-3 text-[10px] font-mono"
                                 >
-                                  <span className={`w-32 truncate font-medium ${MODEL_COLORS[i % MODEL_COLORS.length]}`}>
+                                  <span className={`w-28 truncate font-medium ${MODEL_COLORS[i % MODEL_COLORS.length]}`}>
                                     {shortModelName(pred.model_name)}
                                   </span>
-                                  <span className="text-txt-primary w-12 text-right">
-                                    {pred.p_yes != null ? `${(pred.p_yes * 100).toFixed(0)}%` : "--"}
+                                  <span className="text-txt-primary w-14 text-right">
+                                    p: {pred.p_yes != null ? `${(pred.p_yes * 100).toFixed(1)}%` : "--"}
                                   </span>
-                                  <span className={`w-12 text-right ${modelEdge != null ? pnlCls(modelEdge) : "text-txt-muted"}`}>
+                                  <span className={`w-20 text-right ${modelEdge != null ? pnlCls(modelEdge) : "text-txt-muted"}`}>
                                     {modelEdge != null
-                                      ? `${modelEdge >= 0 ? "+" : ""}${(modelEdge * 100).toFixed(0)}pp`
+                                      ? `edge: ${modelEdge >= 0 ? "+" : ""}${(modelEdge * 100).toFixed(1)}pp`
                                       : "--"}
                                   </span>
                                   <span className={`px-1.5 py-px rounded text-[8px] font-bold ${
@@ -355,14 +362,21 @@ export function ActivePositions({
                                   }`}>
                                     {pred.decision}
                                   </span>
-                                  {pred.confidence != null && (
-                                    <span className="text-txt-muted">
-                                      conf: {(pred.confidence * 100).toFixed(0)}%
-                                    </span>
-                                  )}
                                 </div>
                               );
                             })}
+                          </div>
+                          {/* Aggregated summary */}
+                          <div className="flex items-center gap-3 text-[10px] font-mono pt-1 border-t border-t-border/30">
+                            <span className="w-28 font-medium text-accent">agg (sum)</span>
+                            <span className="text-accent w-14 text-right">
+                              p: {predicted != null ? `${(predicted * 100).toFixed(1)}%` : "--"}
+                            </span>
+                            <span className={`w-20 text-right font-medium ${edge != null ? pnlCls(edge) : "text-txt-muted"}`}>
+                              {edge != null
+                                ? `edge: ${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)}pp`
+                                : "--"}
+                            </span>
                           </div>
                         </div>
                       </td>
