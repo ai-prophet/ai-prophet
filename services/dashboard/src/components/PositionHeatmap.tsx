@@ -62,9 +62,11 @@ function sizeClass(capital: number, maxCapital: number): string {
 export function PositionHeatmap({
   positions,
   markets,
+  onCellClick,
 }: {
   positions: Position[];
   markets: Market[];
+  onCellClick?: (marketId: string) => void;
 }) {
   const { byId, byTicker } = useMemo(() => {
     const byId = new Map(markets.map((m) => [m.market_id, m]));
@@ -117,8 +119,9 @@ export function PositionHeatmap({
           {cells.map((cell) => (
             <div
               key={cell.id}
-              className={`${sizeClass(cell.capital, maxCapital)} rounded border border-t-border/60 p-2 flex flex-col justify-between min-h-[72px] transition-all hover:border-t-border`}
+              className={`${sizeClass(cell.capital, maxCapital)} rounded border border-t-border/60 p-2 flex flex-col justify-between min-h-[72px] transition-all hover:border-t-border ${onCellClick ? "cursor-pointer" : ""}`}
               style={pnlBgStyle(cell.pnl, maxAbsPnl)}
+              onClick={() => onCellClick?.(cell.marketId)}
             >
               <div className="flex items-start justify-between gap-1">
                 <span className="text-[10px] text-txt-primary font-medium leading-tight line-clamp-2 flex-1">

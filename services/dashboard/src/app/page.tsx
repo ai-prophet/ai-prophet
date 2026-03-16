@@ -17,19 +17,15 @@ import {
 } from "@/lib/api";
 import { fmtDollar } from "@/lib/utils";
 import { PnLChart } from "@/components/PnLChart";
-import { TradeHistory } from "@/components/TradeHistory";
-import { ActivePositions } from "@/components/ActivePositions";
-import { MarketBreakdown } from "@/components/MarketBreakdown";
 import { LiveActivity } from "@/components/LiveActivity";
 import { SystemHealth } from "@/components/SystemHealth";
-import { MarketTimeline } from "@/components/MarketTimeline";
 import { EdgeChart } from "@/components/EdgeChart";
 import { PositionHeatmap } from "@/components/PositionHeatmap";
 import { RiskMetrics } from "@/components/RiskMetrics";
 import { PnLAttribution } from "@/components/PnLAttribution";
 import { ModelCalibration } from "@/components/ModelCalibration";
 import { AlertsPanel } from "@/components/AlertsPanel";
-import { ModelAggregation } from "@/components/ModelAggregation";
+import { UnifiedMarketTable } from "@/components/UnifiedMarketTable";
 
 const REFRESH_INTERVAL = 5_000;
 
@@ -47,6 +43,7 @@ export default function Dashboard() {
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
+  const [scrollToMarketId, setScrollToMarketId] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchAll = useCallback(async () => {
@@ -247,52 +244,38 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Row 4: Model Aggregation */}
-        {markets.some((m) => (m.model_predictions?.length ?? 0) > 0) && (
-          <div>
-            <SectionLabel text="Model Predictions" count={markets.filter((m) => (m.model_predictions?.length ?? 0) > 1).length} />
-            <ModelAggregation markets={markets} />
-          </div>
-        )}
-
-        {/* Row 5: Position Heatmap */}
+        {/* Row 4: Position Heatmap */}
         {positions.length > 0 && (
           <div>
             <SectionLabel text="Position Heatmap" count={positions.length} />
-            <PositionHeatmap positions={positions} markets={markets} />
+            <PositionHeatmap
+              positions={positions}
+              markets={markets}
+              onCellClick={setScrollToMarketId}
+            />
           </div>
         )}
 
-        {/* Row 6: Open Positions */}
+        {/* Row 5: Unified Market Table */}
         <div>
-          <SectionLabel text="Open Positions" count={positions.length} />
-          <ActivePositions positions={positions} markets={markets} />
+          <SectionLabel text="Market Activity" count={markets.length} />
+          <UnifiedMarketTable
+            markets={markets}
+            positions={positions}
+            trades={trades}
+            scrollToMarketId={scrollToMarketId}
+            onScrollComplete={() => setScrollToMarketId(null)}
+          />
         </div>
 
-        {/* Row 6: P&L by Market + Market Breakdown */}
+        {/* Row 6: Model Calibration */}
+        <div>
+          <SectionLabel text="Model Calibration" />
+          <ModelCalibration calibration={calibration} />
+        </div>
+
+        {/* Row 7: Alerts + System Activity */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          <div>
-            <SectionLabel text="P&L by Market" />
-            <MarketBreakdown positions={positions} trades={trades} />
-          </div>
-          <div>
-            <SectionLabel text="Model Calibration" />
-            <ModelCalibration calibration={calibration} />
-          </div>
-        </div>
-
-        {/* Row 7: Market Activity Timeline */}
-        <div>
-          <SectionLabel text="Market Activity" />
-          <MarketTimeline trades={trades} markets={markets} positions={positions} />
-        </div>
-
-        {/* Row 8: Trades + Alerts + System Activity */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-2">
-          <div className="lg:col-span-2">
-            <SectionLabel text="Trade History" count={trades.length} />
-            <TradeHistory trades={trades} markets={markets} />
-          </div>
           <div>
             <SectionLabel text="Alerts" count={alerts.length > 0 ? alerts.length : undefined} />
             <AlertsPanel alerts={alerts} />

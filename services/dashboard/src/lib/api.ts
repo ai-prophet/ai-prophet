@@ -252,6 +252,172 @@ export interface PriceHistoryPoint {
   model_name: string | null;
 }
 
+// ── Unified market row ──────────────────────────────────────
+
+export interface UnifiedMarketRow {
+  market_id: string;
+  ticker: string;
+  event_ticker: string;
+  title: string;
+  category: string | null;
+  expiration: string | null;
+  yes_ask: number | null;
+  no_ask: number | null;
+  volume_24h: number | null;
+
+  aggregated_p_yes: number | null;
+  edge: number | null;
+  model_predictions: ModelPrediction[];
+
+  position: {
+    contract: string;
+    quantity: number;
+    avg_price: number;
+    realized_pnl: number;
+    unrealized_pnl: number;
+    capital: number;
+    return_pct: number;
+  } | null;
+
+  trades: Trade[];
+  trade_count: number;
+  last_trade_time: string | null;
+
+  has_position: boolean;
+  has_prediction: boolean;
+  has_trades: boolean;
+  updated_at: string;
+}
+
+export function buildUnifiedMarketRows(
+  markets: Market[],
+  positions: Position[],
+  trades: Trade[],
+): UnifiedMarketRow[] {
+  // Index positions by market_id
+  const posMap = new Map<string, Position>();
+  for (const pos of positions) posMap.set(pos.market_id, pos);
+
+  // Index trades by ticker
+  const tradesByTicker = new Map<string, Trade[]>();
+  // Also index by prediction.market_id for fallback matching
+  const tradesByMarketId = new Map<string, Trade[]>();
+  for (const t of trades) {
+    if (t.status !== "FILLED" && t.status !== "DRY_RUN") continue;
+    const existing = tradesByTicker.get(t.ticker);
+    if (existing) existing.push(t);
+    else tradesByTicker.set(t.ticker, [t]);
+
+    if (t.prediction?.market_id) {
+      const mid = t.prediction.market_id;
+      const ex2 = tradesByMarketId.get(mid);
+      if (ex2) ex2.push(t);
+      else tradesByMarketId.set(mid, [t]);
+    }
+  }
+
+  const seenMarketIds = new Set<string>();
+  const rows: UnifiedMarketRow[] = [];
+
+  // Process each market
+  for (const mkt of markets) {
+    seenMarketIds.add(mkt.market_id);
+    const pos = posMap.get(mkt.market_id);
+    const mktTrades = tradesByTicker.get(mkt.ticker)
+      ?? tradesByMarketId.get(mkt.market_id)
+      ?? [];
+    // Sort trades by time descending
+    const sortedTrades = [...mktTrades].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    const predicted = mkt.aggregated_p_yes ?? mkt.model_prediction?.p_yes ?? null;
+    const edge = predicted != null && mkt.yes_ask != null ? predicted - mkt.yes_ask : null;
+    const modelPreds = mkt.model_predictions?.filter((p) => p.model_name !== "aggregated") ?? [];
+
+    let positionData: UnifiedMarketRow["position"] = null;
+    if (pos) {
+      const capital = pos.avg_price * pos.quantity;
+      const totalPnl = pos.realized_pnl + pos.unrealized_pnl;
+      positionData = {
+        contract: pos.contract,
+        quantity: pos.quantity,
+        avg_price: pos.avg_price,
+        realized_pnl: pos.realized_pnl,
+        unrealized_pnl: pos.unrealized_pnl,
+        capital,
+        return_pct: capital > 0 ? (totalPnl / capital) * 100 : 0,
+      };
+    }
+
+    rows.push({
+      market_id: mkt.market_id,
+      ticker: mkt.ticker,
+      event_ticker: mkt.event_ticker,
+      title: mkt.title,
+      category: mkt.category,
+      expiration: mkt.expiration,
+      yes_ask: mkt.yes_ask,
+      no_ask: mkt.no_ask,
+      volume_24h: mkt.volume_24h,
+      aggregated_p_yes: predicted,
+      edge,
+      model_predictions: modelPreds,
+      position: positionData,
+      trades: sortedTrades,
+      trade_count: sortedTrades.length,
+      last_trade_time: sortedTrades[0]?.created_at ?? null,
+      has_position: pos != null,
+      has_prediction: predicted != null,
+      has_trades: sortedTrades.length > 0,
+      updated_at: mkt.updated_at,
+    });
+  }
+
+  // Handle orphan positions (position exists but no matching market)
+  for (const pos of positions) {
+    if (seenMarketIds.has(pos.market_id)) continue;
+    const capital = pos.avg_price * pos.quantity;
+    const totalPnl = pos.realized_pnl + pos.unrealized_pnl;
+    const mktTrades = (pos.ticker ? tradesByTicker.get(pos.ticker) : null) ?? [];
+    const sortedTrades = [...mktTrades].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    rows.push({
+      market_id: pos.market_id,
+      ticker: pos.ticker ?? "",
+      event_ticker: pos.event_ticker ?? "",
+      title: pos.market_title ?? pos.ticker ?? pos.market_id,
+      category: null,
+      expiration: null,
+      yes_ask: null,
+      no_ask: null,
+      volume_24h: null,
+      aggregated_p_yes: null,
+      edge: null,
+      model_predictions: [],
+      position: {
+        contract: pos.contract,
+        quantity: pos.quantity,
+        avg_price: pos.avg_price,
+        realized_pnl: pos.realized_pnl,
+        unrealized_pnl: pos.unrealized_pnl,
+        capital,
+        return_pct: capital > 0 ? (totalPnl / capital) * 100 : 0,
+      },
+      trades: sortedTrades,
+      trade_count: sortedTrades.length,
+      last_trade_time: sortedTrades[0]?.created_at ?? null,
+      has_position: true,
+      has_prediction: false,
+      has_trades: sortedTrades.length > 0,
+      updated_at: pos.updated_at,
+    });
+  }
+
+  return rows;
+}
+
 // ── URL helpers ─────────────────────────────────────────────
 
 export function kalshiMarketUrl(eventTicker: string): string {
