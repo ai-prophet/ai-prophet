@@ -7,6 +7,7 @@ from ai_prophet.trade.runner import ExperimentRunner
 def test_submit_intents_logs_rejection_reasons(caplog):
     runner = ExperimentRunner(
         api_url="http://example.com",
+        api_key=None,
         experiment_slug="test_rejections",
         models=[],
         publish_reasoning=False,

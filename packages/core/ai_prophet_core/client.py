@@ -72,21 +72,27 @@ class ServerAPIClient:
     def __init__(
         self,
         base_url: str,
+        api_key: str | None = None,
         timeout: int = 30,
         max_retries: int = 3,
         retry_backoff: float = 1.0,
     ):
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key.strip() if api_key else None
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
         self.client = self._build_http_client()
 
     def _build_http_client(self) -> httpx.Client:
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         return httpx.Client(
             base_url=self.base_url,
             timeout=self.timeout,
             follow_redirects=True,
+            headers=headers,
         )
 
     def _reset_client(self) -> None:

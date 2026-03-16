@@ -8,6 +8,7 @@ from ai_prophet_core.client import APIConnectionError, APIValidationError, Serve
 
 def test_constructor_defaults_match_legacy_config():
     client = ServerAPIClient("https://example.test")
+    assert client.api_key is None
     assert client.timeout == 30
     assert client.max_retries == 3
     assert client.retry_backoff == 1.0
@@ -16,13 +17,20 @@ def test_constructor_defaults_match_legacy_config():
 def test_constructor_overrides_are_respected():
     client = ServerAPIClient(
         "https://example.test",
+        api_key="test-key",
         timeout=12,
         max_retries=7,
         retry_backoff=0.25,
     )
+    assert client.api_key == "test-key"
     assert client.timeout == 12
     assert client.max_retries == 7
     assert client.retry_backoff == 0.25
+
+
+def test_http_client_includes_api_key_header():
+    client = ServerAPIClient("https://example.test", api_key="test-key")
+    assert client.client.headers["X-API-Key"] == "test-key"
 
 
 def test_request_retries_on_remote_protocol_error(monkeypatch):

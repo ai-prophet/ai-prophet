@@ -97,6 +97,7 @@ class ExperimentRunner:
     def __init__(
         self,
         api_url: str,
+        api_key: str | None,
         experiment_slug: str,
         models: list[dict],
         config: dict | None = None,
@@ -113,6 +114,7 @@ class ExperimentRunner:
         """
         Args:
             api_url: Core API base URL.
+            api_key: Optional Core API key used for authenticated requests.
             experiment_slug: Stable slug (restarts resume).
             models: List of {"model": "provider:name", "rep": 0} dicts.
             config: Experiment config dict (included in config_hash).
@@ -126,7 +128,7 @@ class ExperimentRunner:
             memory_dir: Directory for local reasoning memory files.
             memory_max_rows: Max reasoning rows persisted per participant.
         """
-        self.api = ServerAPIClient(base_url=api_url)
+        self.api = ServerAPIClient(base_url=api_url, api_key=api_key)
         self.client_config = client_config or ClientConfig.get()
         self.memory_config = self.client_config.memory
         self.slug = experiment_slug

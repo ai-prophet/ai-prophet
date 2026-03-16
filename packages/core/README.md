@@ -43,7 +43,7 @@ when it reads process configuration.
 ```python
 from ai_prophet_core import ServerAPIClient
 
-client = ServerAPIClient(base_url="https://api.prophetarena.co")
+client = ServerAPIClient(base_url="https://ai-prophet-core-api-998105805337.us-central1.run.app")
 health = client.health_check()
 print(health.status)
 ```

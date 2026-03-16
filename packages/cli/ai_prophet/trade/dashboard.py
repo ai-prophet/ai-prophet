@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import httpx
 
 _API_URL = ""
+_API_KEY = ""
 _SLUG = ""
 _HTML_BYTES = b""
 
@@ -39,7 +40,8 @@ class _Handler(BaseHTTPRequestHandler):
         if query:
             url += f"?{query}"
         try:
-            resp = httpx.get(url, timeout=15)
+            headers = {"X-API-Key": _API_KEY} if _API_KEY else None
+            resp = httpx.get(url, timeout=15, headers=headers)
             data = resp.content
             # Scope /experiments to configured slug
             if _SLUG and path == "/experiments" and resp.status_code == 200:
@@ -60,10 +62,11 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def open_dashboard(api_url: str, slug: str = "", port: int = 8501):
+def open_dashboard(api_url: str, slug: str = "", port: int = 8501, api_key: str | None = None):
     """Serve the dashboard and open it in the browser."""
-    global _API_URL, _SLUG, _HTML_BYTES
+    global _API_URL, _API_KEY, _SLUG, _HTML_BYTES
     _API_URL = api_url.rstrip("/")
+    _API_KEY = api_key or ""
     _SLUG = slug
     _HTML_BYTES = _HTML.encode()
 

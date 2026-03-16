@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-# Hosted Prophet Arena API — default trade benchmark endpoint.
-DEFAULT_API_URL = "https://api.prophetarena.co"
+# Hosted Core API — default trade benchmark endpoint.
+DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "grok": "xai",
@@ -39,6 +39,7 @@ class Credentials:
     """API keys and deployment overrides."""
 
     server_url: str = DEFAULT_API_URL
+    server_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     gemini_api_key: str | None = None
@@ -58,6 +59,7 @@ class Credentials:
 
         return cls(
             server_url=os.getenv("PA_SERVER_URL", DEFAULT_API_URL),
+            server_api_key=os.getenv("PA_SERVER_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             gemini_api_key=(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")),
@@ -113,6 +115,7 @@ class Credentials:
         return (
             f"Credentials("
             f"server_url={self.server_url!r}, "
+            f"server_api_key={_mask(self.server_api_key)}, "
             f"anthropic={_mask(self.anthropic_api_key)}, "
             f"openai={_mask(self.openai_api_key)}, "
             f"gemini={_mask(self.gemini_api_key)}, "

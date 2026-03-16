@@ -27,6 +27,7 @@ python -m pip install -e "packages/cli[dev]"
 # Set your LLM API keys
 export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
+export PA_SERVER_API_KEY="prophet_..."
 
 # Run a benchmark: 2 models, 2 replicates each, 96 ticks
 prophet trade eval run \
@@ -68,7 +69,7 @@ prophet trade eval run [OPTIONS]
   --trace-dir PATH        Local trace directory
   --publish-reasoning     Persist per-stage reasoning in plan_json
   --dashboard             Open local dashboard alongside the run
-  --api-url URL           Core API URL (default: hosted Prophet Arena API)
+  --api-url URL           Core API URL (default: hosted Core API)
   -v, --verbose           Verbose output
 
 prophet trade              # Show trade subcommand help
@@ -126,6 +127,7 @@ implicitly load `.env` files.
 | `{PROVIDER}_API_KEY` | API key for OpenAI-compatible providers (e.g. `TOGETHER_API_KEY`) |
 | `BRAVE_API_KEY` | Brave Search API key (optional, for web search) |
 | `PA_SERVER_URL` | Override API URL |
+| `PA_SERVER_API_KEY` | Core API key for authenticated benchmark requests |
 | `PA_VERBOSE` | Enable verbose LLM logging |
 | `PA_MEMORY_DIR` | Local reasoning memory directory (default `~/.pa_memory`) |
 | `PA_MEMORY_MAX_ROWS` | Max JSONL memory rows per participant (default `1000`) |

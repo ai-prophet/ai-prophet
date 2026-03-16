@@ -39,6 +39,7 @@ def test_process_tick_timeout_ignores_late_finalize(monkeypatch):
 
     runner = ExperimentRunner(
         api_url="http://example.com",
+        api_key=None,
         experiment_slug="timeout-race",
         models=[],
         build_pipeline=None,

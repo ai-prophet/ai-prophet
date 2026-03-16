@@ -10,6 +10,7 @@ def test_default_credentials():
     creds = Credentials()
 
     assert creds.server_url  # has a default
+    assert creds.server_api_key is None
     assert creds.anthropic_api_key is None
     assert creds.openai_api_key is None
     assert creds.gemini_api_key is None
@@ -21,6 +22,7 @@ def test_default_credentials():
 def test_from_env(monkeypatch):
     """Test loading credentials from environment variables."""
     monkeypatch.setenv("PA_SERVER_URL", "http://prod.example.com:8000")
+    monkeypatch.setenv("PA_SERVER_API_KEY", "core_key_123")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant_key_123")
     monkeypatch.setenv("OPENAI_API_KEY", "oai_key_456")
     monkeypatch.setenv("GEMINI_API_KEY", "gem_key_789")
@@ -31,6 +33,7 @@ def test_from_env(monkeypatch):
     creds = Credentials.from_env()
 
     assert creds.server_url == "http://prod.example.com:8000"
+    assert creds.server_api_key == "core_key_123"
     assert creds.anthropic_api_key == "ant_key_123"
     assert creds.openai_api_key == "oai_key_456"
     assert creds.gemini_api_key == "gem_key_789"
