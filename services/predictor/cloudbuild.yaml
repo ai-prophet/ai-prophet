@@ -1,0 +1,23 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/predictor', '.']
+    dir: 'services/predictor'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/predictor']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    args:
+      - 'gcloud'
+      - 'run'
+      - 'deploy'
+      - 'predictor'
+      - '--image=gcr.io/$PROJECT_ID/predictor'
+      - '--region=us-west1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--memory=512Mi'
+      - '--timeout=120s'
+      - '--concurrency=80'
+      - '--min-instances=0'
+      - '--max-instances=5'

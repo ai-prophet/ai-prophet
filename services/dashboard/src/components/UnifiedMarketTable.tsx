@@ -503,18 +503,36 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
         const cost = (trade.price_cents / 100) * qty;
         const pred = trade.prediction;
 
-        // Cumulative position
+        // Cumulative position + sell P&L tracking
         let cumYes = 0, cumNo = 0, cumCost = 0;
+        let avgEntry = 0; // running weighted avg entry price
+        let totalQty = 0;
+        let sellPnl = 0; // P&L for current sell trade
         for (let i = 0; i <= idx; i++) {
           const t = chronTrades[i];
           const tQty = t.filled_shares || t.count;
           const tSell = t.action?.toUpperCase() === "SELL";
-          const tCost = (t.price_cents / 100) * tQty;
+          const tPrice = t.price_cents / 100;
+          const tCost = tPrice * tQty;
           if (t.side.toLowerCase() === "yes") cumYes += tSell ? -tQty : tQty;
           else cumNo += tSell ? -tQty : tQty;
           cumCost += tSell ? -tCost : tCost;
+
+          if (tSell) {
+            // P&L on this sell = proceeds - cost basis
+            sellPnl = (tPrice - avgEntry) * tQty;
+            totalQty -= tQty;
+          } else {
+            // Update weighted avg entry
+            avgEntry = totalQty + tQty > 0
+              ? (avgEntry * totalQty + tPrice * tQty) / (totalQty + tQty)
+              : tPrice;
+            totalQty += tQty;
+            sellPnl = 0;
+          }
         }
         const cumulativeQty = Math.max(cumYes, cumNo, 0);
+        const currentSellPnl = isSell ? sellPnl : 0;
 
         return (
           <div key={trade.id} className="relative flex items-start gap-3 py-1.5">
@@ -541,6 +559,11 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
               <span className="text-txt-muted">
                 {isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}
               </span>
+              {isSell && (
+                <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>
+                  {currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}
+                </span>
+              )}
               <span className="text-txt-muted">
                 total: {cumulativeQty} · ${Math.max(0, cumCost).toFixed(2)}
               </span>

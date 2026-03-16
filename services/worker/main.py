@@ -23,12 +23,14 @@ Environment variables:
                                  Examples: gemini:gemini-3.1-pro-preview, anthropic:claude-sonnet-4-5-20250929
     GOOGLE_API_KEY            — Google AI API key (for gemini provider)
     WORKER_STRATEGY           — Betting strategy: default|rebalancing (default: default)
-    WORKER_MAX_MARKETS        — Max markets to analyze per cycle (default: 10)
+    WORKER_MAX_MARKETS        — Max NEW markets to fetch per cycle (default: 25)
+    WORKER_MAX_ACTIVE_MARKETS — Max total active markets (sticky + new) (default: 40)
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import logging
 import os
@@ -351,6 +353,22 @@ def get_traded_tickers(db_engine) -> set[str]:
             return {r[0] for r in rows}
     except Exception as e:
         logger.warning("Failed to query traded tickers: %s", e)
+        return set()
+
+
+def get_tracked_tickers(db_engine) -> set[str]:
+    """Return all tickers currently in the trading_markets table."""
+    if db_engine is None:
+        return set()
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import TradingMarket
+
+        with get_session(db_engine) as session:
+            rows = session.query(TradingMarket.ticker).all()
+            return {r[0] for r in rows if r[0]}
+    except Exception as e:
+        logger.warning("Failed to query tracked tickers: %s", e)
         return set()
 
 
@@ -768,6 +786,43 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
     return predict
 
 
+# ── Remote prediction (Cloud Run service) ─────────────────────────
+
+PREDICTOR_SERVICE_URL = os.getenv("PREDICTOR_SERVICE_URL", "").rstrip("/")
+PREDICTOR_API_KEY = os.getenv("PREDICTOR_API_KEY", "")
+
+
+def _remote_predict(model_spec: str, market_info: dict) -> dict:
+    """Call the remote predictor service for a single (model, market) pair."""
+    import requests
+
+    resp = requests.post(
+        f"{PREDICTOR_SERVICE_URL}/predict",
+        json={"model_spec": model_spec, "market_info": market_info},
+        headers={"X-API-Key": PREDICTOR_API_KEY} if PREDICTOR_API_KEY else {},
+        timeout=130,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _remote_predict_with_retry(model_spec: str, market_info: dict,
+                                max_retries: int = 2) -> dict:
+    """Call remote predictor with retries on failure."""
+    for attempt in range(max_retries + 1):
+        try:
+            return _remote_predict(model_spec, market_info)
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(
+                    "  [%s] remote attempt %d failed, retrying in 5s: %s",
+                    model_spec, attempt + 1, e,
+                )
+                time.sleep(5)
+            else:
+                raise
+
+
 # ── Betting engine factory ────────────────────────────────────────
 
 def build_betting_engine(strategy_name: str = "default", dry_run_override: bool | None = None):
@@ -813,6 +868,7 @@ def run_cycle(args) -> None:
     strategy_name = os.getenv("WORKER_STRATEGY", "default")
     dry_run_override = True if args.dry_run else None
     max_markets = int(os.getenv("WORKER_MAX_MARKETS", "25"))
+    max_active = int(os.getenv("WORKER_MAX_ACTIVE_MARKETS", "40"))
     models_str = os.getenv("WORKER_MODELS", "gemini:gemini-3.1-pro-preview")
     model_specs = [m.strip() for m in models_str.split(",") if m.strip()]
 
@@ -835,28 +891,43 @@ def run_cycle(args) -> None:
     adapter = betting_engine._get_adapter()
 
     logger.info(
-        "Starting cycle: models=%s, strategy=%s, max_markets=%d",
-        model_specs, strategy_name, max_markets,
+        "Starting cycle: models=%s, strategy=%s, max_markets=%d, max_active=%d",
+        model_specs, strategy_name, max_markets, max_active,
     )
 
-    # 1. Fetch markets from Kalshi
-    raw_markets = fetch_kalshi_markets(adapter, max_markets=max_markets)
+    # 1. Gather sticky markets (already tracked in DB)
+    tracked_tickers = get_tracked_tickers(db_engine) | get_traded_tickers(db_engine)
+    sticky_markets: list[dict] = []
 
-    # 1b. Re-include any previously-traded markets not already in the list
-    fetched_tickers = {m["ticker"] for m in raw_markets}
-    traded_tickers = get_traded_tickers(db_engine)
-    missing_tickers = traded_tickers - fetched_tickers
-
-    if missing_tickers:
-        logger.info("Re-fetching %d previously-traded markets: %s",
-                     len(missing_tickers), missing_tickers)
-        for ticker in missing_tickers:
+    if tracked_tickers:
+        logger.info("Re-fetching %d sticky markets: %s", len(tracked_tickers), tracked_tickers)
+        for ticker in tracked_tickers:
             mkt = fetch_market_by_ticker(adapter, ticker)
             if mkt:
-                raw_markets.append(mkt)
-                logger.info("  Re-added sticky market: %s", ticker)
+                sticky_markets.append(mkt)
             else:
                 logger.info("  Sticky market %s no longer active, skipping", ticker)
+
+    # 2. Fetch NEW markets from Kalshi, excluding already-tracked ones
+    new_slots = max(0, max_active - len(sticky_markets))
+    if new_slots > 0:
+        # Fetch more candidates than needed so we have enough after excluding sticky
+        all_new = fetch_kalshi_markets(adapter, max_markets=max_markets + len(tracked_tickers))
+        # Filter out already-tracked tickers
+        new_markets = [m for m in all_new if m["ticker"] not in tracked_tickers]
+        new_markets = new_markets[:new_slots]
+        logger.info(
+            "Fetched %d new markets (%d candidates, %d excluded as already tracked)",
+            len(new_markets), len(all_new), len(all_new) - len(new_markets),
+        )
+    else:
+        new_markets = []
+        logger.info("At max active markets (%d), not fetching new ones", max_active)
+
+    # 3. Combine: sticky first, then new
+    raw_markets = sticky_markets + new_markets
+    logger.info("Total markets this cycle: %d sticky + %d new = %d",
+                len(sticky_markets), len(new_markets), len(raw_markets))
 
     if not raw_markets:
         logger.warning("No markets fetched, skipping cycle")
@@ -871,28 +942,16 @@ def run_cycle(args) -> None:
     # Track (market_id, model, edge) for alert checking
     all_edges: list[tuple[str, str, float]] = []
 
-    # 2. Create all predictors upfront
+    # ── Phase A: Pre-filter markets (sequential) ────────────────────
+    # Validate prices, apply spread filter, save snapshots, skip unchanged.
+    # Build a list of markets that need LLM analysis.
     tick_ts = datetime.now(UTC)
     total_results = []
-    predictors: dict[str, Any] = {}
 
-    for model_spec in model_specs:
-        try:
-            predictors[model_spec] = create_llm_predictor(model_spec)
-        except Exception as e:
-            logger.error("Failed to create predictor for %s: %s", model_spec, e)
-            if db_engine:
-                log_system_event(db_engine, "ERROR", f"Predictor init failed for {model_spec}: {e}")
+    from ai_prophet_core.betting.config import MAX_SPREAD
 
-    if not predictors:
-        logger.error("No predictors available, skipping cycle")
-        if betting_engine:
-            betting_engine.close()
-        return
+    markets_to_analyze: list[dict] = []  # enriched market dicts
 
-    logger.info("Initialized %d predictors: %s", len(predictors), list(predictors.keys()))
-
-    # 3. For each market, collect predictions from ALL models, then aggregate and trade
     for market in raw_markets:
         if _shutdown_requested:
             logger.info("Shutdown requested, stopping analysis")
@@ -903,11 +962,9 @@ def run_cycle(args) -> None:
         subtitle = market.get("subtitle", "")
         category = market.get("category", "")
 
-        # Prices are already in dollars (0-1 range) from fetch_kalshi_markets
         yes_ask = market.get("yes_ask")
         no_ask = market.get("no_ask")
 
-        # Fallback to last_price
         if yes_ask is None or no_ask is None:
             last_price = market.get("last_price")
             if last_price is not None:
@@ -920,8 +977,6 @@ def run_cycle(args) -> None:
         yes_ask = float(yes_ask)
         no_ask = float(no_ask)
 
-        # Skip markets with excessive spread (illiquid)
-        from ai_prophet_core.betting.config import MAX_SPREAD
         if yes_ask + no_ask > MAX_SPREAD:
             logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
             continue
@@ -945,7 +1000,7 @@ def run_cycle(args) -> None:
                 volume_24h=float(market.get("volume_24h", 0) or 0),
             )
 
-            # Skip if we hold a position and market prices haven't changed
+            # Skip if position held and prices unchanged
             try:
                 from db_models import TradingPosition as TP, MarketPriceSnapshot as MPS
                 from ai_prophet_core.betting.db import get_session as _gs
@@ -971,95 +1026,186 @@ def run_cycle(args) -> None:
             except Exception:
                 pass
 
-            # Save price snapshot (market-only, before LLM prediction)
             save_price_snapshot(
                 db_engine, market_id, ticker,
                 yes_ask=yes_ask, no_ask=no_ask,
                 volume_24h=float(market.get("volume_24h", 0) or 0),
             )
 
-        # Collect predictions from ALL models for this market
-        market_info = {
-            "title": title,
-            "subtitle": subtitle,
-            "category": category,
+        # Market passed all filters — queue for LLM analysis
+        markets_to_analyze.append({
+            **market,
             "yes_ask": yes_ask,
             "no_ask": no_ask,
-        }
+            "market_id": market_id,
+            "market_info": {
+                "title": title,
+                "subtitle": subtitle,
+                "category": category,
+                "yes_ask": yes_ask,
+                "no_ask": no_ask,
+            },
+        })
 
-        logger.info("Analyzing: %s (yes=%.2f, no=%.2f)", title[:60], yes_ask, no_ask)
+    logger.info("Phase A complete: %d markets to analyze (from %d raw)",
+                len(markets_to_analyze), len(raw_markets))
 
-        model_predictions: dict[str, dict] = {}  # model_spec -> {p_yes, confidence, reasoning, ...}
+    if not markets_to_analyze:
+        logger.info("No markets to analyze, skipping prediction phase")
+        if betting_engine:
+            betting_engine.close()
+        return
 
-        for mi, (model_spec, predictor) in enumerate(predictors.items()):
-            # Delay between model calls to avoid API rate limits
-            if mi > 0:
-                time.sleep(2)
+    # ── Phase B: Collect predictions (parallel or sequential) ─────
+    # predictions[(ticker, model_spec)] = {p_yes, confidence, reasoning, analysis}
+    predictions: dict[tuple[str, str], dict] = {}
 
-            max_retries = 2
-            for attempt in range(max_retries + 1):
+    if PREDICTOR_SERVICE_URL:
+        # ── Remote parallel prediction via Cloud Run service ──────
+        logger.info("Using remote predictor: %s (parallel fanout)", PREDICTOR_SERVICE_URL)
+
+        prediction_tasks = [
+            (mkt, ms)
+            for mkt in markets_to_analyze
+            for ms in model_specs
+        ]
+
+        logger.info("Fanning out %d prediction tasks (%d markets × %d models) with max_workers=20",
+                     len(prediction_tasks), len(markets_to_analyze), len(model_specs))
+
+        t_fan = time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            future_to_key = {}
+            for mkt, ms in prediction_tasks:
+                future = executor.submit(
+                    _remote_predict_with_retry, ms, mkt["market_info"],
+                )
+                future_to_key[future] = (mkt["ticker"], ms)
+
+            for future in concurrent.futures.as_completed(future_to_key):
+                key = future_to_key[future]
+                ticker, ms = key
                 try:
-                    prediction = predictor(market_info)
-                    p_yes = prediction["p_yes"]
-                    confidence = prediction.get("confidence", 0.5)
-                    reasoning = prediction.get("reasoning", "")
-
+                    result = future.result()
+                    predictions[key] = result
                     logger.info(
-                        "  [%s] p_yes=%.3f (confidence=%.2f) | %s",
-                        model_spec.split(":")[-1], p_yes, confidence, reasoning[:60],
+                        "  [%s] %s → p_yes=%.3f",
+                        ms.split(":")[-1], ticker, result["p_yes"],
                     )
-
-                    model_predictions[model_spec] = {
-                        "p_yes": p_yes,
-                        "confidence": confidence,
-                        "reasoning": reasoning,
-                        "analysis": prediction.get("analysis", {}),
-                    }
-
-                    # Track edge for alert checking
-                    edge = abs(p_yes - yes_ask)
-                    all_edges.append((market_id, model_spec, edge))
-
-                    # Classify decision for logging
-                    decision = "HOLD"
-                    if p_yes > yes_ask + 0.05:
-                        decision = "BUY_YES"
-                    elif p_yes < (1.0 - no_ask) - 0.05:
-                        decision = "BUY_NO"
-
-                    # Save individual model run
-                    if db_engine:
-                        save_model_run(
-                            db_engine, model_spec, market_id, decision, confidence,
-                            metadata={"p_yes": p_yes, "reasoning": reasoning,
-                                      "analysis": prediction.get("analysis", {}),
-                                      "yes_ask": yes_ask, "no_ask": no_ask},
-                        )
-
-                    break  # Success — exit retry loop
                 except Exception as e:
-                    if attempt < max_retries:
-                        logger.warning("  [%s] attempt %d failed, retrying in 5s: %s", model_spec, attempt + 1, e)
-                        time.sleep(5)
-                    else:
-                        logger.error("  [%s] prediction failed after %d attempts: %s", model_spec, max_retries + 1, e)
+                    logger.error("  [%s] %s prediction failed: %s", ms, ticker, e)
+
+        logger.info("Phase B complete: %d/%d predictions in %.1fs",
+                     len(predictions), len(prediction_tasks), time.time() - t_fan)
+    else:
+        # ── Local sequential prediction (development fallback) ────
+        logger.info("Using local predictors (sequential, no PREDICTOR_SERVICE_URL set)")
+
+        predictors: dict[str, Any] = {}
+        for model_spec in model_specs:
+            try:
+                predictors[model_spec] = create_llm_predictor(model_spec)
+            except Exception as e:
+                logger.error("Failed to create predictor for %s: %s", model_spec, e)
+                if db_engine:
+                    log_system_event(db_engine, "ERROR", f"Predictor init failed for {model_spec}: {e}")
+
+        if not predictors:
+            logger.error("No predictors available, skipping cycle")
+            if betting_engine:
+                betting_engine.close()
+            return
+
+        for mkt in markets_to_analyze:
+            ticker = mkt["ticker"]
+            market_info = mkt["market_info"]
+
+            logger.info("Analyzing: %s (yes=%.2f, no=%.2f)",
+                        mkt.get("title", "")[:60], mkt["yes_ask"], mkt["no_ask"])
+
+            for mi, (model_spec, predictor) in enumerate(predictors.items()):
+                if mi > 0:
+                    time.sleep(2)
+
+                max_retries = 2
+                for attempt in range(max_retries + 1):
+                    try:
+                        prediction = predictor(market_info)
+                        predictions[(ticker, model_spec)] = prediction
+                        logger.info(
+                            "  [%s] p_yes=%.3f (confidence=%.2f) | %s",
+                            model_spec.split(":")[-1],
+                            prediction["p_yes"],
+                            prediction.get("confidence", 0.5),
+                            prediction.get("reasoning", "")[:60],
+                        )
+                        break
+                    except Exception as e:
+                        if attempt < max_retries:
+                            logger.warning("  [%s] attempt %d failed, retrying in 5s: %s",
+                                           model_spec, attempt + 1, e)
+                            time.sleep(5)
+                        else:
+                            logger.error("  [%s] prediction failed after %d attempts: %s",
+                                         model_spec, max_retries + 1, e)
+
+    # ── Phase C: Aggregate & bet (sequential) ─────────────────────
+    # BettingEngine is NOT thread-safe — process all markets sequentially.
+    for mkt in markets_to_analyze:
+        if _shutdown_requested:
+            logger.info("Shutdown requested, stopping betting")
+            break
+
+        ticker = mkt["ticker"]
+        market_id = mkt["market_id"]
+        yes_ask = mkt["yes_ask"]
+        no_ask = mkt["no_ask"]
+        title = mkt.get("title", "Unknown")
+
+        # Gather this market's predictions across all models
+        model_predictions: dict[str, dict] = {}
+        for ms in model_specs:
+            pred = predictions.get((ticker, ms))
+            if pred:
+                p_yes = pred["p_yes"]
+                confidence = pred.get("confidence", 0.5)
+                reasoning = pred.get("reasoning", "")
+
+                model_predictions[ms] = {
+                    "p_yes": p_yes,
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                    "analysis": pred.get("analysis", {}),
+                }
+
+                # Track edge for alert checking
+                all_edges.append((market_id, ms, abs(p_yes - yes_ask)))
+
+                # Save individual model run
+                decision = "HOLD"
+                if p_yes > yes_ask + 0.05:
+                    decision = "BUY_YES"
+                elif p_yes < (1.0 - no_ask) - 0.05:
+                    decision = "BUY_NO"
+
+                if db_engine:
+                    save_model_run(
+                        db_engine, ms, market_id, decision, confidence,
+                        metadata={"p_yes": p_yes, "reasoning": reasoning,
+                                  "analysis": pred.get("analysis", {}),
+                                  "yes_ask": yes_ask, "no_ask": no_ask},
+                    )
 
         if not model_predictions:
             logger.warning("  No model predictions for %s, skipping", ticker)
             all_market_prices[market_id] = (yes_ask, no_ask)
             continue
 
-        # Aggregate: signed-sum of edges.
-        # Each model contributes (p_yes_i - yes_ask) independently.
-        # Summing gives a stronger signal when models agree.
-        # We store a synthetic p_yes = yes_ask + sum(edges) so the
-        # rebalancing strategy (target = p_yes - yes_ask) sees the
-        # correct summed edge as its target position.
+        # Aggregate: signed-sum of edges
         edges = [mp["p_yes"] - yes_ask for mp in model_predictions.values()]
         aggregated_edge = sum(edges)
-        aggregated_p_yes = yes_ask + aggregated_edge  # synthetic, can exceed [0,1]
+        aggregated_p_yes = yes_ask + aggregated_edge
 
-        # Build per-model breakdown for metadata
         per_model_breakdown = {
             ms: {"p_yes": mp["p_yes"], "confidence": mp["confidence"],
                  "edge": round(mp["p_yes"] - yes_ask, 6)}
@@ -1072,8 +1218,6 @@ def run_cycle(args) -> None:
             {ms.split(":")[-1]: f"{mp['p_yes']:.3f}" for ms, mp in model_predictions.items()},
         )
 
-        # Classify aggregated decision based on summed edge
-        # HOLD if edge is within (-0.01, 0.01) — less than 1 cent, not worth betting
         if aggregated_edge >= 0.01:
             agg_decision = "BUY_YES"
         elif aggregated_edge <= -0.01:
@@ -1097,12 +1241,12 @@ def run_cycle(args) -> None:
             save_price_snapshot(
                 db_engine, market_id, ticker,
                 yes_ask=yes_ask, no_ask=no_ask,
-                volume_24h=float(market.get("volume_24h", 0) or 0),
+                volume_24h=float(mkt.get("volume_24h", 0) or 0),
                 model_p_yes=round(aggregated_p_yes, 6),
                 model_name="aggregated",
             )
 
-        # Build per-market portfolio snapshot from existing position
+        # Build per-market portfolio snapshot
         portfolio = None
         if db_engine:
             try:
@@ -1119,7 +1263,6 @@ def run_cycle(args) -> None:
                         sum(p.realized_pnl for p in all_positions)
                     ))
 
-                    # Compute available cash: real balance - deployed + realized
                     try:
                         real_balance = adapter.get_balance()
                     except Exception:
@@ -1143,8 +1286,7 @@ def run_cycle(args) -> None:
             except Exception as e:
                 logger.debug("Could not load position for portfolio: %s", e)
 
-        # Feed AGGREGATED prediction into BettingEngine (one trade per market)
-        # Skip betting entirely if edge < 1 cent — not worth the spread
+        # Feed aggregated prediction into BettingEngine
         if agg_decision == "HOLD":
             logger.info("  HOLD (edge %.4f < 1c), skipping trade for %s", aggregated_edge, ticker)
         else:
@@ -1173,7 +1315,7 @@ def run_cycle(args) -> None:
         if db_engine:
             log_system_event(
                 db_engine, "INFO",
-                f"Cycle complete: models={list(predictors.keys())}, placed={placed}, "
+                f"Cycle complete: models={model_specs}, placed={placed}, "
                 f"skipped={skipped}, total={len(total_results)}",
             )
 
