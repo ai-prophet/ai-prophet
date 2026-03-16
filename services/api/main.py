@@ -313,8 +313,11 @@ def get_markets(
             model_prediction = None  # backward-compat: latest single prediction
 
             if latest_agg:
-                # Get all model runs from ±60s of the aggregated run
-                cycle_start = latest_agg.timestamp - timedelta(seconds=60)
+                # Get all model runs from the same cycle.
+                # Gemini calls can take 30-60s each, so with multiple models
+                # the first model's run can be several minutes before the
+                # aggregated run.
+                cycle_start = latest_agg.timestamp - timedelta(seconds=600)
                 cycle_end = latest_agg.timestamp + timedelta(seconds=5)
                 cycle_runs = (
                     session.query(ModelRun)
