@@ -45,10 +45,8 @@ interface ModelMarketRow {
   title: string;
   ticker: string;
   yes_ask: number;
-  aggregated_p_yes: number;
-  edge: number;
-  models: Record<string, { p_yes: number; decision: string }>;
-  disagreement: number; // max - min p_yes across models
+  aggregated_edge: number;
+  models: Record<string, { p_yes: number; decision: string; edge: number }>;
 }
 
 export function ModelAggregation({ markets }: { markets: Market[] }) {
@@ -60,48 +58,39 @@ export function ModelAggregation({ markets }: { markets: Market[] }) {
       const preds = mkt.model_predictions?.filter((p) => p.model_name !== "aggregated") ?? [];
       if (preds.length === 0) continue;
 
-      const models: Record<string, { p_yes: number; decision: string }> = {};
-      const pValues: number[] = [];
+      const models: Record<string, { p_yes: number; decision: string; edge: number }> = {};
 
       for (const pred of preds) {
         if (pred.p_yes == null) continue;
-        models[pred.model_name] = { p_yes: pred.p_yes, decision: pred.decision };
+        const edge = pred.p_yes - (mkt.yes_ask ?? 0);
+        models[pred.model_name] = { p_yes: pred.p_yes, decision: pred.decision, edge };
         modelNameSet.add(pred.model_name);
-        pValues.push(pred.p_yes);
       }
 
-      if (pValues.length === 0 || mkt.yes_ask == null) continue;
+      if (Object.keys(models).length === 0 || mkt.yes_ask == null) continue;
 
-      const aggP = mkt.aggregated_p_yes ?? pValues.reduce((a, b) => a + b, 0) / pValues.length;
-      const disagreement = pValues.length > 1 ? Math.max(...pValues) - Math.min(...pValues) : 0;
+      // Signed-sum of edges
+      const aggregated_edge = Object.values(models).reduce((s, m) => s + m.edge, 0);
 
       rows.push({
         market_id: mkt.market_id,
         title: mkt.title,
         ticker: mkt.ticker,
         yes_ask: mkt.yes_ask,
-        aggregated_p_yes: aggP,
-        edge: aggP - mkt.yes_ask,
+        aggregated_edge,
         models,
-        disagreement,
       });
     }
 
-    // Sort by absolute edge descending
-    rows.sort((a, b) => Math.abs(b.edge) - Math.abs(a.edge));
+    // Sort by absolute aggregated edge descending
+    rows.sort((a, b) => Math.abs(b.aggregated_edge) - Math.abs(a.aggregated_edge));
 
     const modelNames = Array.from(modelNameSet).sort();
-
-    // Compute summary stats
-    const totalDisagreements = rows.filter((r) => r.disagreement > 0.10).length;
-    const avgDisagreement = rows.length > 0
-      ? rows.reduce((s, r) => s + r.disagreement, 0) / rows.length
-      : 0;
 
     return {
       rows,
       modelNames,
-      stats: { totalDisagreements, avgDisagreement, totalMarkets: rows.length },
+      stats: { totalMarkets: rows.length },
     };
   }, [markets]);
 
@@ -133,14 +122,6 @@ export function ModelAggregation({ markets }: { markets: Market[] }) {
         <span className="text-txt-muted">
           Markets: <span className="text-txt-primary font-medium">{stats.totalMarkets}</span>
         </span>
-        <span className="text-txt-muted">
-          Avg spread: <span className="text-txt-primary font-medium">{(stats.avgDisagreement * 100).toFixed(1)}pp</span>
-        </span>
-        {stats.totalDisagreements > 0 && (
-          <span className="text-amber-400">
-            {stats.totalDisagreements} high disagreement{stats.totalDisagreements > 1 ? "s" : ""} (&gt;10pp)
-          </span>
-        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -157,9 +138,7 @@ export function ModelAggregation({ markets }: { markets: Market[] }) {
                   {shortModelName(name)}
                 </th>
               ))}
-              <th className="px-3 py-2 text-right font-medium text-accent">Aggregated</th>
-              <th className="px-3 py-2 text-right font-medium">Edge</th>
-              <th className="px-3 py-2 text-right font-medium">Spread</th>
+              <th className="px-3 py-2 text-right font-medium text-accent">Agg Edge</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-t-border/40">
@@ -184,19 +163,14 @@ export function ModelAggregation({ markets }: { markets: Market[] }) {
                   return (
                     <td key={name} className={`px-3 py-2 text-right font-mono ${MODEL_COLORS[i % MODEL_COLORS.length]}`}>
                       {(pred.p_yes * 100).toFixed(0)}%
+                      <span className={`ml-1 text-[9px] ${pnlCls(pred.edge)}`}>
+                        {pred.edge >= 0 ? "+" : ""}{(pred.edge * 100).toFixed(0)}
+                      </span>
                     </td>
                   );
                 })}
-                <td className="px-3 py-2 text-right font-mono text-accent font-medium">
-                  {(row.aggregated_p_yes * 100).toFixed(0)}%
-                </td>
-                <td className={`px-3 py-2 text-right font-mono font-medium ${pnlCls(row.edge)}`}>
-                  {row.edge >= 0 ? "+" : ""}{(row.edge * 100).toFixed(0)}pp
-                </td>
-                <td className="px-3 py-2 text-right font-mono">
-                  <span className={row.disagreement > 0.10 ? "text-amber-400 font-medium" : "text-txt-muted"}>
-                    {(row.disagreement * 100).toFixed(0)}pp
-                  </span>
+                <td className={`px-3 py-2 text-right font-mono font-medium ${pnlCls(row.aggregated_edge)}`}>
+                  {row.aggregated_edge >= 0 ? "+" : ""}{(row.aggregated_edge * 100).toFixed(0)}pp
                 </td>
               </tr>
             ))}

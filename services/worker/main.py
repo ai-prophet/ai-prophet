@@ -1031,27 +1031,34 @@ def run_cycle(args) -> None:
             all_market_prices[market_id] = (yes_ask, no_ask)
             continue
 
-        # Aggregate: simple mean of all model p_yes values
-        p_yes_values = [mp["p_yes"] for mp in model_predictions.values()]
-        aggregated_p_yes = sum(p_yes_values) / len(p_yes_values)
+        # Aggregate: signed-sum of edges.
+        # Each model contributes (p_yes_i - yes_ask) independently.
+        # Summing gives a stronger signal when models agree.
+        # We store a synthetic p_yes = yes_ask + sum(edges) so the
+        # rebalancing strategy (target = p_yes - yes_ask) sees the
+        # correct summed edge as its target position.
+        edges = [mp["p_yes"] - yes_ask for mp in model_predictions.values()]
+        aggregated_edge = sum(edges)
+        aggregated_p_yes = yes_ask + aggregated_edge  # synthetic, can exceed [0,1]
 
         # Build per-model breakdown for metadata
         per_model_breakdown = {
-            ms: {"p_yes": mp["p_yes"], "confidence": mp["confidence"]}
+            ms: {"p_yes": mp["p_yes"], "confidence": mp["confidence"],
+                 "edge": round(mp["p_yes"] - yes_ask, 6)}
             for ms, mp in model_predictions.items()
         }
 
         logger.info(
-            "  Aggregated p_yes=%.3f from %d models: %s",
-            aggregated_p_yes, len(model_predictions),
+            "  Aggregated edge=%.3f (synthetic p=%.3f) from %d models: %s",
+            aggregated_edge, aggregated_p_yes, len(model_predictions),
             {ms.split(":")[-1]: f"{mp['p_yes']:.3f}" for ms, mp in model_predictions.items()},
         )
 
-        # Classify aggregated decision
+        # Classify aggregated decision based on summed edge
         agg_decision = "HOLD"
-        if aggregated_p_yes > yes_ask + 0.05:
+        if aggregated_edge > 0.05:
             agg_decision = "BUY_YES"
-        elif aggregated_p_yes < (1.0 - no_ask) - 0.05:
+        elif aggregated_edge < -0.05:
             agg_decision = "BUY_NO"
 
         # Save aggregated model run
@@ -1060,18 +1067,18 @@ def run_cycle(args) -> None:
             save_model_run(
                 db_engine, "aggregated", market_id, agg_decision, avg_confidence,
                 metadata={
-                    "p_yes": aggregated_p_yes,
+                    "p_yes": round(aggregated_p_yes, 6),
+                    "aggregated_edge": round(aggregated_edge, 6),
                     "models": per_model_breakdown,
                     "num_models": len(model_predictions),
                     "yes_ask": yes_ask, "no_ask": no_ask,
                 },
             )
-            # Save price snapshot with aggregated prediction
             save_price_snapshot(
                 db_engine, market_id, ticker,
                 yes_ask=yes_ask, no_ask=no_ask,
                 volume_24h=float(market.get("volume_24h", 0) or 0),
-                model_p_yes=aggregated_p_yes,
+                model_p_yes=round(aggregated_p_yes, 6),
                 model_name="aggregated",
             )
 
