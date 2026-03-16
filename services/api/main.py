@@ -621,11 +621,18 @@ def get_pnl(
                 "pnl_impact": round(pnl_impact, 4),
             })
 
-        # Position-level P&L for summary (most accurate)
+        # Position-level P&L for summary (most accurate / source of truth)
         positions = session.query(TradingPosition).all()
         total_realized = sum(p.realized_pnl for p in positions)
         total_unrealized = sum(p.unrealized_pnl for p in positions)
         total_pnl = total_realized + total_unrealized
+
+        # Correct the final series point to match position-based P&L
+        # (transaction replay can drift from update_positions due to rounding)
+        if pnl_series:
+            pnl_series[-1]["pnl"] = round(total_pnl, 4)
+            pnl_series[-1]["realized_pnl"] = round(total_realized, 4)
+            pnl_series[-1]["unrealized_pnl"] = round(total_unrealized, 4)
 
         return {
             "series": pnl_series,

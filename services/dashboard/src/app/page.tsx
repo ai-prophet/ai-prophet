@@ -19,7 +19,6 @@ import { fmtDollar } from "@/lib/utils";
 import { PnLChart } from "@/components/PnLChart";
 import { LiveActivity } from "@/components/LiveActivity";
 import { SystemHealth } from "@/components/SystemHealth";
-import { EdgeChart } from "@/components/EdgeChart";
 import { PositionHeatmap } from "@/components/PositionHeatmap";
 import { RiskMetrics } from "@/components/RiskMetrics";
 import { PnLAttribution } from "@/components/PnLAttribution";
@@ -230,16 +229,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Row 3: Edge + P&L Attribution */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          <div>
-            <SectionLabel text="Edge Visualization" />
-            <EdgeChart positions={positions} markets={markets} />
-          </div>
-          <div>
-            <SectionLabel text="P&L Attribution" />
-            <PnLAttribution analytics={analytics} />
-          </div>
+        {/* Row 3: P&L Attribution */}
+        <div>
+          <SectionLabel text="P&L Attribution" />
+          <PnLAttribution analytics={analytics} />
         </div>
 
         {/* Row 4: Position Heatmap */}

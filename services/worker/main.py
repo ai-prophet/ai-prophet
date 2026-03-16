@@ -919,6 +919,13 @@ def run_cycle(args) -> None:
 
         yes_ask = float(yes_ask)
         no_ask = float(no_ask)
+
+        # Skip markets with excessive spread (illiquid)
+        from ai_prophet_core.betting.config import MAX_SPREAD
+        if yes_ask + no_ask > MAX_SPREAD:
+            logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
+            continue
+
         market_id = f"kalshi:{ticker}"
 
         # Save market snapshot for dashboard
@@ -984,47 +991,58 @@ def run_cycle(args) -> None:
 
         model_predictions: dict[str, dict] = {}  # model_spec -> {p_yes, confidence, reasoning, ...}
 
-        for model_spec, predictor in predictors.items():
-            try:
-                prediction = predictor(market_info)
-                p_yes = prediction["p_yes"]
-                confidence = prediction.get("confidence", 0.5)
-                reasoning = prediction.get("reasoning", "")
+        for mi, (model_spec, predictor) in enumerate(predictors.items()):
+            # Delay between model calls to avoid API rate limits
+            if mi > 0:
+                time.sleep(2)
 
-                logger.info(
-                    "  [%s] p_yes=%.3f (confidence=%.2f) | %s",
-                    model_spec.split(":")[-1], p_yes, confidence, reasoning[:60],
-                )
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    prediction = predictor(market_info)
+                    p_yes = prediction["p_yes"]
+                    confidence = prediction.get("confidence", 0.5)
+                    reasoning = prediction.get("reasoning", "")
 
-                model_predictions[model_spec] = {
-                    "p_yes": p_yes,
-                    "confidence": confidence,
-                    "reasoning": reasoning,
-                    "analysis": prediction.get("analysis", {}),
-                }
-
-                # Track edge for alert checking
-                edge = abs(p_yes - yes_ask)
-                all_edges.append((market_id, model_spec, edge))
-
-                # Classify decision for logging
-                decision = "HOLD"
-                if p_yes > yes_ask + 0.05:
-                    decision = "BUY_YES"
-                elif p_yes < (1.0 - no_ask) - 0.05:
-                    decision = "BUY_NO"
-
-                # Save individual model run
-                if db_engine:
-                    save_model_run(
-                        db_engine, model_spec, market_id, decision, confidence,
-                        metadata={"p_yes": p_yes, "reasoning": reasoning,
-                                  "analysis": prediction.get("analysis", {}),
-                                  "yes_ask": yes_ask, "no_ask": no_ask},
+                    logger.info(
+                        "  [%s] p_yes=%.3f (confidence=%.2f) | %s",
+                        model_spec.split(":")[-1], p_yes, confidence, reasoning[:60],
                     )
 
-            except Exception as e:
-                logger.error("  [%s] prediction failed: %s", model_spec, e)
+                    model_predictions[model_spec] = {
+                        "p_yes": p_yes,
+                        "confidence": confidence,
+                        "reasoning": reasoning,
+                        "analysis": prediction.get("analysis", {}),
+                    }
+
+                    # Track edge for alert checking
+                    edge = abs(p_yes - yes_ask)
+                    all_edges.append((market_id, model_spec, edge))
+
+                    # Classify decision for logging
+                    decision = "HOLD"
+                    if p_yes > yes_ask + 0.05:
+                        decision = "BUY_YES"
+                    elif p_yes < (1.0 - no_ask) - 0.05:
+                        decision = "BUY_NO"
+
+                    # Save individual model run
+                    if db_engine:
+                        save_model_run(
+                            db_engine, model_spec, market_id, decision, confidence,
+                            metadata={"p_yes": p_yes, "reasoning": reasoning,
+                                      "analysis": prediction.get("analysis", {}),
+                                      "yes_ask": yes_ask, "no_ask": no_ask},
+                        )
+
+                    break  # Success — exit retry loop
+                except Exception as e:
+                    if attempt < max_retries:
+                        logger.warning("  [%s] attempt %d failed, retrying in 5s: %s", model_spec, attempt + 1, e)
+                        time.sleep(5)
+                    else:
+                        logger.error("  [%s] prediction failed after %d attempts: %s", model_spec, max_retries + 1, e)
 
         if not model_predictions:
             logger.warning("  No model predictions for %s, skipping", ticker)

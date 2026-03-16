@@ -27,14 +27,23 @@ export function PnLAttribution({
   const modelData = useMemo(() => {
     if (!analytics?.pnl_by_model) return [];
     return Object.entries(analytics.pnl_by_model)
-      .map(([name, data]) => ({
-        name: name.length > 25 ? name.slice(0, 22) + "..." : name,
-        fullName: name,
-        pnl: parseFloat(data.pnl.toFixed(2)),
-        trades: data.trades,
-        winRate: parseFloat((data.win_rate * 100).toFixed(1)),
-        fill: data.pnl >= 0 ? CHART_COLORS.profit : CHART_COLORS.loss,
-      }))
+      .map(([name, data]) => {
+        // Clean display name: strip provider prefix, keep model + variant
+        const parts = name.split(":");
+        const shortName = parts.length >= 3
+          ? `${parts[1]} (${parts.slice(2).join(":")})`
+          : parts.length === 2
+          ? parts[1]
+          : name;
+        return {
+          name: shortName.length > 30 ? shortName.slice(0, 27) + "..." : shortName,
+          fullName: name,
+          pnl: parseFloat(data.pnl.toFixed(2)),
+          trades: data.trades,
+          winRate: parseFloat((data.win_rate * 100).toFixed(1)),
+          fill: data.pnl >= 0 ? CHART_COLORS.profit : CHART_COLORS.loss,
+        };
+      })
       .sort((a, b) => b.pnl - a.pnl);
   }, [analytics]);
 
