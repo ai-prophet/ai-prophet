@@ -1093,14 +1093,34 @@ def run_cycle(args) -> None:
                 from db_models import TradingPosition
 
                 with get_session(db_engine) as session:
-                    pos = session.query(TradingPosition).filter_by(
-                        market_id=market_id
-                    ).first()
-                    if pos:
-                        portfolio = PortfolioSnapshot(
-                            market_position_shares=Decimal(str(pos.quantity)),
-                            market_position_side=pos.contract,
-                        )
+                    all_positions = session.query(TradingPosition).all()
+                    capital_deployed = Decimal(str(
+                        sum(p.avg_price * p.quantity for p in all_positions)
+                    ))
+                    total_realized = Decimal(str(
+                        sum(p.realized_pnl for p in all_positions)
+                    ))
+
+                    # Compute available cash: real balance - deployed + realized
+                    try:
+                        real_balance = adapter.get_balance()
+                    except Exception:
+                        real_balance = Decimal("0")
+                    available_cash = real_balance - capital_deployed + total_realized
+
+                    mkt_pos_shares = Decimal("0")
+                    mkt_pos_side = None
+                    for p in all_positions:
+                        if p.market_id == market_id:
+                            mkt_pos_shares = Decimal(str(p.quantity))
+                            mkt_pos_side = p.contract
+                            break
+
+                    portfolio = PortfolioSnapshot(
+                        cash=available_cash,
+                        market_position_shares=mkt_pos_shares,
+                        market_position_side=mkt_pos_side,
+                    )
 
             except Exception as e:
                 logger.debug("Could not load position for portfolio: %s", e)

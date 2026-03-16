@@ -655,9 +655,6 @@ def get_analytics_summary() -> dict[str, Any]:
             .all()
         )
 
-        signal_ids = [o.signal_id for o in orders if o.signal_id]
-        pred_by_signal = _build_pred_by_signal(session, signal_ids)
-
         # Fetch positions for realized/unrealized PnL
         positions = session.query(TradingPosition).all()
         # Fetch market info
@@ -665,14 +662,9 @@ def get_analytics_summary() -> dict[str, Any]:
         market_by_id: dict[str, TradingMarket] = {m.market_id: m for m in markets}
 
         # ── Per-trade P&L computation ─────────────────────────────
-        # Group orders by ticker to compute per-trade realized PnL
-        trades_by_ticker: dict[str, list] = defaultdict(list)
-        for o in orders:
-            trades_by_ticker[o.ticker].append(o)
-
-        # Compute individual trade PnLs
+        # Use TradingPosition as the source of truth for per-market P&L
+        # (consistent with the position heatmap).
         trade_pnls: list[float] = []
-        # Track which model/source produced each trade
         pnl_by_model: dict[str, dict[str, Any]] = defaultdict(
             lambda: {"pnl": 0.0, "trades": 0, "wins": 0}
         )
@@ -680,69 +672,76 @@ def get_analytics_summary() -> dict[str, Any]:
             lambda: {"pnl": 0.0, "trades": 0, "title": ""}
         )
 
-        # Use position-level realized PnL where available, otherwise estimate
-        for ticker, ticker_orders in trades_by_ticker.items():
-            market_key = f"kalshi:{ticker}"
+        # Build per-model edge contributions from aggregated ModelRun records.
+        # Each aggregated run stores {"models": {model_spec: {"edge": ...}}}
+        # so we can attribute P&L proportionally by edge fraction.
+        model_edge_fractions: dict[str, dict[str, float]] = {}  # market_id -> {model: fraction}
+        try:
+            agg_runs = (
+                session.query(ModelRun)
+                .filter(ModelRun.model_name == "aggregated")
+                .order_by(ModelRun.timestamp.desc())
+                .all()
+            )
+            # Keep only the latest run per market
+            latest_by_market: dict[str, ModelRun] = {}
+            for run in agg_runs:
+                if run.market_id not in latest_by_market:
+                    latest_by_market[run.market_id] = run
+
+            for market_id, run in latest_by_market.items():
+                if not run.metadata_json:
+                    continue
+                try:
+                    meta = json.loads(run.metadata_json)
+                    models_breakdown = meta.get("models", {})
+                    if not models_breakdown:
+                        continue
+                    total_abs_edge = sum(
+                        abs(m.get("edge", 0)) for m in models_breakdown.values()
+                    )
+                    if total_abs_edge > 0:
+                        model_edge_fractions[market_id] = {
+                            name: abs(m.get("edge", 0)) / total_abs_edge
+                            for name, m in models_breakdown.items()
+                        }
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        except Exception:
+            pass
+
+        # Count orders per market for trade counts
+        orders_per_market: dict[str, int] = defaultdict(int)
+        for o in orders:
+            orders_per_market[f"kalshi:{o.ticker}"] += 1
+
+        for pos in positions:
+            market_key = pos.market_id
             mkt = market_by_id.get(market_key)
+            total_pnl = pos.realized_pnl + pos.unrealized_pnl
+            trade_count = orders_per_market.get(market_key, 0)
+            trade_pnls.append(total_pnl)
 
-            # Determine the source/model for this ticker
-            source = "unknown"
-            for o in ticker_orders:
-                pred = pred_by_signal.get(o.signal_id)
-                if pred:
-                    source = pred.source
-                    break
+            # Per-market attribution
+            pnl_by_market[market_key]["pnl"] = total_pnl
+            pnl_by_market[market_key]["trades"] = trade_count
+            pnl_by_market[market_key]["title"] = mkt.title if mkt else ""
 
-            # Per-trade PnL estimation: for sell orders we compute realized
-            ticker_pos = {"qty": 0, "total_cost": 0.0, "side": ""}
-            for o in ticker_orders:
-                action = getattr(o, "action", "BUY") or "BUY"
-                cost = (o.price_cents / 100.0) * o.count
-
-                if action.upper() == "SELL" and ticker_pos["qty"] > 0:
-                    avg_cost = _safe_div(ticker_pos["total_cost"], ticker_pos["qty"])
-                    sell_proceeds = cost
-                    cost_basis = avg_cost * o.count
-                    pnl = sell_proceeds - cost_basis
-                    trade_pnls.append(pnl)
-
-                    pnl_by_model[source]["pnl"] += pnl
-                    pnl_by_model[source]["trades"] += 1
-                    if pnl > 0:
-                        pnl_by_model[source]["wins"] += 1
-
-                    pnl_by_market[market_key]["pnl"] += pnl
-                    pnl_by_market[market_key]["trades"] += 1
-                    pnl_by_market[market_key]["title"] = mkt.title if mkt else ""
-
-                    ticker_pos["qty"] -= o.count
-                    ticker_pos["total_cost"] -= cost_basis
-                else:
-                    ticker_pos["qty"] += o.count
-                    ticker_pos["total_cost"] += cost
-                    ticker_pos["side"] = o.side.lower()
-
-            # If there are still open positions, add unrealized PnL
-            if ticker_pos["qty"] > 0 and mkt:
-                side_key = f"{ticker_pos['side']}_ask"
-                current_price = getattr(mkt, side_key.replace("_ask", "_ask"), None)
-                if ticker_pos["side"] == "yes":
-                    current_price = mkt.yes_ask
-                else:
-                    current_price = mkt.no_ask
-                if current_price is not None:
-                    unrealized = current_price * ticker_pos["qty"] - ticker_pos["total_cost"]
-                    # Count open position as a trade for analytics
-                    trade_pnls.append(unrealized)
-
-                    pnl_by_model[source]["pnl"] += unrealized
-                    pnl_by_model[source]["trades"] += 1
-                    if unrealized > 0:
-                        pnl_by_model[source]["wins"] += 1
-
-                    pnl_by_market[market_key]["pnl"] += unrealized
-                    pnl_by_market[market_key]["trades"] += 1
-                    pnl_by_market[market_key]["title"] = mkt.title if mkt else ""
+            # Per-model attribution: distribute P&L by edge fraction
+            fractions = model_edge_fractions.get(market_key, {})
+            if fractions:
+                for model_name, frac in fractions.items():
+                    model_pnl = total_pnl * frac
+                    pnl_by_model[model_name]["pnl"] += model_pnl
+                    pnl_by_model[model_name]["trades"] += 1
+                    if model_pnl > 0:
+                        pnl_by_model[model_name]["wins"] += 1
+            else:
+                # Fallback: attribute to "aggregated" if no breakdown available
+                pnl_by_model["aggregated"]["pnl"] += total_pnl
+                pnl_by_model["aggregated"]["trades"] += 1
+                if total_pnl > 0:
+                    pnl_by_model["aggregated"]["wins"] += 1
 
         # ── Risk metrics ──────────────────────────────────────────
         total_trades = len(trade_pnls)

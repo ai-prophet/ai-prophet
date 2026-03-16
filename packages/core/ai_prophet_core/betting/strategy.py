@@ -239,6 +239,16 @@ class RebalancingStrategy(BettingStrategy):
 
         cost = shares * price
 
+        # Cap buy orders by available cash
+        port = self.portfolio
+        if port and port.cash > 0 and side in ("yes", "no") and delta > 0:
+            available = float(port.cash)
+            if cost > available:
+                shares = available / price if price > 0 else 0
+                cost = shares * price
+                if shares < self.min_trade:
+                    return None
+
         return BetSignal(
             side=side,
             shares=shares,

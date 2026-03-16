@@ -223,11 +223,11 @@ export function UnifiedMarketTable({
               <Th k="title" cur={sortKey} asc={sortAsc} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
               <Th k="yes_ask" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Current Yes / No ask prices on Kalshi">Mkt Price</Th>
               <Th k="predicted" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Aggregated model probability (signed-sum of per-model edges + yes_ask)">Agg P</Th>
-              <Th k="edge" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Edge = Agg P \u2212 Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
+              <Th k="edge" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
               <Th k="position" cur={sortKey} asc={sortAsc} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
               <Th k="avg_price" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
               <Th k="unrealized" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Unrealized P&L based on current market price vs entry price">P&L</Th>
-              <Th k="capital" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Total capital invested: avg entry price \u00D7 quantity">Investment</Th>
+              <Th k="capital" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Total capital invested: avg entry price × quantity">Investment</Th>
               <Th k="last_trade" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
             </tr>
           </thead>
@@ -861,6 +861,46 @@ function PriceHistoryChart({ data }: { data: PriceHistoryPoint[] }) {
   );
 }
 
+// ── Info Button ──────────────────────────────────────────────
+
+function InfoButton({ text }: { text: string }) {
+  const [show, setShow] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  const handleEnter = useCallback(() => {
+    if (ref.current) {
+      const r = ref.current.getBoundingClientRect();
+      const centerX = r.left + r.width / 2;
+      // Clamp so the popover (max 240px) stays within viewport
+      const half = 120;
+      const clampedLeft = Math.max(half + 8, Math.min(centerX, window.innerWidth - half - 8));
+      setPos({ top: r.top - 8, left: clampedLeft });
+    }
+    setShow(true);
+  }, []);
+
+  return (
+    <span
+      ref={ref}
+      className="relative inline-flex items-center justify-center w-3.5 h-3.5 ml-1 rounded border border-txt-muted/30 text-[7px] text-txt-muted cursor-help align-middle hover:border-accent hover:text-accent transition-colors"
+      onMouseEnter={handleEnter}
+      onMouseLeave={() => setShow(false)}
+      onClick={(e) => e.stopPropagation()}
+    >
+      ?
+      {show && (
+        <span
+          className="fixed -translate-x-1/2 -translate-y-full w-max max-w-[240px] whitespace-normal rounded border border-t-border bg-[#141a22] px-3 py-2 text-[10px] text-left font-mono font-normal normal-case tracking-normal leading-snug text-txt-primary shadow-xl z-[9999] pointer-events-none"
+          style={{ top: pos.top, left: pos.left }}
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
 // ── Sortable Header ─────────────────────────────────────────
 
 function Th({
@@ -882,41 +922,13 @@ function Th({
 }) {
   const active = k === cur;
   const cls = align === "left" ? "text-left" : align === "right" ? "text-right" : "text-center";
-  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
-
   return (
     <th
       className={`px-3 py-2 font-medium cursor-pointer select-none hover:text-txt-primary transition-colors ${cls} ${active ? "text-txt-primary" : ""}`}
       onClick={() => onClick(k)}
     >
       {children}
-      {info && (
-        <>
-          <span
-            className="inline-flex items-center justify-center ml-1 text-txt-muted hover:text-txt-primary cursor-help align-middle transition-colors focus:outline-none"
-            onClick={(e) => e.stopPropagation()}
-            onMouseEnter={(e) => {
-               const rect = e.currentTarget.getBoundingClientRect();
-               setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top });
-            }}
-            onMouseLeave={() => setTooltipPos(null)}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 16v-4" />
-              <path d="M12 8h.01" />
-            </svg>
-          </span>
-          {tooltipPos && (
-             <div 
-               className="fixed z-[100] w-max max-w-[200px] -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded bg-t-panel border border-t-border px-2 py-1.5 text-[10px] font-normal leading-relaxed text-txt-primary shadow-lg whitespace-normal text-left pointer-events-none"
-               style={{ left: tooltipPos.x, top: tooltipPos.y }}
-             >
-               {info}
-             </div>
-          )}
-        </>
-      )}
+      {info && <InfoButton text={info} />}
       {active && (
         <span className="ml-0.5 text-accent text-[8px]">
           {asc ? "\u25B2" : "\u25BC"}

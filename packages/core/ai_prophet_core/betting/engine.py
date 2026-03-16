@@ -371,6 +371,28 @@ class BettingEngine:
                     action = "BUY"
                     effective_side = want_side.upper()
 
+        # --- Cash constraint: reject BUY orders that exceed available cash ---
+        if action == "BUY" and portfolio and portfolio.cash > 0:
+            order_cost = Decimal(str(count)) * Decimal(str(signal.price))
+            if order_cost > portfolio.cash:
+                max_shares = int(portfolio.cash / Decimal(str(signal.price)))
+                if max_shares <= 0:
+                    logger.warning(
+                        "[BETTING] Insufficient cash: need $%.2f but only $%.2f available, skipping %s",
+                        float(order_cost), float(portfolio.cash), ticker,
+                    )
+                    return BetResult(
+                        market_id=market_id,
+                        signal=signal,
+                        order_placed=False,
+                        error=f"Insufficient cash: need ${float(order_cost):.2f}, have ${float(portfolio.cash):.2f}",
+                    )
+                logger.info(
+                    "[BETTING] Cash cap: reducing %s from %d to %d shares (cash=$%.2f)",
+                    ticker, count, max_shares, float(portfolio.cash),
+                )
+                count = max_shares
+
         order_id = str(uuid.uuid4())
 
         order_req = OrderRequest(
@@ -421,7 +443,7 @@ class BettingEngine:
             signal_id=signal_id,
             order_id=order_id,
             ticker=ticker,
-            side=signal.side,
+            side=effective_side.lower(),
             count=count,
             price_cents=price_cents,
             status=status,

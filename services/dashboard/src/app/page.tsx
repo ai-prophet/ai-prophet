@@ -100,9 +100,7 @@ export default function Dashboard() {
   const cashBalance =
     balance == null
       ? null
-      : balance.dry_run
-        ? balance.balance - metrics.capitalDeployed
-        : balance.balance;
+      : balance.balance;
 
   const alertErrors = alerts.filter((a) => a.severity === "error").length;
   const alertWarnings = alerts.filter((a) => a.severity === "warning").length;
