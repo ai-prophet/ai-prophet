@@ -80,6 +80,7 @@ class BettingOrder(Base):
     )
     order_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     ticker: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(8), nullable=False, default="BUY")
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -129,7 +129,7 @@ class BettingEngine:
 
         results: list[BetResult] = []
         # Collect evaluated signals before placing orders (for cap enforcement)
-        pending_orders: list[tuple[str, float, float, BetSignal, int | None]] = []
+        pending_orders: list[tuple[str, float, float, float, BetSignal, int | None]] = []
 
         for market_id, p_yes in forecasts.items():
             prices = market_prices.get(market_id)
@@ -177,7 +177,7 @@ class BettingEngine:
                 signal.side.upper(), signal.shares, signal.price,
             )
 
-            pending_orders.append((market_id, p_yes, yes_ask, signal, signal_id))
+            pending_orders.append((market_id, p_yes, yes_ask, no_ask, signal, signal_id))
 
         # 4. Cap to max_markets_per_tick, keeping highest-edge signals
         if len(pending_orders) > self.max_markets_per_tick:
@@ -193,19 +193,21 @@ class BettingEngine:
             )
             dropped = pending_orders[self.max_markets_per_tick:]
             pending_orders = pending_orders[:self.max_markets_per_tick]
-            for mid, _, _, sig, _ in dropped:
+            for mid, _, _, _, sig, _ in dropped:
                 results.append(BetResult(
                     market_id=mid, signal=sig, order_placed=False,
                     error="Dropped: exceeded max_markets_per_tick",
                 ))
 
         # 5. Place orders
-        for market_id, _p_yes, _, signal, signal_id in pending_orders:
+        for market_id, _p_yes, yes_ask, no_ask, signal, signal_id in pending_orders:
             result = self._place_and_log_order(
                 tick_ts=tick_ts,
                 market_id=market_id,
                 signal=signal,
                 signal_id=signal_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
             )
             results.append(result)
 
@@ -277,8 +279,16 @@ class BettingEngine:
         market_id: str,
         signal: BetSignal,
         signal_id: int | None,
+        yes_ask: float = 0.0,
+        no_ask: float = 0.0,
     ) -> BetResult:
-        """Convert a signal into an exchange order, persist the result."""
+        """Convert a signal into an exchange order, persist the result.
+
+        Implements NET position management: if the strategy wants to buy
+        one side but we already hold the opposite side, we SELL existing
+        contracts first.  We only buy the new side when the desired
+        quantity exceeds the existing opposite position.
+        """
         from .adapters.base import OrderRequest
 
         ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
@@ -288,6 +298,79 @@ class BettingEngine:
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
 
+        # --- NET position management ---
+        portfolio = self.strategy.portfolio
+        action = "BUY"
+        effective_side = signal.side.upper()
+
+        if portfolio and portfolio.market_position_side and portfolio.market_position_shares > 0:
+            held_side = portfolio.market_position_side.lower()
+            want_side = signal.side.lower()
+
+            if held_side != want_side:
+                held_count = max(1, round(float(portfolio.market_position_shares)))
+                # Use the correct price for the side being sold
+                sell_price = yes_ask if held_side == "yes" else no_ask
+                sell_price_cents = max(1, min(99, round(sell_price * 100)))
+
+                if count <= held_count:
+                    # Just sell some of the existing opposite position
+                    action = "SELL"
+                    effective_side = held_side.upper()
+                    price_cents = sell_price_cents
+                    logger.info(
+                        "[BETTING] NET: selling %d %s instead of buying %d %s on %s",
+                        count, held_side.upper(), count, want_side.upper(), ticker,
+                    )
+                else:
+                    # Sell all existing, then buy remainder on new side
+                    sell_order_id = str(uuid.uuid4())
+                    sell_req = OrderRequest(
+                        order_id=sell_order_id,
+                        intent_id=f"net-sell-{sell_order_id[:8]}",
+                        market_id=market_id,
+                        exchange_ticker=ticker,
+                        action="SELL",
+                        side=held_side.upper(),
+                        shares=Decimal(str(held_count)),
+                        limit_price=Decimal(str(sell_price)),
+                    )
+                    try:
+                        sell_result = adapter.submit_order(sell_req)
+                        logger.info(
+                            "[BETTING] NET: sold %d %s on %s → %s",
+                            held_count, held_side.upper(), ticker,
+                            sell_result.status.value,
+                        )
+                        self._save_order(
+                            signal_id=signal_id,
+                            order_id=sell_order_id,
+                            ticker=ticker,
+                            side=held_side,
+                            count=held_count,
+                            price_cents=sell_price_cents,
+                            status=sell_result.status.value,
+                            filled_shares=float(sell_result.filled_shares),
+                            fill_price=float(sell_result.fill_price),
+                            exchange_order_id=sell_result.exchange_order_id,
+                            action="SELL",
+                        )
+                    except Exception as e:
+                        logger.error("[BETTING] NET sell failed: %s", e)
+
+                    count = count - held_count
+                    if count <= 0:
+                        return BetResult(
+                            market_id=market_id,
+                            signal=signal,
+                            order_placed=True,
+                            order_id=sell_order_id,
+                            status=sell_result.status.value if 'sell_result' in dir() else "FILLED",
+                        )
+                    # Continue to buy remaining on new side
+                    action = "BUY"
+                    effective_side = want_side.upper()
+
         order_id = str(uuid.uuid4())
 
         order_req = OrderRequest(
@@ -295,8 +378,8 @@ class BettingEngine:
             intent_id=f"bet-{order_id[:8]}",
             market_id=market_id,
             exchange_ticker=ticker,
-            action="BUY",
-            side=signal.side.upper(),
+            action=action,
+            side=effective_side,
             shares=Decimal(str(count)),
             limit_price=Decimal(str(signal.price)),
         )
@@ -329,8 +412,8 @@ class BettingEngine:
             error = str(e)
 
         logger.info(
-            "[BETTING] Order %s: %s %s×%s @ %sc → %s (filled=%s @ %s)",
-            order_id[:8], signal.side.upper(), count, ticker,
+            "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s)",
+            order_id[:8], action, effective_side, count, ticker,
             price_cents, status, filled_shares, fill_price,
         )
 
@@ -345,6 +428,7 @@ class BettingEngine:
             filled_shares=filled_shares,
             fill_price=fill_price,
             exchange_order_id=exchange_oid,
+            action=action,
         )
 
         return BetResult(
@@ -475,6 +559,7 @@ class BettingEngine:
         filled_shares: float,
         fill_price: float,
         exchange_order_id: str | None,
+        action: str = "BUY",
     ) -> None:
         if self._engine is None or signal_id is None:
             return
@@ -488,6 +573,7 @@ class BettingEngine:
             order_id=order_id,
             ticker=ticker,
             side=side,
+            action=action,
             count=count,
             price_cents=price_cents,
             status=status,

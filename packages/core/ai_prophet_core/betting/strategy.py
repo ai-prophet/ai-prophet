@@ -161,17 +161,18 @@ class DefaultBettingStrategy(BettingStrategy):
 class RebalancingStrategy(BettingStrategy):
     """Rebalancing strategy that maintains (p - q) units of contract.
 
-    At each time step *t* the desired YES position is ``p^t - q^t`` where
-    ``p^t`` is the model's probability and ``q^t`` is the market YES ask.
-    The trade executed each tick is the delta:
+    At each time step the desired position is ``p - q`` where ``p`` is the
+    model's probability and ``q`` is the market YES ask.  The strategy reads
+    the *actual* portfolio position (set by the engine) and computes the
+    delta needed to reach the target:
 
-        s^t = (p^t - q^t) - (p^{t-1} - q^{t-1})
+        delta = target - current_position
 
-    Positive delta → buy YES contracts.
-    Negative delta → buy NO contracts (reduce YES exposure).
+    Positive delta → buy YES (or sell NO via engine's NET logic).
+    Negative delta → buy NO (or sell YES via engine's NET logic).
 
-    The strategy keeps an internal ``_prev`` dict keyed by market_id so it
-    can compute the delta across consecutive calls to :meth:`evaluate`.
+    Using the real portfolio position instead of in-memory state means the
+    strategy survives process restarts and handles partial fills correctly.
     """
 
     name = "rebalancing"
@@ -179,7 +180,21 @@ class RebalancingStrategy(BettingStrategy):
     def __init__(self, max_spread: float = MAX_SPREAD, min_trade: float = 0.005) -> None:
         self.max_spread = max_spread
         self.min_trade = min_trade
-        self._prev: dict[str, float] = {}  # market_id → previous (p - q)
+
+    def _current_position_yes_equiv(self) -> float:
+        """Return the current position as a YES-equivalent signed quantity.
+
+        Positive = holding YES contracts, negative = holding NO contracts.
+        Uses fractional shares (0-1 scale) matching target units.
+        """
+        port = self.portfolio
+        if not port or not port.market_position_side or port.market_position_shares <= 0:
+            return 0.0
+        shares = float(port.market_position_shares) / 100.0  # contracts → fractional
+        if port.market_position_side.lower() == "yes":
+            return shares
+        else:
+            return -shares
 
     def evaluate(
         self,
@@ -199,17 +214,14 @@ class RebalancingStrategy(BettingStrategy):
         if lower_bound <= p_yes <= upper_bound:
             return None
 
-        # Current desired position: p^t - q^t
-        current_target = p_yes - yes_ask
+        # Target position in YES-equivalent fractional units: p - q
+        target = p_yes - yes_ask
 
-        # Previous desired position (0 if first observation)
-        prev_target = self._prev.get(market_id, 0.0)
+        # Actual current position from portfolio (set by engine)
+        current_pos = self._current_position_yes_equiv()
 
-        # Record for next tick
-        self._prev[market_id] = current_target
-
-        # Trade = delta in desired position
-        delta = current_target - prev_target
+        # Delta to reach target
+        delta = target - current_pos
 
         if abs(delta) < self.min_trade:
             return None
@@ -220,7 +232,7 @@ class RebalancingStrategy(BettingStrategy):
             shares = delta
             price = yes_ask
         else:
-            # Decrease YES exposure → buy NO
+            # Decrease YES exposure → buy NO (engine handles sell-first)
             side = "no"
             shares = abs(delta)
             price = no_ask
@@ -233,8 +245,8 @@ class RebalancingStrategy(BettingStrategy):
             price=price,
             cost=cost,
             metadata={
-                "current_target": round(current_target, 6),
-                "prev_target": round(prev_target, 6),
+                "target": round(target, 6),
+                "current_pos": round(current_pos, 6),
                 "delta": round(delta, 6),
             },
         )

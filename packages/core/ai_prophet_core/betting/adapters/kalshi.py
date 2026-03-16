@@ -209,10 +209,7 @@ class KalshiAdapter(ExchangeAdapter):
         return self._parse_order_response(request, data)
 
     def get_balance(self) -> Decimal:
-        """Fetch available balance from Kalshi."""
-        if self._dry_run:
-            return Decimal("10000")
-
+        """Fetch available balance from Kalshi (always real, even in dry-run)."""
         path = "/trade-api/v2/portfolio/balance"
         headers = self._sign_request("GET", path)
 
@@ -231,10 +228,7 @@ class KalshiAdapter(ExchangeAdapter):
             return Decimal("0")
 
     def get_positions(self) -> list[dict[str, Any]]:
-        """Fetch current positions from Kalshi."""
-        if self._dry_run:
-            return []
-
+        """Fetch current positions from Kalshi (always real, even in dry-run)."""
         path = "/trade-api/v2/portfolio/positions"
         headers = self._sign_request("GET", path)
 
