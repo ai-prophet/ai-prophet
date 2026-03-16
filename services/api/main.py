@@ -1175,17 +1175,33 @@ def get_system_logs(
 
 @app.get("/kalshi/balance")
 def get_kalshi_balance() -> dict[str, Any]:
-    """Fetch Kalshi account balance (works in both live and dry-run modes)."""
+    """Fetch Kalshi account balance (works in both live and dry-run modes).
+
+    In dry-run mode, computes a virtual balance:
+      starting_cash - capital_deployed + realized_pnl
+    so the balance decreases when capital is deployed and increases
+    when gains are realized.
+    """
     try:
         from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
         dry_run = os.getenv("LIVE_BETTING_DRY_RUN", "true").lower() in ("true", "1", "yes")
         adapter = KalshiAdapter(dry_run=dry_run)
-        balance = adapter.get_balance()
+        real_balance = float(adapter.get_balance())
         adapter.close()
 
+        if dry_run:
+            starting_cash = float(os.getenv("WORKER_STARTING_CASH", str(real_balance)))
+            with get_session(engine) as session:
+                positions = session.query(TradingPosition).all()
+                capital_deployed = sum(p.avg_price * p.quantity for p in positions)
+                realized_pnl = sum(p.realized_pnl for p in positions)
+            balance = starting_cash - capital_deployed + realized_pnl
+        else:
+            balance = real_balance
+
         return {
-            "balance": float(balance),
+            "balance": balance,
             "dry_run": dry_run,
             "timestamp": datetime.now(UTC).isoformat(),
         }

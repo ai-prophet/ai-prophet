@@ -10,9 +10,10 @@ from sqlalchemy.orm import sessionmaker
 
 
 def get_database_url(override: str | None = None) -> str:
-    if override:
-        return override
-    return os.getenv("DATABASE_URL", "sqlite:///./pa_dev.db")
+    url = override or os.getenv("DATABASE_URL", "sqlite:///./pa_dev.db")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
 
 
 def create_db_engine(
@@ -24,8 +25,8 @@ def create_db_engine(
     if url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
         return create_engine(url, echo=echo, connect_args=connect_args, **kwargs)
-    pool_size = kwargs.pop("pool_size", 10)
-    max_overflow = kwargs.pop("max_overflow", 20)
+    pool_size = kwargs.pop("pool_size", 3)
+    max_overflow = kwargs.pop("max_overflow", 5)
     return create_engine(
         url,
         echo=echo,
