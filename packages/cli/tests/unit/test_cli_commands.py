@@ -64,15 +64,16 @@ def test_eval_run_passes_explicit_runtime_config_to_runner(monkeypatch):
         "ai_prophet.trade.main._load_runtime_credentials",
         lambda: Credentials(server_url="http://example.test", openai_api_key="openai-key"),
     )
-    monkeypatch.setattr("ai_prophet.trade.main._get_shared_live_hook", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("ai_prophet.trade.main._get_betting_engine", lambda: None)
     monkeypatch.setattr(
         "ai_prophet.trade.main._make_pipeline_builder",
-        lambda creds, client_config, verbose, api_url: captured.update(
+        lambda creds, client_config, verbose, api_url, betting_engine: captured.update(
             {
                 "builder_creds": creds,
                 "builder_config": client_config,
                 "builder_verbose": verbose,
                 "builder_api_url": api_url,
+                "builder_betting_engine": betting_engine,
             }
         )
         or "builder",
@@ -110,4 +111,6 @@ def test_eval_run_passes_explicit_runtime_config_to_runner(monkeypatch):
     assert captured["runner_kwargs"]["memory_dir"] == Path("~/.pa_memory").expanduser()
     assert captured["runner_kwargs"]["memory_max_rows"] == 1000
     assert captured["runner_kwargs"]["build_pipeline"] == "builder"
+    assert captured["runner_kwargs"]["betting_engine"] is None
+    assert captured["builder_betting_engine"] is None
     assert captured["runner_ran"] is True

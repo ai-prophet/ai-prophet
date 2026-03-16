@@ -141,8 +141,13 @@ class MarketQuote(BaseModel):
 class MarketData(BaseModel):
     market_id: str
     question: str
+    short_label: str | None = None
     description: str | None = None
     resolution_time: datetime
+    source: str | None = None
+    source_url: str | None = None
+    topic: str | None = None
+    family: str | None = None
     quote: MarketQuote
 
 

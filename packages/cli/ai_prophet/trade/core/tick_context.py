@@ -53,6 +53,13 @@ class CandidateMarket:
     volume_24h: float
     quote_ts: datetime
 
+    # Canonical market metadata
+    source: str | None = None
+    short_label: str | None = None
+    source_url: str | None = None
+    topic: str | None = None
+    family: str | None = None
+
     # Position context (if agent holds this market)
     existing_position: Position | None = None
 
@@ -88,6 +95,11 @@ class CandidateMarket:
             no_mark=no_mark,
             volume_24h=quote.get("volume_24h", 0.0),
             quote_ts=quote["ts"],
+            source=market_data.get("source"),
+            short_label=market_data.get("short_label"),
+            source_url=market_data.get("source_url"),
+            topic=market_data.get("topic"),
+            family=market_data.get("family"),
             existing_position=existing_position,
         )
 

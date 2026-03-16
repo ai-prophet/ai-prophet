@@ -59,11 +59,15 @@ class Market(BaseModel):
 
     market_id: str
     question: str
+    short_label: str | None = None
     description: str | None = None
     resolution_time: datetime
     created_at: datetime
     source: str
     source_market_id: str
+    source_url: str | None = None
+    topic: str | None = None
+    family: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

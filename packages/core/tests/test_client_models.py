@@ -62,7 +62,13 @@ def test_candidates_response_model():
         "market_count": 1,
         "markets": [{
             "market_id": "market_123", "question": "Will X happen?",
-                "resolution_time": "2026-02-01T00:00:00Z",
+            "short_label": "X",
+            "description": "Details...",
+            "resolution_time": "2026-02-01T00:00:00Z",
+            "source": "kalshi",
+            "source_url": "https://kalshi.com/markets/ABC",
+            "topic": "politics",
+            "family": "ABC",
             "quote": {"best_bid": "0.45", "best_ask": "0.55",
                       "volume_24h": 1000.0, "ts": "2026-01-20T05:30:00Z"},
         }],
@@ -70,6 +76,11 @@ def test_candidates_response_model():
     resp = CandidatesResponse.model_validate(data)
     assert resp.market_count == 1
     assert resp.markets[0].market_id == "market_123"
+    assert resp.markets[0].short_label == "X"
+    assert resp.markets[0].source == "kalshi"
+    assert resp.markets[0].source_url == "https://kalshi.com/markets/ABC"
+    assert resp.markets[0].topic == "politics"
+    assert resp.markets[0].family == "ABC"
 
 
 def test_trade_intent_request():
