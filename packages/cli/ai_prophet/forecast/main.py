@@ -107,6 +107,67 @@ def retrieve(
     click.echo(f"Selected {len(events)} events → {out_path}")
 
 
+@cli.command(name="events")
+@click.option(
+    "--status",
+    type=click.Choice(["all", "open", "closed"], case_sensitive=False),
+    default="open",
+    show_default=True,
+    help="Filter events by status.",
+)
+@click.option(
+    "--server-url",
+    default=None,
+    help="Core API URL (default: PROPHET_API_URL env var).",
+)
+@click.option(
+    "--api-key",
+    default=None,
+    help="API key (default: PA_SERVER_API_KEY env var).",
+)
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    help="Save events to a JSON file (for use with predict).",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def events(
+    status: str,
+    server_url: str | None,
+    api_key: str | None,
+    output: str | None,
+    verbose: bool,
+) -> None:
+    """List forecast events from the server."""
+    _setup_logging(verbose)
+
+    url, key = _resolve_server(server_url, api_key)
+
+    client = ServerAPIClient(base_url=url, api_key=key)
+    try:
+        event_list = client.get_forecast_events(status=status)
+    finally:
+        client.close()
+
+    if not event_list:
+        click.echo(f"No {status} events found.")
+        return
+
+    if output:
+        out_path = Path(output)
+        out_path.write_text(
+            json.dumps([e.model_dump(mode="json") for e in event_list], indent=2)
+        )
+        click.echo(f"{len(event_list)} events → {out_path}")
+    else:
+        click.echo(f"{'Ticker':<40}{'Category':<18}{'Close Time':<22}Title")
+        click.echo("-" * 110)
+        for e in event_list:
+            close = e.close_time.strftime("%Y-%m-%d %H:%M") if e.close_time else "—"
+            click.echo(f"{e.market_ticker:<40}{e.category:<18}{close:<22}{e.title[:30]}")
+
+
 @cli.command(name="predict")
 @click.option(
     "--events",

@@ -26,8 +26,8 @@ PA_SERVER_API_KEY=your-api-key
 ## Quick Start
 
 ```bash
-# 1. Get today's events
-prophet forecast retrieve --deadline "2026-03-20T23:59:59Z" -o events.json
+# 1. Get the current events from the server
+prophet forecast events -o events.json
 
 # 2. Run predictions with the built-in example agent (no server needed)
 prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team
@@ -144,7 +144,8 @@ Use this as a starting point — replace the Claude call with your own forecasti
 
 | Command | Description |
 |---------|-------------|
-| `prophet forecast retrieve` | Select events from Kalshi closing before a deadline |
+| `prophet forecast events` | List current events from the server (use `-o events.json` to save for predict) |
+| `prophet forecast retrieve` | Fetch events directly from Kalshi by deadline (requires Kalshi API keys — organizer use) |
 | `prophet forecast predict` | Send events to your agent and collect predictions |
 | `prophet forecast evaluate` | Score a submission locally against an actuals file |
 | `prophet forecast submit` | Submit predictions to the server |
@@ -161,7 +162,7 @@ Use this as a starting point — replace the Claude call with your own forecasti
 | `ANTHROPIC_API_KEY` | Anthropic API key (used by example agent) |
 | `FORECAST_MODEL` | Override model for example agent (default: `claude-sonnet-4-20250514`) |
 
-All server-facing commands (`submit`, `leaderboard`) require an API key. Set `PA_SERVER_API_KEY` in your environment, or pass `--api-key` on the command line.
+All server-facing commands (`events`, `submit`, `leaderboard`) require an API key. Set `PA_SERVER_API_KEY` in your environment, or pass `--api-key` on the command line.
 
 ## Local Evaluation
 
