@@ -29,7 +29,6 @@ def score(predictions: list[Prediction], actuals: dict[str, float]) -> dict[str,
     """Score predictions against actual outcomes using Brier score.
 
     Brier score = (1/N) * sum((p_yes - actual)^2)
-    Lower is better: 0.0 = perfect, 0.25 = random baseline.
     """
     matched = [p for p in predictions if p.market_ticker in actuals]
     if not matched:

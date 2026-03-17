@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 def _setup_logging(verbose: bool = False):
+    from dotenv import load_dotenv
+
+    load_dotenv()
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -113,8 +116,14 @@ def retrieve(
 )
 @click.option(
     "--agent-url",
-    required=True,
+    default=None,
     help="Agent prediction endpoint URL.",
+)
+@click.option(
+    "--local",
+    default=None,
+    help="Python module path with a predict(event: dict) -> dict function. "
+    "Example: ai_prophet.forecast.example_agent",
 )
 @click.option(
     "--team-name",
@@ -135,27 +144,83 @@ def retrieve(
     show_default=True,
     help="Request timeout per event (seconds).",
 )
+@click.option(
+    "--ticker",
+    "-t",
+    default=None,
+    multiple=True,
+    help="Only predict specific market ticker(s). Can be repeated.",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def predict(
     events: str,
-    agent_url: str,
+    agent_url: str | None,
+    local: str | None,
     team_name: str,
     output: str,
     timeout: int,
+    ticker: tuple[str, ...],
     verbose: bool,
 ) -> None:
     """Collect predictions from an agent endpoint and produce a submission file."""
     _setup_logging(verbose)
 
+    if not agent_url and not local:
+        raise click.ClickException("Provide --agent-url or --local <module.path>")
+    if agent_url and local:
+        raise click.ClickException("Use --agent-url or --local, not both")
+
+    # Load the local agent's predict function if --local is given
+    local_predict = None
+    if local:
+        import importlib
+
+        try:
+            mod = importlib.import_module(local)
+        except ModuleNotFoundError as e:
+            raise click.ClickException(f"Could not import module '{local}': {e}")
+        local_predict = getattr(mod, "predict", None)
+        if not callable(local_predict):
+            raise click.ClickException(
+                f"Module '{local}' must expose a predict(event: dict) -> dict function"
+            )
+
     events_data = json.loads(Path(events).read_text())
+
+    if ticker:
+        filter_set = set(ticker)
+        events_data = [e for e in events_data if e.get("market_ticker") in filter_set]
+        if not events_data:
+            raise click.ClickException(
+                f"No events matched ticker(s): {', '.join(ticker)}"
+            )
+        click.echo(f"Filtered to {len(events_data)} event(s)")
+
     predictions: list[Prediction] = []
+
+    now = datetime.now(timezone.utc)
 
     for event in events_data:
         ticker = event.get("market_ticker", "unknown")
+
+        close_str = event.get("close_time", "")
+        if close_str:
+            try:
+                close_time = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+                if close_time <= now:
+                    click.echo(f"  {ticker}: SKIPPED (market closed at {close_str})")
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         try:
-            resp = requests.post(agent_url, json=event, timeout=timeout)
-            resp.raise_for_status()
-            result = resp.json()
+            if local_predict:
+                result = local_predict(event)
+            else:
+                resp = requests.post(agent_url, json=event, timeout=timeout)
+                resp.raise_for_status()
+                result = resp.json()
+
             predictions.append(
                 Prediction(
                     market_ticker=ticker,
