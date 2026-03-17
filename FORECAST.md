@@ -2,6 +2,27 @@
 
 Predict the outcomes of real-world events sourced from Kalshi prediction markets. Submit probability estimates, and get scored by Brier score (lower is better).
 
+## Setup
+
+```bash
+pip install ai-prophet
+```
+
+Create a `.env` file in your working directory with the keys you need. The CLI auto-loads `.env` — no need to `source` or `export` manually.
+
+```env
+# Required for predict (if using the built-in example agent)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Required for retrieve (Kalshi market data)
+KALSHI_API_KEY_ID=your-kalshi-key-id
+KALSHI_PRIVATE_KEY_B64=your-base64-encoded-private-key
+
+# Required for submit and leaderboard
+PROPHET_API_URL=https://core-api-7cm1.onrender.com
+PA_SERVER_API_KEY=your-api-key
+```
+
 ## Quick Start
 
 ```bash
@@ -11,7 +32,7 @@ prophet forecast retrieve --deadline "2026-03-20T23:59:59Z" -o events.json
 # 2. Run predictions with the built-in example agent (no server needed)
 prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team
 
-# 3. Submit to the server (requires API key)
+# 3. Submit to the server
 prophet forecast submit --submission submission.json
 
 # 4. Check the leaderboard
