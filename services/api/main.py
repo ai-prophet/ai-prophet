@@ -296,47 +296,58 @@ def get_markets(
             .limit(limit)
             .all()
         )
+        # Build set of market_ids that have an active position
+        # (these are shown regardless of spread)
+        active_positions: set[str] = {
+            p.market_id
+            for p in session.query(TradingPosition.market_id).all()
+        }
+
+        MAX_SPREAD = 1.03
         results = []
         for row in rows:
-            # Get all model runs from the latest cycle for this market
-            # Find the most recent aggregated run to determine cycle timestamp
-            latest_agg = (
+            # Skip high-spread markets that have no position — they were
+            # filtered from trading; showing them only causes confusion
+            yes_ask = row.yes_ask or 0.0
+            no_ask = row.no_ask or 0.0
+            if yes_ask + no_ask > MAX_SPREAD and row.market_id not in active_positions:
+                continue
+
+            # Find the most recent model run for this market (any model)
+            latest_run = (
                 session.query(ModelRun)
-                .filter(ModelRun.market_id == row.market_id,
-                        ModelRun.model_name == "aggregated")
+                .filter(ModelRun.market_id == row.market_id)
                 .order_by(ModelRun.timestamp.desc())
                 .first()
             )
 
             model_predictions = []
             aggregated_p_yes = None
-            model_prediction = None  # backward-compat: latest single prediction
+            model_prediction = None
 
-            if latest_agg:
-                # Get all model runs from the same cycle.
-                # Gemini calls can take 30-60s each, so with multiple models
-                # the first model's run can be several minutes before the
-                # aggregated run.
-                cycle_start = latest_agg.timestamp - timedelta(seconds=600)
-                cycle_end = latest_agg.timestamp + timedelta(seconds=5)
+            if latest_run:
+                # Get all model runs from the same cycle (within 10min of latest)
+                cycle_start = latest_run.timestamp - timedelta(seconds=600)
                 cycle_runs = (
                     session.query(ModelRun)
                     .filter(ModelRun.market_id == row.market_id,
                             ModelRun.timestamp >= cycle_start,
-                            ModelRun.timestamp <= cycle_end)
+                            ModelRun.timestamp <= latest_run.timestamp)
                     .order_by(ModelRun.timestamp.asc())
                     .all()
                 )
+                seen_models: set[str] = set()
                 for run in cycle_runs:
+                    if run.model_name in seen_models:
+                        continue
+                    seen_models.add(run.model_name)
                     p_yes = None
                     reasoning = None
-                    models_breakdown = None
                     if run.metadata_json:
                         try:
                             meta = json.loads(run.metadata_json)
                             p_yes = meta.get("p_yes")
                             reasoning = meta.get("reasoning")
-                            models_breakdown = meta.get("models")
                         except (json.JSONDecodeError, TypeError):
                             pass
                     pred = {
@@ -345,47 +356,13 @@ def get_markets(
                         "confidence": run.confidence,
                         "p_yes": p_yes,
                         "timestamp": run.timestamp.isoformat(),
+                        "reasoning": reasoning,
                     }
-                    if run.model_name == "aggregated":
-                        aggregated_p_yes = p_yes
-                        pred["models"] = models_breakdown
-                    else:
-                        pred["reasoning"] = reasoning
                     model_predictions.append(pred)
+                    if aggregated_p_yes is None:
+                        aggregated_p_yes = p_yes
 
-                # backward-compat
-                model_prediction = {
-                    "model_name": "aggregated",
-                    "decision": latest_agg.decision,
-                    "confidence": latest_agg.confidence,
-                    "p_yes": aggregated_p_yes,
-                    "timestamp": latest_agg.timestamp.isoformat(),
-                }
-            else:
-                # Fallback: no aggregated run yet, use latest individual run
-                latest_run = (
-                    session.query(ModelRun)
-                    .filter(ModelRun.market_id == row.market_id)
-                    .order_by(ModelRun.timestamp.desc())
-                    .first()
-                )
-                if latest_run:
-                    p_yes = None
-                    if latest_run.metadata_json:
-                        try:
-                            meta = json.loads(latest_run.metadata_json)
-                            p_yes = meta.get("p_yes")
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    model_prediction = {
-                        "model_name": latest_run.model_name,
-                        "decision": latest_run.decision,
-                        "confidence": latest_run.confidence,
-                        "p_yes": p_yes,
-                        "timestamp": latest_run.timestamp.isoformat(),
-                    }
-                    model_predictions.append(model_prediction)
-                    aggregated_p_yes = p_yes
+                model_prediction = model_predictions[-1] if model_predictions else None
 
             results.append({
                 "id": row.id,
@@ -679,41 +656,18 @@ def get_analytics_summary() -> dict[str, Any]:
             lambda: {"pnl": 0.0, "trades": 0, "title": ""}
         )
 
-        # Build per-model edge contributions from aggregated ModelRun records.
-        # Each aggregated run stores {"models": {model_spec: {"edge": ...}}}
-        # so we can attribute P&L proportionally by edge fraction.
-        model_edge_fractions: dict[str, dict[str, float]] = {}  # market_id -> {model: fraction}
+        # Build model source lookup: market_id -> model name
+        # Use the source field from the latest BettingPrediction per market.
+        market_model_source: dict[str, str] = {}
         try:
-            agg_runs = (
-                session.query(ModelRun)
-                .filter(ModelRun.model_name == "aggregated")
-                .order_by(ModelRun.timestamp.desc())
+            all_preds = (
+                session.query(BettingPrediction)
+                .order_by(BettingPrediction.created_at.desc())
                 .all()
             )
-            # Keep only the latest run per market
-            latest_by_market: dict[str, ModelRun] = {}
-            for run in agg_runs:
-                if run.market_id not in latest_by_market:
-                    latest_by_market[run.market_id] = run
-
-            for market_id, run in latest_by_market.items():
-                if not run.metadata_json:
-                    continue
-                try:
-                    meta = json.loads(run.metadata_json)
-                    models_breakdown = meta.get("models", {})
-                    if not models_breakdown:
-                        continue
-                    total_abs_edge = sum(
-                        abs(m.get("edge", 0)) for m in models_breakdown.values()
-                    )
-                    if total_abs_edge > 0:
-                        model_edge_fractions[market_id] = {
-                            name: abs(m.get("edge", 0)) / total_abs_edge
-                            for name, m in models_breakdown.items()
-                        }
-                except (json.JSONDecodeError, TypeError):
-                    continue
+            for pred in all_preds:
+                if pred.market_id not in market_model_source:
+                    market_model_source[pred.market_id] = pred.source
         except Exception:
             pass
 
@@ -734,21 +688,12 @@ def get_analytics_summary() -> dict[str, Any]:
             pnl_by_market[market_key]["trades"] = trade_count
             pnl_by_market[market_key]["title"] = mkt.title if mkt else ""
 
-            # Per-model attribution: distribute P&L by edge fraction
-            fractions = model_edge_fractions.get(market_key, {})
-            if fractions:
-                for model_name, frac in fractions.items():
-                    model_pnl = total_pnl * frac
-                    pnl_by_model[model_name]["pnl"] += model_pnl
-                    pnl_by_model[model_name]["trades"] += 1
-                    if model_pnl > 0:
-                        pnl_by_model[model_name]["wins"] += 1
-            else:
-                # Fallback: attribute to "aggregated" if no breakdown available
-                pnl_by_model["aggregated"]["pnl"] += total_pnl
-                pnl_by_model["aggregated"]["trades"] += 1
-                if total_pnl > 0:
-                    pnl_by_model["aggregated"]["wins"] += 1
+            # Per-model attribution: use the source from BettingPrediction
+            source = market_model_source.get(market_key, "unknown")
+            pnl_by_model[source]["pnl"] += total_pnl
+            pnl_by_model[source]["trades"] += 1
+            if total_pnl > 0:
+                pnl_by_model[source]["wins"] += 1
 
         # ── Risk metrics ──────────────────────────────────────────
         total_trades = len(trade_pnls)
@@ -973,6 +918,30 @@ def get_model_calibration(
         # Overall calibration
         overall_cal, overall_brier = compute_calibration(predictions, bins)
 
+        # Market baseline Brier score: use yes_ask as the "prediction"
+        # (how well the market price predicts outcomes)
+        latest_by_market_pred: dict[tuple[str, str], BettingPrediction] = {}
+        for p in predictions:
+            key = (p.market_id, p.source)
+            if key not in latest_by_market_pred or p.created_at > latest_by_market_pred[key].created_at:
+                latest_by_market_pred[key] = p
+        # Deduplicate by market_id for baseline (one prediction per market)
+        seen_market_ids: set[str] = set()
+        baseline_brier_sum = 0.0
+        baseline_total = 0
+        for p in latest_by_market_pred.values():
+            if p.market_id in seen_market_ids:
+                continue
+            seen_market_ids.add(p.market_id)
+            outcome = resolved_map.get(p.market_id)
+            if outcome is None:
+                continue
+            baseline_brier_sum += (p.yes_ask - outcome) ** 2
+            baseline_total += 1
+        market_baseline_brier = round(
+            baseline_brier_sum / baseline_total, 6
+        ) if baseline_total > 0 else 0.25
+
         # Per-model calibration
         by_model: dict[str, dict[str, Any]] = {}
         for m in all_models:
@@ -987,6 +956,7 @@ def get_model_calibration(
         return {
             "calibration": overall_cal,
             "brier_score": overall_brier,
+            "market_baseline_brier": market_baseline_brier,
             "models": all_models,
             "by_model": by_model,
         }

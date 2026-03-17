@@ -211,17 +211,17 @@ export function ModelCalibration({
         ) : (
           /* Brier Score view */
           <div className="space-y-3">
-            {/* Overall Brier score */}
-            <div className="flex items-center justify-between p-3 rounded border border-t-border/60 bg-t-bg/30">
-              <div>
-                <div className="text-[9px] text-txt-muted uppercase tracking-wider">
-                  Overall Brier Score
+            {/* Model vs Market baseline comparison */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center justify-between p-3 rounded border border-t-border/60 bg-t-bg/30">
+                <div>
+                  <div className="text-[9px] text-txt-muted uppercase tracking-wider">
+                    Model Brier Score
+                  </div>
+                  <div className="text-[10px] text-txt-muted mt-0.5">
+                    Lower is better (0 = perfect)
+                  </div>
                 </div>
-                <div className="text-[10px] text-txt-muted mt-0.5">
-                  Lower is better (0 = perfect, 0.25 = baseline)
-                </div>
-              </div>
-              <div className="text-right">
                 <span
                   className={`text-xl font-mono font-medium ${
                     calibration.brier_score < 0.15
@@ -233,6 +233,32 @@ export function ModelCalibration({
                 >
                   {calibration.brier_score.toFixed(4)}
                 </span>
+              </div>
+              <div className="flex items-center justify-between p-3 rounded border border-t-border/60 bg-t-bg/30">
+                <div>
+                  <div className="text-[9px] text-txt-muted uppercase tracking-wider">
+                    Market Baseline
+                  </div>
+                  <div className="text-[10px] text-txt-muted mt-0.5">
+                    Using mkt price as prediction
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-xl font-mono font-medium text-txt-secondary">
+                    {(calibration.market_baseline_brier ?? 0.25).toFixed(4)}
+                  </span>
+                  {calibration.market_baseline_brier != null && (
+                    <div className={`text-[9px] font-mono mt-0.5 ${
+                      calibration.brier_score < calibration.market_baseline_brier
+                        ? "text-profit"
+                        : "text-loss"
+                    }`}>
+                      {calibration.brier_score < calibration.market_baseline_brier
+                        ? `▼ ${((calibration.market_baseline_brier - calibration.brier_score) * 100).toFixed(2)}pp better`
+                        : `▲ ${((calibration.brier_score - calibration.market_baseline_brier) * 100).toFixed(2)}pp worse`}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 

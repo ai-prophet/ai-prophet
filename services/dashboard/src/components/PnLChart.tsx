@@ -17,6 +17,21 @@ import type { PnLPoint, TradeMarker } from "@/lib/api";
 import { TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
 type ViewMode = "cumulative" | "realized" | "unrealized";
+type TimeFrame = "1h" | "1d" | "1w" | "all";
+
+const TIME_FRAME_MS: Record<TimeFrame, number | null> = {
+  "1h": 60 * 60 * 1000,
+  "1d": 24 * 60 * 60 * 1000,
+  "1w": 7 * 24 * 60 * 60 * 1000,
+  "all": null,
+};
+
+const TIME_FRAME_LABELS: Record<TimeFrame, string> = {
+  "1h": "1H",
+  "1d": "1D",
+  "1w": "1W",
+  "all": "All",
+};
 
 export function PnLChart({
   data,
@@ -28,6 +43,7 @@ export function PnLChart({
   const [viewMode, setViewMode] = useState<ViewMode>("cumulative");
   const [showDrawdown, setShowDrawdown] = useState(false);
   const [showTradeMarkers, setShowTradeMarkers] = useState(true);
+  const [timeFrame, setTimeFrame] = useState<TimeFrame>("all");
 
   const chartData = useMemo(() => {
     if (data.length === 0) return [];
@@ -61,6 +77,16 @@ export function PnLChart({
     });
   }, [data]);
 
+  // Filter by selected timeframe
+  const filteredData = useMemo(() => {
+    const windowMs = TIME_FRAME_MS[timeFrame];
+    if (windowMs === null) return chartData;
+    const cutoff = Date.now() - windowMs;
+    const filtered = chartData.filter((d) => d.timestamp >= cutoff);
+    // Always include at least the last point so chart isn't empty
+    return filtered.length > 0 ? filtered : chartData.slice(-1);
+  }, [chartData, timeFrame]);
+
   if (data.length === 0) {
     return (
       <div className="bg-t-panel border border-t-border rounded p-10 text-center text-txt-muted text-xs">
@@ -76,16 +102,17 @@ export function PnLChart({
         ? "realized"
         : "unrealized";
 
-  const lastVal = chartData[chartData.length - 1]?.[dataKey] ?? 0;
+  const lastVal = filteredData[filteredData.length - 1]?.[dataKey] ?? 0;
   const isUp = lastVal >= 0;
   const stroke = isUp ? CHART_COLORS.profit : CHART_COLORS.loss;
 
-  const maxDrawdown = Math.min(...chartData.map((d) => d.drawdown), 0);
+  const maxDrawdown = Math.min(...filteredData.map((d) => d.drawdown), 0);
 
   return (
     <div className="bg-t-panel border border-t-border rounded">
       {/* Controls */}
       <div className="px-3 py-1.5 border-b border-t-border flex items-center gap-2 flex-wrap">
+        {/* View mode */}
         <div className="flex items-center gap-1">
           {(
             [
@@ -107,6 +134,33 @@ export function PnLChart({
             </button>
           ))}
         </div>
+
+        {/* Timeframe buttons */}
+        <div className="flex items-center gap-1 border-l border-t-border pl-2">
+          {(["1h", "1d", "1w", "all"] as TimeFrame[]).map((tf) => (
+            <button
+              key={tf}
+              onClick={() => setTimeFrame(tf)}
+              className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors ${
+                timeFrame === tf
+                  ? "bg-accent/20 text-accent"
+                  : "text-txt-muted hover:text-txt-secondary"
+              }`}
+            >
+              {TIME_FRAME_LABELS[tf]}
+            </button>
+          ))}
+          {timeFrame !== "all" && (
+            <button
+              onClick={() => setTimeFrame("all")}
+              className="px-1.5 py-0.5 rounded text-[8px] font-medium text-txt-muted hover:text-accent border border-t-border transition-colors ml-1"
+              title="Reset to all time"
+            >
+              ↺
+            </button>
+          )}
+        </div>
+
         <div className="flex items-center gap-2 ml-auto">
           <label className="flex items-center gap-1 text-[9px] text-txt-muted cursor-pointer">
             <input
@@ -136,7 +190,7 @@ export function PnLChart({
 
       <div className="p-3">
         <ResponsiveContainer width="100%" height={260}>
-          <ComposedChart data={chartData}>
+          <ComposedChart data={filteredData}>
             <defs>
               <linearGradient id="gUp" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={CHART_COLORS.profit} stopOpacity={0.2} />
@@ -243,8 +297,8 @@ export function PnLChart({
               />
             )}
 
-            {/* Brush for zoom */}
-            {chartData.length > 10 && (
+            {/* Brush for fine-grained zoom within selected window */}
+            {filteredData.length > 10 && (
               <Brush
                 dataKey="time"
                 height={20}

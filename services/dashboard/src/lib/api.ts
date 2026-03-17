@@ -209,6 +209,7 @@ export interface CalibrationBin {
 export interface ModelCalibrationData {
   calibration: CalibrationBin[];
   brier_score: number;
+  market_baseline_brier: number;
   models: string[];
   by_model: Record<string, {
     brier_score: number;
@@ -421,11 +422,11 @@ export function buildUnifiedMarketRows(
 // ── URL helpers ─────────────────────────────────────────────
 
 export function kalshiMarketUrl(eventTicker: string): string {
-  return `https://kalshi.com/markets/${eventTicker.toLowerCase()}`;
+  return `https://kalshi.com/events/${eventTicker}`;
 }
 
 export function kalshiEventUrl(eventTicker: string): string {
-  return `https://kalshi.com/events/${eventTicker.toLowerCase()}`;
+  return `https://kalshi.com/events/${eventTicker}`;
 }
 
 // ── Derived data helpers ────────────────────────────────────

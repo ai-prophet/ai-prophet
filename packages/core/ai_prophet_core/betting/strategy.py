@@ -145,11 +145,9 @@ class DefaultBettingStrategy(BettingStrategy):
             price = yes_ask
             side = "yes"
         elif diff < 0:
-            shares = (1.0 - p_yes) - no_ask
+            shares = abs(diff)
             price = no_ask
             side = "no"
-            if shares <= 0:
-                return None
         else:
             return None
 

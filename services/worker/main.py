@@ -240,6 +240,9 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
 
                 shares = order.filled_shares if order.filled_shares > 0 else float(order.count)
                 price = order.fill_price if order.fill_price > 0 else order.price_cents / 100.0
+                # Fix corrupted fill_price stored as cents (e.g. 17.0 instead of 0.17)
+                if price > 1.0:
+                    price = price / 100.0
 
                 # Determine if this is a SELL order (action column may not
                 # exist on old rows, so handle gracefully)
@@ -259,13 +262,17 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                         pos["realized_pnl"] += realized
                         pos["realized_trades"] += 1
 
-                    # Reduce the position
-                    if order.side.lower() == "yes":
-                        pos["yes_shares"] -= shares
-                        pos["total_cost"] -= shares * price
+                        # Reduce cost basis by avg_entry (not sell price)
+                        # to keep avg_price accurate for remaining shares
+                        if order.side.lower() == "yes":
+                            pos["yes_shares"] -= shares
+                            pos["total_cost"] -= avg_entry * shares
+                        else:
+                            pos["yes_shares"] += shares
+                            pos["total_cost"] += avg_entry * shares
                     else:
-                        pos["yes_shares"] += shares
-                        pos["total_cost"] += shares * price
+                        # No position to sell — ignore to prevent negative shares
+                        pass
                 else:
                     # BUY order
                     if order.side.lower() == "yes":
@@ -274,6 +281,12 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                     else:  # no
                         pos["yes_shares"] -= shares
                         pos["total_cost"] -= shares * price
+
+                # When position is flat, reset cost basis to prevent
+                # residuals from leaking across side flips
+                if abs(pos["yes_shares"]) < 0.001:
+                    pos["total_cost"] = 0.0
+                    pos["yes_shares"] = 0.0
 
                 # Track high-water mark for position size
                 current_abs = abs(pos["yes_shares"])
@@ -522,6 +535,12 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
 
                 volume = float(mkt.get("volume_24h_fp", 0) or 0)
 
+                # Apply spread filter early — skip illiquid markets
+                _ya = float(yes_ask) if yes_ask is not None else price
+                _na = float(no_ask) if no_ask is not None else (1.0 - price)
+                if _ya + _na > 1.03:
+                    continue
+
                 # Rank by volume with a small soft bonus for prices near 50%
                 proximity_bonus = 1.0 - 2.0 * abs(price - 0.5)
                 candidates.append({
@@ -545,7 +564,18 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
 
     # Rank: prefer higher volume, soft bonus for prices near 50%
     candidates.sort(key=lambda m: m["_score"], reverse=True)
-    markets = candidates[:max_markets]
+
+    # Deduplicate by event_ticker — keep only the highest-scoring market per event
+    seen_events: set[str] = set()
+    deduped: list[dict] = []
+    for m in candidates:
+        ev = m.get("event_ticker", "") or m.get("ticker", "")
+        if ev and ev in seen_events:
+            continue
+        seen_events.add(ev)
+        deduped.append(m)
+
+    markets = deduped[:max_markets]
 
     # Clean up internal scoring field
     for m in markets:
@@ -1183,9 +1213,9 @@ def run_cycle(args) -> None:
 
                 # Save individual model run
                 decision = "HOLD"
-                if p_yes > yes_ask + 0.05:
+                if p_yes > yes_ask:
                     decision = "BUY_YES"
-                elif p_yes < (1.0 - no_ask) - 0.05:
+                elif p_yes < yes_ask:
                     decision = "BUY_NO"
 
                 if db_engine:
@@ -1201,49 +1231,24 @@ def run_cycle(args) -> None:
             all_market_prices[market_id] = (yes_ask, no_ask)
             continue
 
-        # Aggregate: signed-sum of edges
-        edges = [mp["p_yes"] - yes_ask for mp in model_predictions.values()]
-        aggregated_edge = sum(edges)
-        aggregated_p_yes = yes_ask + aggregated_edge
-
-        per_model_breakdown = {
-            ms: {"p_yes": mp["p_yes"], "confidence": mp["confidence"],
-                 "edge": round(mp["p_yes"] - yes_ask, 6)}
-            for ms, mp in model_predictions.items()
-        }
+        # Use the single model's prediction directly (first available)
+        model_spec = next(iter(model_predictions))
+        mp = model_predictions[model_spec]
+        p_yes = mp["p_yes"]
+        edge = p_yes - yes_ask
 
         logger.info(
-            "  Aggregated edge=%.3f (synthetic p=%.3f) from %d models: %s",
-            aggregated_edge, aggregated_p_yes, len(model_predictions),
-            {ms.split(":")[-1]: f"{mp['p_yes']:.3f}" for ms, mp in model_predictions.items()},
+            "  [%s] edge=%.3f (p_yes=%.3f vs yes_ask=%.3f)",
+            model_spec.split(":")[-1], edge, p_yes, yes_ask,
         )
 
-        if aggregated_edge >= 0.01:
-            agg_decision = "BUY_YES"
-        elif aggregated_edge <= -0.01:
-            agg_decision = "BUY_NO"
-        else:
-            agg_decision = "HOLD"
-
-        # Save aggregated model run
         if db_engine:
-            avg_confidence = sum(mp["confidence"] for mp in model_predictions.values()) / len(model_predictions)
-            save_model_run(
-                db_engine, "aggregated", market_id, agg_decision, avg_confidence,
-                metadata={
-                    "p_yes": round(aggregated_p_yes, 6),
-                    "aggregated_edge": round(aggregated_edge, 6),
-                    "models": per_model_breakdown,
-                    "num_models": len(model_predictions),
-                    "yes_ask": yes_ask, "no_ask": no_ask,
-                },
-            )
             save_price_snapshot(
                 db_engine, market_id, ticker,
                 yes_ask=yes_ask, no_ask=no_ask,
                 volume_24h=float(mkt.get("volume_24h", 0) or 0),
-                model_p_yes=round(aggregated_p_yes, 6),
-                model_name="aggregated",
+                model_p_yes=round(p_yes, 6),
+                model_name=model_spec,
             )
 
         # Build per-market portfolio snapshot
@@ -1286,21 +1291,18 @@ def run_cycle(args) -> None:
             except Exception as e:
                 logger.debug("Could not load position for portfolio: %s", e)
 
-        # Feed aggregated prediction into BettingEngine
-        if agg_decision == "HOLD":
-            logger.info("  HOLD (edge %.4f < 1c), skipping trade for %s", aggregated_edge, ticker)
-        else:
-            result = betting_engine.on_forecast(
-                tick_ts=tick_ts,
-                market_id=market_id,
-                p_yes=aggregated_p_yes,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-                source="aggregated",
-                portfolio=portfolio,
-            )
-            if result is not None:
-                total_results.append(result)
+        # Feed prediction directly into BettingEngine (strategy decides edge threshold)
+        result = betting_engine.on_forecast(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            p_yes=p_yes,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            source=model_spec,
+            portfolio=portfolio,
+        )
+        if result is not None:
+            total_results.append(result)
 
         all_market_prices[market_id] = (yes_ask, no_ask)
 
