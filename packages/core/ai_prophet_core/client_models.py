@@ -296,6 +296,23 @@ class ForecastSubmitResponse(BaseModel):
     submitted_at: datetime
 
 
+class ForecastRegisterEndpointRequest(BaseModel):
+    """Request body for registering a prediction endpoint."""
+    team_name: str
+    endpoint_url: str
+    is_active: bool = True
+
+
+class ForecastEndpointResponse(BaseModel):
+    """A team's registered prediction endpoint."""
+    team_name: str
+    endpoint_url: str
+    is_active: bool
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    last_run_n_predictions: int | None = None
+
+
 class ForecastScoreEntry(BaseModel):
     """A single entry on the leaderboard."""
     id: int

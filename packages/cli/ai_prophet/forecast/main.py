@@ -168,6 +168,64 @@ def events(
             click.echo(f"{e.market_ticker:<40}{e.category:<18}{close:<22}{e.title[:30]}")
 
 
+@cli.command(name="register")
+@click.option(
+    "--team-name",
+    required=True,
+    help="Team name.",
+)
+@click.option(
+    "--endpoint-url",
+    required=True,
+    help="Prediction endpoint URL (receives POST with event JSON, returns {p_yes, rationale}).",
+)
+@click.option(
+    "--deactivate",
+    is_flag=True,
+    default=False,
+    help="Deactivate the endpoint instead of activating it.",
+)
+@click.option(
+    "--server-url",
+    default=None,
+    help="Core API URL (default: PROPHET_API_URL env var).",
+)
+@click.option(
+    "--api-key",
+    default=None,
+    help="API key (default: PA_SERVER_API_KEY env var).",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def register(
+    team_name: str,
+    endpoint_url: str,
+    deactivate: bool,
+    server_url: str | None,
+    api_key: str | None,
+    verbose: bool,
+) -> None:
+    """Register a prediction endpoint for daily auto-forecasting."""
+    _setup_logging(verbose)
+
+    url, key = _resolve_server(server_url, api_key)
+
+    client = ServerAPIClient(base_url=url, api_key=key)
+    try:
+        result = client.register_forecast_endpoint(
+            team_name=team_name,
+            endpoint_url=endpoint_url,
+            is_active=not deactivate,
+        )
+    finally:
+        client.close()
+
+    status = "active" if result.is_active else "inactive"
+    click.echo(f"Endpoint registered for team '{result.team_name}' ({status})")
+    click.echo(f"URL: {result.endpoint_url}")
+    if result.last_run_at:
+        click.echo(f"Last run: {result.last_run_at.strftime('%Y-%m-%d %H:%M')} ({result.last_run_status}, {result.last_run_n_predictions} predictions)")
+
+
 @cli.command(name="predict")
 @click.option(
     "--events",

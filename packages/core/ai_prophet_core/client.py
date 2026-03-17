@@ -23,7 +23,9 @@ from .client_models import (
     CreateExperimentResponse,
     FinalizeRequest,
     FinalizeResponse,
+    ForecastEndpointResponse,
     ForecastEventResponse,
+    ForecastRegisterEndpointRequest,
     ForecastScoreEntry,
     ForecastSubmitRequest,
     ForecastSubmitResponse,
@@ -402,6 +404,29 @@ class ServerAPIClient:
         req = ForecastSubmitRequest(team_name=team_name, predictions=predictions)
         response = self._post("/forecast/submit", json=req.model_dump(mode="json"))
         return self._parse_response(response, ForecastSubmitResponse)
+
+    def register_forecast_endpoint(
+        self,
+        team_name: str,
+        endpoint_url: str,
+        is_active: bool = True,
+    ) -> ForecastEndpointResponse:
+        """Register or update a team's prediction endpoint for auto-forecasting."""
+        req = ForecastRegisterEndpointRequest(
+            team_name=team_name, endpoint_url=endpoint_url, is_active=is_active,
+        )
+        response = self._post("/forecast/endpoints/register", json=req.model_dump(mode="json"))
+        return self._parse_response(response, ForecastEndpointResponse)
+
+    def get_forecast_endpoint(self, team_name: str) -> ForecastEndpointResponse | None:
+        """Fetch a team's registered endpoint. Returns None if not found."""
+        try:
+            response = self._get(f"/forecast/endpoints/{team_name}")
+            return self._parse_response(response, ForecastEndpointResponse)
+        except APIClientError as e:
+            if e.status_code == 404:
+                return None
+            raise
 
     def get_forecast_leaderboard(self) -> list[ForecastScoreEntry]:
         """Fetch the forecast leaderboard."""

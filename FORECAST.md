@@ -149,6 +149,7 @@ Use this as a starting point — replace the Claude call with your own forecasti
 | `prophet forecast predict` | Send events to your agent and collect predictions |
 | `prophet forecast evaluate` | Score a submission locally against an actuals file |
 | `prophet forecast submit` | Submit predictions to the server |
+| `prophet forecast register` | Register a prediction endpoint for daily auto-forecasting |
 | `prophet forecast leaderboard` | View the leaderboard |
 
 ## Environment Variables
@@ -162,7 +163,24 @@ Use this as a starting point — replace the Claude call with your own forecasti
 | `ANTHROPIC_API_KEY` | Anthropic API key (used by example agent) |
 | `FORECAST_MODEL` | Override model for example agent (default: `claude-sonnet-4-20250514`) |
 
-All server-facing commands (`events`, `submit`, `leaderboard`) require an API key. Set `PA_SERVER_API_KEY` in your environment, or pass `--api-key` on the command line.
+All server-facing commands (`events`, `submit`, `register`, `leaderboard`) require an API key. Set `PA_SERVER_API_KEY` in your environment, or pass `--api-key` on the command line.
+
+## Auto-Forecasting (Endpoint Registration)
+
+Instead of manually running `predict` + `submit` each day, you can register a prediction endpoint and we'll call it daily for all open events:
+
+```bash
+prophet forecast register --team-name my-team --endpoint-url https://my-agent.example.com/predict
+```
+
+Your endpoint must follow the same [agent contract](#agent-endpoint-contract) — receive a POST with event JSON, return `{"p_yes": float, "rationale": "..."}`.
+
+You can use both modes: register an endpoint for daily auto-predictions, and also submit manually whenever you want. The latest prediction per market (from either source) is used for scoring.
+
+To deactivate your endpoint:
+```bash
+prophet forecast register --team-name my-team --endpoint-url https://my-agent.example.com/predict --deactivate
+```
 
 ## Local Evaluation
 
