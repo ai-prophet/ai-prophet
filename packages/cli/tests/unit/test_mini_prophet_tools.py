@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -55,7 +56,7 @@ class TestMarketDataTool:
 
     def test_execute_returns_prices(self, sample_market):
         tool = MarketDataTool(sample_market)
-        result = tool.execute({})
+        result = asyncio.run(tool.execute({}))
         output = result["output"]
         assert "Will it rain tomorrow?" in output
         assert "bid=0.450" in output
@@ -84,10 +85,10 @@ class TestTradingSubmitTool:
     def test_valid_submission_raises_submitted(self, board):
         tool = TradingSubmitTool(outcomes=["Yes", "No"], board=board)
         with pytest.raises(Submitted) as exc_info:
-            tool.execute({
+            asyncio.run(tool.execute({
                 "probabilities": {"Yes": 0.7, "No": 0.3},
                 "rationale": "Strong evidence for Yes.",
-            })
+            }))
         # Check the exit message
         msg = exc_info.value.messages[0]
         assert msg["extra"]["exit_status"] == "submitted"
@@ -96,19 +97,19 @@ class TestTradingSubmitTool:
 
     def test_missing_outcome_returns_error(self, board):
         tool = TradingSubmitTool(outcomes=["Yes", "No"], board=board)
-        result = tool.execute({
+        result = asyncio.run(tool.execute({
             "probabilities": {"Yes": 0.7},
             "rationale": "Missing No.",
-        })
+        }))
         assert result.get("error") is True
         assert "Missing outcomes" in result["output"]
 
     def test_invalid_probability_returns_error(self, board):
         tool = TradingSubmitTool(outcomes=["Yes", "No"], board=board)
-        result = tool.execute({
+        result = asyncio.run(tool.execute({
             "probabilities": {"Yes": 1.5, "No": -0.5},
             "rationale": "Bad values.",
-        })
+        }))
         assert result.get("error") is True
         assert "between 0 and 1" in result["output"]
 

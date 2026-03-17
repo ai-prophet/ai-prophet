@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -42,7 +43,7 @@ class LLMClientBridge:
     # Model protocol
     # ------------------------------------------------------------------
 
-    def query(self, messages: list[dict], tools: list[dict]) -> dict:
+    async def query(self, messages: list[dict], tools: list[dict]) -> dict:
         """Send a chat-completion request and return a mini-prophet message."""
         # Convert OpenAI tool schemas → ToolSchema dataclasses
         tool_schemas = _convert_tool_schemas(tools) if tools else None
@@ -60,7 +61,7 @@ class LLMClientBridge:
             temperature=0.7,
         )
 
-        response = self._client.generate(request)
+        response = await asyncio.to_thread(self._client.generate, request)
 
         # Build mini-prophet response dict
         result: dict[str, Any] = {

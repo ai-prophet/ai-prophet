@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from miniprophet import ForecastProblem, batch_forecast
+from miniprophet import ForecastProblem, batch_forecast_sync
 
 from ai_prophet.trade.core import TickContext
 from ai_prophet.trade.core.config import MiniProphetConfig
@@ -31,12 +31,12 @@ logger = logging.getLogger(__name__)
 
 
 class TradingForecastAgent:
-    """Per-market forecasting agent wrapping ``DefaultForecastAgent``.
+    """Per-market forecasting agent inheriting from ``DefaultForecastAgent``.
 
-    All heavy setup — tools, environment, context manager, and the inner
-    ``DefaultForecastAgent`` — happens in ``__init__``.  :meth:`run` only
-    delegates to the inner agent and extracts the rationale from its exit
-    message.
+    Uses inheritance so that ``EvalBatchAgentWrapper`` can hook ``step``
+    directly on the instance (it IS a ``DefaultForecastAgent``).  Cost/stats
+    attributes (``messages``, ``model_cost``, ``total_cost``, etc.) are all
+    inherited — no manual propagation needed.
 
     ``batch_forecast`` creates the ``model`` (our :class:`LLMClientBridge`)
     once and passes it to every agent instance via the factory.  The ``env``
@@ -55,24 +55,17 @@ class TradingForecastAgent:
         rationale_store: dict[str, str] | None = None,
         sources_store: dict[str, dict] | None = None,
         context_manager: Any | None = None,
-        cancel_event: Any | None = None,
         **kwargs: Any,
     ) -> None:
         from miniprophet.agent.default import DefaultForecastAgent
         from miniprophet.environment.forecast_env import ForecastEnvironment
 
+        # Capture custom kwargs BEFORE super().__init__() — these are NOT
+        # valid AgentConfig fields and would fail Pydantic validation.
         self._market_info = market_info or {}
         self._mp_config = mp_config
         self._rationale_store = rationale_store if rationale_store is not None else {}
         self._sources_store = sources_store if sources_store is not None else {}
-
-        # Attributes inspected by EvalBatchAgentWrapper for cost tracking
-        self.messages: list[dict] = []
-        self.model_cost: float = 0.0
-        self.search_cost: float = 0.0
-        self.total_cost: float = 0.0
-        self.n_calls: int = 0
-        self.n_searches: int = 0
 
         # Swap default submit tool → TradingSubmitTool; add MarketDataTool.
         # These are market-independent at init time; MarketDataTool is added
@@ -94,11 +87,11 @@ class TradingForecastAgent:
             .replace("__SEARCH_LIMIT__", str(search_limit))
         )
 
-        self._agent = DefaultForecastAgent(
+        DefaultForecastAgent.__init__(
+            self,
             model=model,
             env=new_env,
             context_manager=context_manager,
-            cancel_event=cancel_event,
             system_template=system_prompt,
             instance_template=INSTANCE_TEMPLATE,  # seed queries injected in run()
             step_limit=step_limit,
@@ -107,20 +100,22 @@ class TradingForecastAgent:
             show_current_time=cfg.show_current_time if cfg else True,
         )
 
-    def run(
+    async def run(
         self,
         title: str,
         outcomes: list[str],
         ground_truth: dict[str, int] | None = None,
         **runtime_kwargs: Any,
     ) -> dict[str, Any]:
+        from miniprophet.agent.default import DefaultForecastAgent
+
         info = self._market_info.get(title, {})
         market = info.get("market")
         seed_queries: list[str] = info.get("seed_queries", [])
 
         # Inject MarketDataTool for this specific market
         if market:
-            self._agent.env._tools["get_market_data"] = MarketDataTool(market)
+            self.env._tools["get_market_data"] = MarketDataTool(market)
 
         # Format instance template with seed queries
         seed_block = ""
@@ -130,11 +125,12 @@ class TradingForecastAgent:
                 "The review stage has suggested these search queries to start with:\n"
                 f"{formatted}"
             )
-        self._agent.config.instance_template = INSTANCE_TEMPLATE.replace(
+        self.config.instance_template = INSTANCE_TEMPLATE.replace(
             "{seed_queries_block}", seed_block
         )
 
-        result = self._agent.run(
+        result = await DefaultForecastAgent.run(
+            self,
             title=title,
             outcomes=outcomes,
             ground_truth=ground_truth,
@@ -143,7 +139,7 @@ class TradingForecastAgent:
 
         # Extract rationale from exit messages
         rationale = ""
-        for msg in reversed(self._agent.messages):
+        for msg in reversed(self.messages):
             if msg.get("role") == "exit":
                 rationale = msg.get("extra", {}).get("rationale", "")
                 break
@@ -152,17 +148,9 @@ class TradingForecastAgent:
 
         # Extract sources from the agent's environment
         try:
-            self._sources_store[title] = self._agent.env.serialize_sources_state()
+            self._sources_store[title] = self.env.serialize_sources_state()
         except Exception:
             logger.debug("Failed to extract sources for %s", title, exc_info=True)
-
-        # Propagate cost/stats for EvalBatchAgentWrapper
-        self.messages = self._agent.messages
-        self.model_cost = getattr(self._agent, "model_cost", 0.0)
-        self.search_cost = getattr(self._agent, "search_cost", 0.0)
-        self.total_cost = getattr(self._agent, "total_cost", 0.0)
-        self.n_calls = getattr(self._agent, "n_calls", 0)
-        self.n_searches = getattr(self._agent, "n_searches", 0)
 
         return result
 
@@ -263,7 +251,7 @@ class MiniProphetForecastStage(PipelineStage):
             },
         }
 
-        results = batch_forecast(
+        results = batch_forecast_sync(
             problems,
             config=override_config,
             model=bridge,

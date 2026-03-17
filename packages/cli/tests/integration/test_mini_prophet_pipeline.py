@@ -148,7 +148,7 @@ def test_mini_prophet_pipeline_produces_trade_intent():
         tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
 
         with patch(
-            "ai_prophet.trade.agent.mini_prophet.stage.batch_forecast",
+            "ai_prophet.trade.agent.mini_prophet.stage.batch_forecast_sync",
             side_effect=_mock_batch_forecast,
         ):
             result = pipeline.execute(tick_ctx, run_id=run_id)
@@ -209,7 +209,7 @@ def test_mini_prophet_pipeline_event_store_logging():
             return results
 
         with patch(
-            "ai_prophet.trade.agent.mini_prophet.stage.batch_forecast",
+            "ai_prophet.trade.agent.mini_prophet.stage.batch_forecast_sync",
             side_effect=_mock_with_different_prob,
         ):
             pipeline.execute(tick_ctx, run_id=run_id)

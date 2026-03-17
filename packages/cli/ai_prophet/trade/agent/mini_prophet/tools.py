@@ -34,7 +34,7 @@ class MarketDataTool:
             },
         }
 
-    def execute(self, args: dict) -> dict:  # noqa: ARG002
+    async def execute(self, args: dict) -> dict:  # noqa: ARG002
         m = self._market
         output = (
             f"Market: {m.question}\n"
@@ -99,7 +99,7 @@ class TradingSubmitTool:
             },
         }
 
-    def execute(self, args: dict) -> dict:
+    async def execute(self, args: dict) -> dict:
         probabilities = args.get("probabilities", {})
 
         # Validate: all outcomes present

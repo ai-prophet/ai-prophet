@@ -123,7 +123,7 @@ class TestMiniProphetForecastStage:
         result = stage.execute(tick_ctx, {"review": bad_review})
         assert result.success is False
 
-    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast_sync")
     def test_produces_forecast_format(
         self, mock_batch, stage, tick_ctx, review_result
     ):
@@ -164,7 +164,7 @@ class TestMiniProphetForecastStage:
         assert sources["market_123"]["sources"]["S1"]["url"] == "https://weather.com"
         assert len(sources["market_123"]["source_board"]) == 1
 
-    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast_sync")
     def test_concise_sources_false_includes_snippet(
         self, mock_batch, mock_llm_client, tick_ctx, review_result
     ):
@@ -193,7 +193,7 @@ class TestMiniProphetForecastStage:
         sources = result.data["sources"]
         assert sources["market_123"]["sources"]["S1"]["snippet"] == "Rain expected"
 
-    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast_sync")
     def test_handles_agent_error_gracefully(
         self, mock_batch, stage, tick_ctx, review_result
     ):
@@ -211,7 +211,7 @@ class TestMiniProphetForecastStage:
         assert forecasts["market_123"]["p_yes"] == 0.50  # market.yes_mark
         assert "Agent status" in forecasts["market_123"]["rationale"]
 
-    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast")
+    @patch("ai_prophet.trade.agent.mini_prophet.stage.batch_forecast_sync")
     def test_handles_missing_submission(
         self, mock_batch, stage, tick_ctx, review_result
     ):

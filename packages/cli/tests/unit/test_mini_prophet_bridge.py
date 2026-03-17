@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -114,7 +115,7 @@ class TestBridgeQuery:
             {"role": "user", "content": "Forecast this market."},
         ]
 
-        result = bridge.query(messages, SAMPLE_OPENAI_TOOLS)
+        result = asyncio.run(bridge.query(messages, SAMPLE_OPENAI_TOOLS))
 
         assert result["role"] == "assistant"
         assert "tool_calls" in result
@@ -127,8 +128,14 @@ class TestBridgeQuery:
         assert actions[0]["tool_call_id"] == "call_1"
         assert json.loads(actions[0]["arguments"]) == {"query": "test"}
 
-    def test_query_no_tool_calls(self, bridge, mock_llm_client):
-        """When the LLM returns text only, actions is empty."""
+    def test_query_no_tool_calls_raises_format_error(self, bridge, mock_llm_client):
+        """When the LLM returns text only, FormatError is raised.
+
+        In the agent loop this is caught and retried — the bridge itself
+        does not swallow the error.
+        """
+        from miniprophet.exceptions import FormatError
+
         mock_llm_client.generate.return_value = LLMResponse(
             content="I need more info.",
             model="test-model",
@@ -138,31 +145,31 @@ class TestBridgeQuery:
             finish_reason="stop",
         )
 
-        result = bridge.query(
-            [{"role": "user", "content": "hi"}],
-            SAMPLE_OPENAI_TOOLS,
-        )
-
-        assert result["role"] == "assistant"
-        assert result["content"] == "I need more info."
-        assert result["extra"]["actions"] == []
+        with pytest.raises(FormatError):
+            asyncio.run(bridge.query(
+                [{"role": "user", "content": "hi"}],
+                SAMPLE_OPENAI_TOOLS,
+            ))
 
     def test_strips_extra_from_raw_messages(self, bridge, mock_llm_client):
         """The 'extra' key on messages is not passed to the LLM provider."""
         mock_llm_client.generate.return_value = LLMResponse(
-            content="ok",
+            content="",
             model="test-model",
             prompt_tokens=10,
             completion_tokens=5,
             total_tokens=15,
-            finish_reason="stop",
+            finish_reason="tool_use",
+            tool_calls=[
+                {"name": "search", "arguments": {"query": "test"}, "id": "call_1"},
+            ],
         )
 
         messages = [
             {"role": "user", "content": "test", "extra": {"actions": []}},
         ]
 
-        bridge.query(messages, [])
+        asyncio.run(bridge.query(messages, SAMPLE_OPENAI_TOOLS))
 
         call_args = mock_llm_client.generate.call_args
         request = call_args[0][0]
