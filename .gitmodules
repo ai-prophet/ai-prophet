@@ -1,0 +1,4 @@
+[submodule "packages/mini-prophet"]
+	path = packages/mini-prophet
+	url = https://github.com/ai-prophet/mini-prophet.git
+	branch = main

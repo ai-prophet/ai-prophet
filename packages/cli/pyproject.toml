@@ -37,6 +37,12 @@ dependencies = [
     
     # Core SDK
     "ai-prophet-core>=0.1.2,<0.2.0",
+
+    # Mini-Prophet forecasting agent (submodule at packages/mini-prophet)
+    "mini-prophet>=0.1.8",
+
+    # Search backend for mini-prophet
+    "exa-py>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +66,7 @@ Documentation = "https://www.prophetarena.co"
 prophet = "ai_prophet.main:cli"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = [".", "packages/mini-prophet/src"]
 include = ["ai_prophet*"]
 
 [tool.setuptools.package-data]

@@ -111,25 +111,44 @@ class AgentPipeline:
         self.on_forecast: Callable[..., None] | None = self.config.get("on_forecast")
 
         # Initialize stages
-        self.stages: list[PipelineStage] = [
-            ReviewStage(
-                llm_client=llm_client,
-                max_markets=max_markets,
-            ),
-            SearchStage(
-                llm_client=llm_client,
-                search_client=search_client,
-                max_queries_per_market=max_queries,
-                max_results_per_query=max_results,
-            ),
-            ForecastStage(
-                llm_client=llm_client,
-            ),
-            ActionStage(
-                llm_client=llm_client,
-                min_size_usd=min_size,
-            ),
-        ]
+        if runtime_config.mini_prophet.enabled:
+            from ai_prophet.trade.agent.mini_prophet import MiniProphetForecastStage
+
+            logger.info("Using mini-prophet agentic forecasting (Search+Forecast replaced)")
+            self.stages: list[PipelineStage] = [
+                ReviewStage(
+                    llm_client=llm_client,
+                    max_markets=max_markets,
+                ),
+                MiniProphetForecastStage(
+                    llm_client=llm_client,
+                    config=runtime_config.mini_prophet,
+                ),
+                ActionStage(
+                    llm_client=llm_client,
+                    min_size_usd=min_size,
+                ),
+            ]
+        else:
+            self.stages: list[PipelineStage] = [
+                ReviewStage(
+                    llm_client=llm_client,
+                    max_markets=max_markets,
+                ),
+                SearchStage(
+                    llm_client=llm_client,
+                    search_client=search_client,
+                    max_queries_per_market=max_queries,
+                    max_results_per_query=max_results,
+                ),
+                ForecastStage(
+                    llm_client=llm_client,
+                ),
+                ActionStage(
+                    llm_client=llm_client,
+                    min_size_usd=min_size,
+                ),
+            ]
         logger.debug(f"Initialized {len(self.stages)} pipeline stages: {[s.name for s in self.stages]}")
 
     def execute(

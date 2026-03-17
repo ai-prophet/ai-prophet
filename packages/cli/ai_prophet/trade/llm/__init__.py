@@ -123,7 +123,7 @@ def create_llm_client(
             max_retries=max_retries,
             retry_delay=retry_delay,
             verbose=verbose,
-            reasoning_effort="none",
+            reasoning_effort="medium",
             verbosity="medium",
         )
 

@@ -115,10 +115,16 @@ class OpenAICompatibleClient(LLMClient):
         self._log_request(request)
 
         # Build request kwargs
-        messages = [
-            {"role": msg.role, "content": msg.content}
-            for msg in request.messages
-        ]
+        if request.raw_messages is not None:
+            messages = [
+                {k: v for k, v in msg.items() if k != "extra"}
+                for msg in request.raw_messages
+            ]
+        else:
+            messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in request.messages
+            ]
 
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -131,7 +137,20 @@ class OpenAICompatibleClient(LLMClient):
             kwargs["max_tokens"] = self.max_tokens
 
         # Tool calling
-        if request.tool:
+        if request.tools:
+            kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
+                }
+                for t in request.tools
+            ]
+            # No tool_choice — let model choose
+        elif request.tool:
             kwargs["tools"] = [{
                 "type": "function",
                 "function": {
@@ -155,14 +174,20 @@ class OpenAICompatibleClient(LLMClient):
                 response = self.client.chat.completions.create(**kwargs)
                 choice = response.choices[0]
 
-                # Extract tool output if present
-                tool_output = None
+                # Extract tool calls if present
+                tool_calls: list[dict[str, Any]] = []
                 content = choice.message.content or ""
 
                 if choice.message.tool_calls:
-                    tool_call = choice.message.tool_calls[0]
-                    tool_output = json.loads(tool_call.function.arguments)
-                    logger.debug(f"Tool output received: {list(tool_output.keys())}")
+                    for tc in choice.message.tool_calls:
+                        tool_calls.append({
+                            "name": tc.function.name,
+                            "arguments": json.loads(tc.function.arguments),
+                            "id": tc.id,
+                        })
+                        logger.debug(f"Tool call: {tc.function.name}")
+
+                tool_output = tool_calls[0]["arguments"] if tool_calls else None
 
                 llm_response = LLMResponse(
                     content=content,
@@ -172,6 +197,7 @@ class OpenAICompatibleClient(LLMClient):
                     total_tokens=response.usage.total_tokens if response.usage else 0,
                     finish_reason=choice.finish_reason,
                     tool_output=tool_output,
+                    tool_calls=tool_calls or None,
                 )
 
                 self._log_response(llm_response)

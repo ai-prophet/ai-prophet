@@ -48,7 +48,9 @@ class LLMRequest:
     temperature: float = 0.7
     max_tokens: int | None = None
     response_format: dict[str, Any] | None = None  # For JSON mode
-    tool: ToolSchema | None = None  # For tool/function calling
+    tool: ToolSchema | None = None  # For tool/function calling (forced)
+    tools: list[ToolSchema] | None = None  # Multi-tool choice (LLM picks)
+    raw_messages: list[dict[str, Any]] | None = None  # Provider-native dicts (bypass LLMMessage)
 
 
 @dataclass
@@ -60,7 +62,8 @@ class LLMResponse:
     completion_tokens: int
     total_tokens: int
     finish_reason: str
-    tool_output: dict[str, Any] | None = None  # Parsed tool call result
+    tool_output: dict[str, Any] | None = None  # Parsed tool call result (first call)
+    tool_calls: list[dict[str, Any]] | None = None  # All tool calls: [{name, arguments, id}, ...]
 
 
 class LLMClient(ABC):

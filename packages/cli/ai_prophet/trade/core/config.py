@@ -72,6 +72,21 @@ class MemoryConfig:
 
 
 @dataclass
+class MiniProphetConfig:
+    """Mini-prophet forecasting agent configuration."""
+    enabled: bool = False
+    step_limit: int = 20
+    search_limit: int = 3
+    cost_limit: float = 1.0
+    context_window: int = 6
+    show_current_time: bool = True
+    batch_workers: int = 5       # Parallel workers for batch_forecast (0 = sequential)
+    batch_timeout: float = 120.0  # Per-market timeout in seconds
+    search_class: str = "exa"    # Search backend: exa, perplexity, brave, tavily
+    concise_sources: bool = True  # Strip snippet; False = include full content
+
+
+@dataclass
 class ClientConfig:
     """Full client configuration."""
     search: SearchConfig = field(default_factory=SearchConfig)
@@ -80,6 +95,7 @@ class ClientConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
+    mini_prophet: MiniProphetConfig = field(default_factory=MiniProphetConfig)
 
     # Singleton instance (class-level, not per-instance)
     _instance: ClassVar[ClientConfig | None] = None
@@ -95,6 +111,7 @@ class ClientConfig:
             server=ServerConfig(**config_data.get("server", {})),
             memory=MemoryConfig(**config_data.get("memory", {})),
             benchmark=BenchmarkConfig(**config_data.get("benchmark", {})),
+            mini_prophet=MiniProphetConfig(**config_data.get("mini_prophet", {})),
         )
 
     @classmethod

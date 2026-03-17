@@ -88,31 +88,81 @@ class OpenAIClient(LLMClient):
             timeout=120.0,
         )
 
-    def _add_additional_properties(self, schema: dict) -> dict:
-        """Recursively add additionalProperties: false to all object schemas.
+    @staticmethod
+    def _convert_chat_to_responses(raw_messages: list[dict]) -> list[dict]:
+        """Convert Chat Completions format messages to Responses API format.
 
-        GPT-5 strict mode requires this on all object definitions.
+        Chat Completions uses:
+          - assistant messages with ``tool_calls`` list
+          - ``{"role": "tool", "tool_call_id": "...", "content": "..."}``
+
+        Responses API uses:
+          - ``{"type": "function_call", "call_id": "...", "name": "...", "arguments": "..."}``
+          - ``{"type": "function_call_output", "call_id": "...", "output": "..."}``
+        """
+        items: list[dict] = []
+        extra_keys = {"extra"}  # mini-prophet attaches this
+
+        for msg in raw_messages:
+            role = msg.get("role", "")
+
+            if role == "tool":
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "output": msg.get("content", ""),
+                })
+
+            elif role == "assistant" and msg.get("tool_calls"):
+                content = msg.get("content")
+                if content:
+                    items.append({"role": "assistant", "content": content})
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    items.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id", ""),
+                        "name": func.get("name", ""),
+                        "arguments": func.get("arguments", "{}"),
+                    })
+
+            else:
+                items.append({
+                    k: v for k, v in msg.items() if k not in extra_keys
+                })
+
+        return items
+
+    def _enforce_strict_schema(self, schema: dict) -> dict:
+        """Recursively enforce GPT-5 strict mode requirements on JSON schemas.
+
+        Strict mode requires:
+        - ``additionalProperties: false`` on all object schemas
+        - ``required`` must list every key in ``properties``
         """
         if not isinstance(schema, dict):
             return schema
 
         result = dict(schema)
 
-        # If this is an object schema, add additionalProperties: false
         if result.get("type") == "object":
             if "additionalProperties" not in result:
                 result["additionalProperties"] = False
 
+            # Strict mode: required must include every property key
+            if "properties" in result:
+                result["required"] = sorted(result["properties"].keys())
+
         # Recursively process properties
         if "properties" in result:
             result["properties"] = {
-                k: self._add_additional_properties(v)
+                k: self._enforce_strict_schema(v)
                 for k, v in result["properties"].items()
             }
 
         # Recursively process items (for arrays)
         if "items" in result:
-            result["items"] = self._add_additional_properties(result["items"])
+            result["items"] = self._enforce_strict_schema(result["items"])
 
         return result
 
@@ -131,12 +181,19 @@ class OpenAIClient(LLMClient):
         self._log_request(request)
 
         # Build request body for Responses API
-        body: dict[str, Any] = {
-            "model": self.model,
-            "input": [
+        if request.raw_messages is not None:
+            # raw_messages are in Chat Completions format — convert to
+            # Responses API format (function_call / function_call_output items)
+            input_messages = self._convert_chat_to_responses(request.raw_messages)
+        else:
+            input_messages = [
                 {"role": msg.role, "content": msg.content}
                 for msg in request.messages
-            ],
+            ]
+
+        body: dict[str, Any] = {
+            "model": self.model,
+            "input": input_messages,
             "reasoning": {
                 "effort": self.reasoning_effort,
             },
@@ -149,10 +206,23 @@ class OpenAIClient(LLMClient):
         if request.max_tokens or self.max_tokens:
             body["max_output_tokens"] = request.max_tokens or self.max_tokens
 
-        # Add tool if specified - GPT-5.2 Responses API tool format
-        if request.tool:
+        # Tool preparation
+        if request.tools:
+            # Multi-tool choice (mini-prophet bridge) — no strict mode because
+            # external tool schemas may use bare objects, optional properties, etc.
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": dict(t.parameters),
+                }
+                for t in request.tools
+            ]
+            # No tool_choice — let model choose
+        elif request.tool:
             # Recursively add additionalProperties: false to all object schemas for strict mode
-            params = self._add_additional_properties(dict(request.tool.parameters))
+            params = self._enforce_strict_schema(dict(request.tool.parameters))
 
             body["tools"] = [{
                 "type": "function",
@@ -204,8 +274,8 @@ class OpenAIClient(LLMClient):
 
                 data = response.json()
 
-                # Extract response content and tool output
-                tool_output = None
+                # Extract response content and tool calls
+                tool_calls: list[dict[str, Any]] = []
                 content = ""
                 finish_reason = "stop"
 
@@ -232,15 +302,19 @@ class OpenAIClient(LLMClient):
                     # Handle function/tool calls
                     elif item_type == "function_call":
                         try:
-                            args = item.get("arguments", "{}")
-                            if isinstance(args, str):
-                                tool_output = json.loads(args)
-                            else:
-                                tool_output = args
-                            logger.debug(f"Tool output received: {list(tool_output.keys())}")
+                            args_raw = item.get("arguments", "{}")
+                            parsed_args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                            tool_calls.append({
+                                "name": item.get("name", ""),
+                                "arguments": parsed_args,
+                                "id": item.get("call_id", item.get("id", "")),
+                            })
+                            logger.debug(f"Tool call: {item.get('name')}")
                         except json.JSONDecodeError as e:
                             logger.warning(f"Failed to parse function arguments: {e}")
-                            content = args  # Fall back to raw string
+                            content = args_raw  # Fall back to raw string
+
+                tool_output = tool_calls[0]["arguments"] if tool_calls else None
 
                 # Get usage stats
                 usage = data.get("usage", {})
@@ -261,6 +335,7 @@ class OpenAIClient(LLMClient):
                     total_tokens=total_tokens,
                     finish_reason=finish_reason,
                     tool_output=tool_output,
+                    tool_calls=tool_calls or None,
                 )
 
                 self._log_response(llm_response)
