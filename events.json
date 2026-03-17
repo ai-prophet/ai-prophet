@@ -1,0 +1,182 @@
+[
+  {
+    "event_ticker": "KXAIJOBLOSS-26MAR20",
+    "market_ticker": "KXAIJOBLOSS-26MAR20-T87000",
+    "title": "Will AI-linked job losses on Friday, Mar 20 be above 87000?",
+    "subtitle": "",
+    "description": null,
+    "category": "Economics",
+    "rules": "If the \"Total AI-linked job losses\" figure displayed on jobloss.ai on Mar 20, 2026 at 5pm ET is above 87,000, then the market resolves to Yes.",
+    "close_time": "2026-03-20T20:59:00Z"
+  },
+  {
+    "event_ticker": "KXAIJOBLOSS-26MAR20",
+    "market_ticker": "KXAIJOBLOSS-26MAR20-T84000",
+    "title": "Will AI-linked job losses on Friday, Mar 20 be above 84000?",
+    "subtitle": "",
+    "description": null,
+    "category": "Economics",
+    "rules": "If the \"Total AI-linked job losses\" figure displayed on jobloss.ai on Mar 20, 2026 at 5pm ET is above 84,000, then the market resolves to Yes.",
+    "close_time": "2026-03-20T20:59:00Z"
+  },
+  {
+    "event_ticker": "KXAIJOBLOSS-26MAR20",
+    "market_ticker": "KXAIJOBLOSS-26MAR20-T81000",
+    "title": "Will AI-linked job losses on Friday, Mar 20 be above 81000?",
+    "subtitle": "",
+    "description": null,
+    "category": "Economics",
+    "rules": "If the \"Total AI-linked job losses\" figure displayed on jobloss.ai on Mar 20, 2026 at 5pm ET is above 81,000, then the market resolves to Yes.",
+    "close_time": "2026-03-20T20:59:00Z"
+  },
+  {
+    "event_ticker": "KXDHSFUNDING",
+    "market_ticker": "KXDHSFUNDING-26MAR20",
+    "title": "Will legislation providing full-year FY2026 discretionary appropriations for the Department of Homeland Security (including via continuing resolution) become law before Mar 20, 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Politics",
+    "rules": "If legislation providing full-year FY2026 discretionary appropriations for the Department of Homeland Security (including via continuing resolution) has become law before Mar 20, 2026, then the market resolves to Yes.",
+    "close_time": "2026-03-20T14:00:00Z"
+  },
+  {
+    "event_ticker": "KXDHSFUND",
+    "market_ticker": "KXDHSFUND-26MAR20",
+    "title": "Will legislation that, upon becoming law, results in the Department of Homeland Security being funded at 12:01 AM ET on the later of (i) February 14, 2026 and (ii) the calendar day after enactment become law before Mar 20, 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Politics",
+    "rules": "If legislation that, upon becoming law, results in the Department of Homeland Security being funded at 12:01 AM ET on the later of (i) February 14, 2026 and (ii) the calendar day after enactment has become law before Mar 20, 2026, then the market resolves to Yes.",
+    "close_time": "2026-03-20T14:00:00Z"
+  },
+  {
+    "event_ticker": "KXFEDCOMBO-26MAR",
+    "market_ticker": "KXFEDCOMBO-26MAR-25C-T0",
+    "title": "Will Federal Funds Rate Decision be 25bp cut AND Dissents be >0 for Mar 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Politics",
+    "rules": "If ALL of the following occur for Mar 2026: Federal Funds Rate Decision: 25bp cut, Dissents: >0, then the market resolves to Yes.",
+    "close_time": "2026-03-18T17:59:00Z"
+  },
+  {
+    "event_ticker": "KXHIGHTPHX-26MAR17",
+    "market_ticker": "KXHIGHTPHX-26MAR17-T93",
+    "title": "Will the maximum temperature be  <93\u00b0 on Mar 17, 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Climate and Weather",
+    "rules": "If the maximum temperature recorded at Phoenix for Mar 17, 2026, is less than 93\u00b0 fahrenheit according to the National Weather Service's Climatological Report (Daily), then the market resolves to Yes.",
+    "close_time": "2026-03-18T07:00:00Z"
+  },
+  {
+    "event_ticker": "KXHIGHTPHX-26MAR17",
+    "market_ticker": "KXHIGHTPHX-26MAR17-B95.5",
+    "title": "Will the maximum temperature be  95-96\u00b0 on Mar 17, 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Climate and Weather",
+    "rules": "If the maximum temperature recorded at Phoenix for Mar 17, 2026, is between 95-96\u00b0 fahrenheit according to the National Weather Service's Climatological Report (Daily), then the market resolves to Yes.",
+    "close_time": "2026-03-18T07:00:00Z"
+  },
+  {
+    "event_ticker": "KXHIGHTLV-26MAR17",
+    "market_ticker": "KXHIGHTLV-26MAR17-B88.5",
+    "title": "Will the maximum temperature be  88-89\u00b0 on Mar 17, 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Climate and Weather",
+    "rules": "If the maximum temperature recorded at Las Vegas for Mar 17, 2026, is between 88-89\u00b0 fahrenheit according to the National Weather Service's Climatological Report (Daily), then the market resolves to Yes.",
+    "close_time": "2026-03-18T07:00:00Z"
+  },
+  {
+    "event_ticker": "KXMAKEMARMAD-26",
+    "market_ticker": "KXMAKEMARMAD-26-UMBC",
+    "title": "Men's March Madness Round of 64 Qualifiers",
+    "subtitle": "",
+    "description": null,
+    "category": "Sports",
+    "rules": "If UMBC qualifies for the 2026 Men's March Madness Round of 64, then the market resolves to Yes.",
+    "close_time": "2026-03-20T14:00:00Z"
+  },
+  {
+    "event_ticker": "KXMAKEMARMAD-26",
+    "market_ticker": "KXMAKEMARMAD-26-TEX",
+    "title": "Men's March Madness Round of 64 Qualifiers",
+    "subtitle": "",
+    "description": null,
+    "category": "Sports",
+    "rules": "If Texas qualifies for the 2026 Men's March Madness Round of 64, then the market resolves to Yes.",
+    "close_time": "2026-03-20T14:00:00Z"
+  },
+  {
+    "event_ticker": "KXMAKEMARMAD-26",
+    "market_ticker": "KXMAKEMARMAD-26-SMU",
+    "title": "Men's March Madness Round of 64 Qualifiers",
+    "subtitle": "",
+    "description": null,
+    "category": "Sports",
+    "rules": "If SMU qualifies for the 2026 Men's March Madness Round of 64, then the market resolves to Yes.",
+    "close_time": "2026-03-20T14:00:00Z"
+  },
+  {
+    "event_ticker": "KXSPOTIFYW-26MAR19",
+    "market_ticker": "KXSPOTIFYW-26MAR19-STA",
+    "title": "Top Song on Weekly Top Songs USA on Mar 19, 2026?",
+    "subtitle": ":: PinkPantheress",
+    "description": null,
+    "category": "Entertainment",
+    "rules": "If Stateside + Zara Larsson is #1 on the Weekly Top Songs USA chart on the chart dated Mar 19, 2026, then the market resolves to Yes.",
+    "close_time": "2026-03-20T03:59:00Z"
+  },
+  {
+    "event_ticker": "KXSPOTIFYW-26MAR19",
+    "market_ticker": "KXSPOTIFYW-26MAR19-AME",
+    "title": "Top Song on Weekly Top Songs USA on Mar 19, 2026?",
+    "subtitle": ":: Harry Styles",
+    "description": null,
+    "category": "Entertainment",
+    "rules": "If American Girls is #1 on the Weekly Top Songs USA chart on the chart dated Mar 19, 2026, then the market resolves to Yes.",
+    "close_time": "2026-03-20T03:59:00Z"
+  },
+  {
+    "event_ticker": "KXALBUMSALES-MO",
+    "market_ticker": "KXALBUMSALES-MO-80000",
+    "title": "Will MONICA have At least 80000 album sales on the Hits Daily Double Top 50 Chart for March 19th 2026?",
+    "subtitle": "",
+    "description": null,
+    "category": "Entertainment",
+    "rules": "If MONICA by Jack Harlow's sales, on the Hits Daily Double Top 50 Chart for March 19th 2026, are At least 80000, then the market resolves to Yes.",
+    "close_time": "2026-03-20T03:59:00Z"
+  },
+  {
+    "event_ticker": "KXINX-26MAR20H1600",
+    "market_ticker": "KXINX-26MAR20H1600-T6999.9999",
+    "title": "Will the S&P 500 be above 6999.9999 on Mar 20, 2026 at 4pm EDT?",
+    "subtitle": "7,000.0099 or above",
+    "description": null,
+    "category": "Financials",
+    "rules": "If the end-of-day S&P 500 index value on March 20, 2026 is above 6999.9999, then the market resolves to Yes.",
+    "close_time": "2026-03-20T20:00:00Z"
+  },
+  {
+    "event_ticker": "KXINX-26MAR20H1600",
+    "market_ticker": "KXINX-26MAR20H1600-B6887",
+    "title": "Will the S&P 500 be between 6875 and 6899.9999 on Mar 20, 2026 at 4pm EDT?",
+    "subtitle": "6,875 to 6,899.9999",
+    "description": null,
+    "category": "Financials",
+    "rules": "If the end-of-day S&P 500 index value on March 20, 2026 is between 6875-6899.9999, then the market resolves to Yes.",
+    "close_time": "2026-03-20T20:00:00Z"
+  },
+  {
+    "event_ticker": "KXINX-26MAR20H1600",
+    "market_ticker": "KXINX-26MAR20H1600-B6862",
+    "title": "Will the S&P 500 be between 6850 and 6874.9999 on Mar 20, 2026 at 4pm EDT?",
+    "subtitle": "6,850 to 6,874.9999",
+    "description": null,
+    "category": "Financials",
+    "rules": "If the end-of-day S&P 500 index value on March 20, 2026 is between 6850-6874.9999, then the market resolves to Yes.",
+    "close_time": "2026-03-20T20:00:00Z"
+  }
+]

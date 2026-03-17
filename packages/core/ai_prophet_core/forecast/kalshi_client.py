@@ -100,7 +100,7 @@ class KalshiForecastClient:
         *,
         category: str | None = None,
         status: str = "open",
-        limit: int = 100,
+        limit: int = 200,
     ) -> list[dict[str, Any]]:
         """Fetch events from Kalshi. GET /trade-api/v2/events"""
         path = "/trade-api/v2/events"
@@ -109,18 +109,26 @@ class KalshiForecastClient:
             params["category"] = category
 
         headers = self._sign_request("GET", path)
+        all_events: list[dict[str, Any]] = []
         try:
-            resp = self._session.get(
-                self._base_url + path,
-                headers=headers,
-                params=params,
-                timeout=self._timeout,
-            )
-            resp.raise_for_status()
-            return resp.json().get("events", [])
+            while True:
+                resp = self._session.get(
+                    self._base_url + path,
+                    headers=headers,
+                    params=params,
+                    timeout=self._timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                all_events.extend(data.get("events", []))
+                cursor = data.get("cursor")
+                if not cursor:
+                    break
+                params["cursor"] = cursor
+            return all_events
         except requests.exceptions.RequestException as e:
             logger.error("KalshiForecastClient: failed to fetch events - %s", e)
-            return []
+            return all_events
 
     def get_markets(
         self,
@@ -128,26 +136,40 @@ class KalshiForecastClient:
         event_ticker: str | None = None,
         status: str = "open",
         limit: int = 200,
+        min_close_ts: int | None = None,
+        max_close_ts: int | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch markets from Kalshi. GET /trade-api/v2/markets"""
         path = "/trade-api/v2/markets"
         params: dict[str, Any] = {"limit": limit, "status": status}
         if event_ticker:
             params["event_ticker"] = event_ticker
+        if min_close_ts is not None:
+            params["min_close_ts"] = min_close_ts
+        if max_close_ts is not None:
+            params["max_close_ts"] = max_close_ts
 
         headers = self._sign_request("GET", path)
+        all_markets: list[dict[str, Any]] = []
         try:
-            resp = self._session.get(
-                self._base_url + path,
-                headers=headers,
-                params=params,
-                timeout=self._timeout,
-            )
-            resp.raise_for_status()
-            return resp.json().get("markets", [])
+            while True:
+                resp = self._session.get(
+                    self._base_url + path,
+                    headers=headers,
+                    params=params,
+                    timeout=self._timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                all_markets.extend(data.get("markets", []))
+                cursor = data.get("cursor")
+                if not cursor:
+                    break
+                params["cursor"] = cursor
+            return all_markets
         except requests.exceptions.RequestException as e:
             logger.error("KalshiForecastClient: failed to fetch markets - %s", e)
-            return []
+            return all_markets
 
     def get_market(self, ticker: str) -> dict[str, Any] | None:
         """Fetch a single market by ticker. GET /trade-api/v2/markets/{ticker}"""

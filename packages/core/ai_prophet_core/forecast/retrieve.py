@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from .schemas import Event
@@ -16,20 +16,35 @@ logger = logging.getLogger(__name__)
 DEFAULT_CATEGORIES = [
     "Economics",
     "Politics",
-    "Science",
-    "Climate",
+    "Science and Technology",
+    "Climate and Weather",
     "Sports",
-    "Culture",
-    "Tech",
-    "Financial",
+    "Entertainment",
+    "Financials",
+    "World",
 ]
 
 
 def _market_score(market: dict) -> float:
-    """Heuristic score for event selection."""
-    volume = market.get("volume_24h") or market.get("volume") or 0
+    """Heuristic score for market selection (higher = more liquid)."""
+    raw = market.get("volume_24h_fp") or market.get("volume_24h") or market.get("volume") or 0
+    try:
+        volume = float(raw)
+    except (ValueError, TypeError):
+        volume = 0.0
     volume_score = min(volume / 1000.0, 1.0) if volume > 0 else 0.1
     return volume_score
+
+
+def _parse_close_time(market: dict) -> datetime | None:
+    """Extract and parse close_time from a market dict."""
+    close_str = market.get("close_time") or market.get("expiration_time") or ""
+    if not close_str:
+        return None
+    try:
+        return datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
 
 
 def select_events(
@@ -40,6 +55,9 @@ def select_events(
     categories: list[str] | None = None,
 ) -> list[Event]:
     """Select events distributed across categories, closing before deadline.
+
+    Fetches Kalshi events (which carry category info), then fetches markets
+    for matching events to get individual market tickers and close times.
 
     Args:
         client: Kalshi API client.
@@ -57,50 +75,55 @@ def select_events(
     selected: list[Event] = []
     seen_tickers: set[str] = set()
 
-    # Fetch all open markets once, then filter locally per category
-    all_markets = client.get_markets(status="open")
+    min_close_ts = int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
+    max_close_ts = int(deadline.timestamp())
+
+    # Fetch all open markets closing between now+24h and the deadline
+    all_markets = client.get_markets(
+        status="open", min_close_ts=min_close_ts, max_close_ts=max_close_ts, limit=1000,
+    )
+
+    # Fetch all open events to build event_ticker -> category map
+    all_events = client.get_events(status="open")
+    event_cat_map: dict[str, str] = {}
+    for ev in all_events:
+        et = ev.get("event_ticker", "")
+        cat = ev.get("category", "")
+        if et and cat:
+            event_cat_map[et] = cat
+
+    # Group markets by category (looked up via event_ticker)
+    markets_by_cat: dict[str, list[dict]] = {}
+    for m in all_markets:
+        cat = event_cat_map.get(m.get("event_ticker", ""), "")
+        if cat:
+            markets_by_cat.setdefault(cat, []).append(m)
 
     for category in cats:
         candidates = []
-        for m in all_markets:
-            # Kalshi may use 'category' or 'event_category' fields
-            m_cat = (
-                m.get("category", "")
-                or m.get("event_category", "")
-                or ""
-            )
-            if m_cat.lower() != category.lower():
-                continue
+        for cat_name, mkts in markets_by_cat.items():
+            if cat_name.lower() == category.lower():
+                for m in mkts:
+                    ticker = m.get("ticker", "")
+                    if not ticker or ticker in seen_tickers:
+                        continue
+                    close_time = _parse_close_time(m)
+                    candidates.append((m, close_time, ticker))
 
-            close_str = m.get("close_time") or m.get("expiration_time") or ""
-            if not close_str:
-                continue
+        if not candidates:
+            logger.warning("No markets found for category: %s", category)
+            continue
 
-            try:
-                close_time = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                continue
-
-            if close_time > deadline:
-                continue
-
-            ticker = m.get("ticker", "")
-            if ticker in seen_tickers:
-                continue
-
-            candidates.append((m, close_time, ticker))
-
-        # Rank by heuristic and take top N
+        # Rank by volume heuristic, take top N
         candidates.sort(key=lambda x: _market_score(x[0]), reverse=True)
 
         for m, close_time, ticker in candidates[:events_per_category]:
             seen_tickers.add(ticker)
-
             selected.append(
                 Event(
                     event_ticker=m.get("event_ticker", ""),
                     market_ticker=ticker,
-                    title=m.get("title", "") or m.get("question", ""),
+                    title=m.get("title", ""),
                     subtitle=m.get("subtitle"),
                     description=m.get("description"),
                     category=category,
@@ -108,9 +131,6 @@ def select_events(
                     close_time=close_time,
                 )
             )
-
-        if not candidates:
-            logger.warning("No markets found for category: %s", category)
 
     logger.info("Selected %d events across %d categories", len(selected), len(cats))
     return selected

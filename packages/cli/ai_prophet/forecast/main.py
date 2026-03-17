@@ -211,6 +211,21 @@ def evaluate(submission: str, actuals: str, verbose: bool) -> None:
     click.echo(f"Brier Score: {brier if brier is not None else 'N/A (no matched predictions)'}")
 
 
+def _resolve_server(server_url: str | None, api_key: str | None) -> tuple[str, str]:
+    """Resolve server URL and API key from flags or env vars."""
+    url = server_url or os.environ.get("PROPHET_API_URL")
+    if not url:
+        raise click.ClickException(
+            "Server URL required: use --server-url or set PROPHET_API_URL"
+        )
+    key = api_key or os.environ.get("PA_SERVER_API_KEY")
+    if not key:
+        raise click.ClickException(
+            "API key required: use --api-key or set PA_SERVER_API_KEY"
+        )
+    return url, key
+
+
 @cli.command(name="submit")
 @click.option(
     "--submission",
@@ -223,21 +238,22 @@ def evaluate(submission: str, actuals: str, verbose: bool) -> None:
     default=None,
     help="Core API URL (default: PROPHET_API_URL env var).",
 )
+@click.option(
+    "--api-key",
+    default=None,
+    help="API key (default: PA_SERVER_API_KEY env var).",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
-def submit(submission: str, server_url: str | None, verbose: bool) -> None:
+def submit(submission: str, server_url: str | None, api_key: str | None, verbose: bool) -> None:
     """Submit predictions to the forecast server."""
     _setup_logging(verbose)
 
-    url = server_url or os.environ.get("PROPHET_API_URL")
-    if not url:
-        raise click.ClickException(
-            "Server URL required: use --server-url or set PROPHET_API_URL"
-        )
+    url, key = _resolve_server(server_url, api_key)
 
     sub = load_submission(submission)
     predictions = [p.model_dump() for p in sub.predictions]
 
-    client = ServerAPIClient(base_url=url)
+    client = ServerAPIClient(base_url=url, api_key=key)
     try:
         result = client.submit_forecast(
             team_name=sub.team_name,
@@ -257,18 +273,19 @@ def submit(submission: str, server_url: str | None, verbose: bool) -> None:
     default=None,
     help="Core API URL (default: PROPHET_API_URL env var).",
 )
+@click.option(
+    "--api-key",
+    default=None,
+    help="API key (default: PA_SERVER_API_KEY env var).",
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
-def leaderboard(server_url: str | None, verbose: bool) -> None:
+def leaderboard(server_url: str | None, api_key: str | None, verbose: bool) -> None:
     """View the forecast leaderboard."""
     _setup_logging(verbose)
 
-    url = server_url or os.environ.get("PROPHET_API_URL")
-    if not url:
-        raise click.ClickException(
-            "Server URL required: use --server-url or set PROPHET_API_URL"
-        )
+    url, key = _resolve_server(server_url, api_key)
 
-    client = ServerAPIClient(base_url=url)
+    client = ServerAPIClient(base_url=url, api_key=key)
     try:
         scores = client.get_forecast_leaderboard()
     finally:

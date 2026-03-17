@@ -11,16 +11,27 @@ prophet forecast retrieve --deadline "2026-03-20T23:59:59Z" -o events.json
 # 2. Run your agent against each event
 prophet forecast predict --events events.json --agent-url http://localhost:8000/predict --team-name my-team
 
-# 3. Submit to the server
-prophet forecast submit --submission submission.json --server-url $PROPHET_API_URL
+# 3. Submit to the server (requires API key)
+prophet forecast submit --submission submission.json
 
 # 4. Check the leaderboard
-prophet forecast leaderboard --server-url $PROPHET_API_URL
+prophet forecast leaderboard
 ```
+
+## How Retrieval Works
+
+The `retrieve` command fetches open markets from Kalshi's API using server-side filtering:
+
+- **`max_close_ts`** — set from `--deadline`, only markets closing before this time are returned.
+- **`min_close_ts`** — defaults to now + 24 hours, excluding markets that close too soon for meaningful prediction.
+- **Pagination** — the client automatically paginates through all matching markets and events.
+- **Category mapping** — markets are grouped by category via their parent event (the Kalshi events endpoint carries the category field, not markets).
+
+Markets are ranked by 24h volume within each category, and the top N per category are selected.
 
 ## How It Works
 
-1. **Events** are Kalshi markets curated across categories (Economics, Politics, Science, Climate, Sports, Culture, Tech, Financial). Each event has a `market_ticker`, a question, and a `close_time`.
+1. **Events** are Kalshi markets curated across categories (Economics, Politics, Science and Technology, Climate and Weather, Sports, Entertainment, Financials, World). Each event has a `market_ticker`, a question, and a `close_time`.
 
 2. **Your agent** receives one event at a time via POST and returns `{"p_yes": 0.65, "rationale": "..."}`. The `p_yes` value must be between 0.01 and 0.99.
 
@@ -67,8 +78,11 @@ Your agent must expose a POST endpoint that accepts an event JSON and returns a 
 | Variable | Description |
 |----------|-------------|
 | `PROPHET_API_URL` | Server URL (used by `submit` and `leaderboard`) |
+| `PA_SERVER_API_KEY` | Prophet Arena API key (used by `submit` and `leaderboard`) |
 | `KALSHI_API_KEY_ID` | Kalshi API key (used by `retrieve`) |
 | `KALSHI_PRIVATE_KEY_B64` | Kalshi private key, base64-encoded |
+
+All server-facing commands (`submit`, `leaderboard`) require an API key. Set `PA_SERVER_API_KEY` in your environment, or pass `--api-key` on the command line.
 
 ## Local Evaluation
 
