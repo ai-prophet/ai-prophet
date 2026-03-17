@@ -15,7 +15,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
-from ai_prophet_core.client import ServerAPIClient, TradeIntentRequest
+from .client import ServerAPIClient
+from .client_models import TradeIntentRequest
 
 load_dotenv()
 

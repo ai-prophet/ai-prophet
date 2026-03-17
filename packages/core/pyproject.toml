@@ -20,6 +20,12 @@ dependencies = [
     "cryptography>=43.0.0",
 ]
 
+[project.optional-dependencies]
+mcp = ["fastmcp>=3.0"]
+
+[project.scripts]
+prophet-mcp = "ai_prophet_core.mcp_server:main"
+
 [project.urls]
 Homepage = "https://www.prophetarena.co"
 Documentation = "https://www.prophetarena.co"
