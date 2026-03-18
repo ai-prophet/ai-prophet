@@ -62,10 +62,12 @@ function sizeClass(capital: number, maxCapital: number): string {
 export function PositionHeatmap({
   positions,
   markets,
+  pnlByMarket,
   onCellClick,
 }: {
   positions: Position[];
   markets: Market[];
+  pnlByMarket?: Map<string, number>;
   onCellClick?: (marketId: string) => void;
 }) {
   const { byId, byTicker } = useMemo(() => {
@@ -78,7 +80,7 @@ export function PositionHeatmap({
     return positions
       .map((pos) => {
         const capital = pos.avg_price * pos.quantity;
-        const pnl = pos.unrealized_pnl;
+        const pnl = pnlByMarket?.get(pos.market_id) ?? pos.unrealized_pnl;
         const returnPct = capital > 0 ? (pnl / capital) * 100 : 0;
 
         return {

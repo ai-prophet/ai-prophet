@@ -244,8 +244,6 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                         "yes_shares": 0.0,
                         "total_cost": 0.0,
                         "realized_pnl": 0.0,
-                        "realized_trades": 0,
-                        "max_position": 0.0,
                     }
 
                 shares = order.filled_shares if order.filled_shares > 0 else float(order.count)
@@ -270,7 +268,6 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                         avg_entry = abs(pos["total_cost"] / pos["yes_shares"]) if pos["yes_shares"] != 0 else 0
                         realized = (price - avg_entry) * shares
                         pos["realized_pnl"] += realized
-                        pos["realized_trades"] += 1
 
                         # Reduce cost basis by avg_entry (not sell price)
                         # to keep avg_price accurate for remaining shares
@@ -297,11 +294,6 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                 if abs(pos["yes_shares"]) < 0.001:
                     pos["total_cost"] = 0.0
                     pos["yes_shares"] = 0.0
-
-                # Track high-water mark for position size
-                current_abs = abs(pos["yes_shares"])
-                if current_abs > pos["max_position"]:
-                    pos["max_position"] = current_abs
 
             # Upsert into trading_positions
             for ticker, pos in positions.items():
@@ -336,8 +328,6 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                     existing.avg_price = round(avg_price, 4)
                     existing.realized_pnl = round(pos["realized_pnl"], 4)
                     existing.unrealized_pnl = round(unrealized, 4)
-                    existing.max_position = round(pos["max_position"], 4)
-                    existing.realized_trades = pos["realized_trades"]
                     existing.updated_at = now
                 else:
                     session.add(TradingPosition(
@@ -347,8 +337,6 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                         avg_price=round(avg_price, 4),
                         realized_pnl=round(pos["realized_pnl"], 4),
                         unrealized_pnl=round(unrealized, 4),
-                        max_position=round(pos["max_position"], 4),
-                        realized_trades=pos["realized_trades"],
                         updated_at=now,
                     ))
 

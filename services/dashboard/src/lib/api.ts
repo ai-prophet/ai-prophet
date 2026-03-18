@@ -18,8 +18,6 @@ export interface Trade {
   price_cents: number;
   status: string;
   filled_shares: number;
-  fill_price: number;
-  exchange_order_id: string | null;
   dry_run: boolean;
   created_at: string;
   market_title: string | null;
@@ -79,8 +77,6 @@ export interface Position {
   avg_price: number;
   realized_pnl: number;
   unrealized_pnl: number;
-  max_position: number;
-  realized_trades: number;
   updated_at: string;
 }
 
@@ -294,6 +290,23 @@ export interface UnifiedMarketRow {
   updated_at: string;
 }
 
+export function liveNetPnl(row: UnifiedMarketRow): number | null {
+  if (!row.position && row.trades.length === 0) return null;
+  const cashFlow = row.trades.reduce((sum, t) => {
+    const qty = t.filled_shares || t.count;
+    const price = t.price_cents / 100;
+    return sum + (t.action?.toUpperCase() === "SELL" ? qty * price : -(qty * price));
+  }, 0);
+  const pos = row.position;
+  if (!pos) return cashFlow;
+  const currentBid =
+    pos.contract.toLowerCase() === "yes"
+      ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
+      : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
+  if (currentBid == null) return cashFlow;
+  return cashFlow + pos.quantity * currentBid;
+}
+
 export function buildUnifiedMarketRows(
   markets: Market[],
   positions: Position[],
@@ -397,7 +410,9 @@ export function buildUnifiedMarketRows(
       title: pos.market_title ?? pos.ticker ?? pos.market_id,
       category: null,
       expiration: null,
+      yes_bid: null,
       yes_ask: null,
+      no_bid: null,
       no_ask: null,
       volume_24h: null,
       aggregated_p_yes: null,
@@ -440,16 +455,30 @@ export function kalshiEventUrl(eventTicker: string): string {
 export function computePortfolioMetrics(
   positions: Position[],
   trades: Trade[],
-  pnl: PnLData | null
+  pnl: PnLData | null,
+  markets?: Market[]
 ) {
   const totalRealizedPnl = positions.reduce(
     (sum, p) => sum + p.realized_pnl,
     0
   );
-  const totalUnrealizedPnl = positions.reduce(
-    (sum, p) => sum + p.unrealized_pnl,
-    0
-  );
+
+  const marketById = markets ? new Map(markets.map((m) => [m.market_id, m])) : null;
+  const totalUnrealizedPnl = positions.reduce((sum, p) => {
+    if (marketById) {
+      const mkt = marketById.get(p.market_id);
+      if (mkt) {
+        const currentBid = p.contract.toLowerCase() === "yes"
+          ? (mkt.yes_bid ?? (mkt.no_ask != null ? 1.0 - mkt.no_ask : null))
+          : (mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null));
+        if (currentBid != null) {
+          return sum + (currentBid - p.avg_price) * p.quantity;
+        }
+      }
+    }
+    return sum + p.unrealized_pnl;
+  }, 0);
+
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
 
   const capitalDeployed = positions.reduce(

@@ -438,8 +438,6 @@ def get_positions(
                 "avg_price": row.avg_price,
                 "realized_pnl": row.realized_pnl,
                 "unrealized_pnl": row.unrealized_pnl,
-                "max_position": row.max_position,
-                "realized_trades": row.realized_trades,
                 "updated_at": row.updated_at.isoformat(),
             })
         return {

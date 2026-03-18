@@ -10,8 +10,8 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
-import type { Trade, Market, Position, UnifiedMarketRow, ModelPrediction, PriceHistoryPoint } from "@/lib/api";
-import { buildUnifiedMarketRows, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
+import type { Trade, Market, Position, UnifiedMarketRow, PriceHistoryPoint } from "@/lib/api";
+import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
 // ── Shared helpers ──────────────────────────────────────────
@@ -69,7 +69,7 @@ export function UnifiedMarketTable({
   scrollToMarketId?: string | null;
   onScrollComplete?: () => void;
 }) {
-  const [sortKey, setSortKey] = useState<SortKey>("edge");
+  const [sortKey, setSortKey] = useState<SortKey>("unrealized");
   const [sortAsc, setSortAsc] = useState(false);
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
@@ -122,9 +122,15 @@ export function UnifiedMarketTable({
         case "avg_price":
           diff = (a.position?.avg_price ?? 0) - (b.position?.avg_price ?? 0);
           break;
-        case "unrealized":
-          diff = (a.position?.unrealized_pnl ?? 0) - (b.position?.unrealized_pnl ?? 0);
+        case "unrealized": {
+          const pa = liveNetPnl(a);
+          const pb = liveNetPnl(b);
+          if (pa == null && pb == null) { diff = 0; break; }
+          if (pa == null) { return 1; }
+          if (pb == null) { return -1; }
+          diff = pa - pb;
           break;
+        }
         case "capital":
           diff = (a.position?.capital ?? 0) - (b.position?.capital ?? 0);
           break;
@@ -222,7 +228,7 @@ export function UnifiedMarketTable({
               <Th k="edge" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
               <Th k="position" cur={sortKey} asc={sortAsc} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
               <Th k="avg_price" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
-              <Th k="unrealized" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Unrealized P&L based on current market price vs entry price">P&L</Th>
+              <Th k="unrealized" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
               <Th k="capital" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Total capital invested: avg entry price × quantity">Investment</Th>
               <Th k="last_trade" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
             </tr>
@@ -393,10 +399,12 @@ function MarketRow({
           {pos ? `${(pos.avg_price * 100).toFixed(0)}c` : "--"}
         </td>
 
-        {/* Unrealized P&L */}
-        <td className={`px-3 py-2 text-right font-mono font-medium ${pos ? pnlCls(pos.unrealized_pnl) : "text-txt-muted"}`}>
-          {pos ? fmtDollar(pos.unrealized_pnl) : "--"}
-        </td>
+        {/* Live Net P&L */}
+        {(() => { const net = liveNetPnl(row); return (
+          <td className={`px-3 py-2 text-right font-mono font-medium ${net != null ? pnlCls(net) : "text-txt-muted"}`}>
+            {net != null ? fmtDollar(net) : "--"}
+          </td>
+        ); })()}
 
         {/* Capital */}
         <td className="px-3 py-2 text-right font-mono text-txt-primary">
@@ -424,7 +432,7 @@ function MarketRow({
 // ── Expanded Panel with Tabs ────────────────────────────────
 
 function ExpandedPanel({ row }: { row: UnifiedMarketRow }) {
-  const [activeTab, setActiveTab] = useState<"timeline" | "trades" | "models">("timeline");
+  const [activeTab, setActiveTab] = useState<"timeline" | "trades" | "models">("trades");
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
     { key: "timeline", label: "Timeline", count: row.trade_count },
@@ -457,11 +465,8 @@ function ExpandedPanel({ row }: { row: UnifiedMarketRow }) {
         <div className="ml-auto flex items-center gap-3 text-[9px] font-mono text-txt-muted">
           {row.position && (
             <>
-              <span>
-                {row.position.contract.toUpperCase()} {row.position.quantity} @ {(row.position.avg_price * 100).toFixed(0)}c
-              </span>
-              <span className={pnlCls(row.position.realized_pnl + row.position.unrealized_pnl)}>
-                Total P&L: {fmtDollar(row.position.realized_pnl + row.position.unrealized_pnl)}
+              <span title="Your open position: quantity and average entry price">
+                {row.position.contract.toUpperCase()} {row.position.quantity} avg {(row.position.avg_price * 100).toFixed(0)}c
               </span>
             </>
           )}
@@ -615,8 +620,8 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
                   mkt: {(row.yes_ask * 100).toFixed(0)}c
                 </span>
               )}
-              <span className={`font-medium ${pnlCls(row.position.unrealized_pnl)}`}>
-                P&L: {fmtDollar(row.position.unrealized_pnl)}
+              <span className={`font-medium ${pnlCls(liveNetPnl(row) ?? 0)}`}>
+                P&L: {liveNetPnl(row) != null ? fmtDollar(liveNetPnl(row)!) : "--"}
               </span>
             </>
           ) : (
@@ -713,22 +718,22 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
           <tr className="border-t border-t-border/60 text-[9px] text-txt-muted">
             <td colSpan={4} className="px-2 py-1.5 font-medium">
               {pos && currentBid != null
-                ? `Open: ${pos.quantity} ${pos.contract.toUpperCase()} @ ${Math.round(currentBid * 100)}c bid`
+                ? `Exit value: ${pos.quantity} ${pos.contract.toUpperCase()} × ${Math.round(currentBid * 100)}c bid`
                 : "No open position"}
             </td>
             <td className="px-2 py-1.5 text-right font-mono">
               <div className="flex flex-col items-end gap-0.5">
-                <span className="text-txt-muted">
-                  cash: <span className={pnlCls(totalCashFlow)}>{totalCashFlow >= 0 ? "+" : ""}{fmtDollar(totalCashFlow)}</span>
+                <span className="text-txt-muted" title="Net cash spent/received from all trades">
+                  spent: <span className={pnlCls(totalCashFlow)}>{totalCashFlow >= 0 ? "+" : ""}{fmtDollar(totalCashFlow)}</span>
                 </span>
                 {openValue != null && (
-                  <span className="text-txt-muted">
-                    open: <span className="text-txt-secondary">{fmtDollar(openValue)}</span>
+                  <span className="text-txt-muted" title="Current market value of remaining position at bid price">
+                    mkt value: <span className="text-txt-secondary">+{fmtDollar(openValue)}</span>
                   </span>
                 )}
                 {totalNet != null && (
-                  <span className={`font-bold ${pnlCls(totalNet)}`}>
-                    net: {totalNet >= 0 ? "+" : ""}{fmtDollar(totalNet)}
+                  <span className={`font-bold ${pnlCls(totalNet)}`} title="Net P&L = spent + current position value">
+                    net P&L: {totalNet >= 0 ? "+" : ""}{fmtDollar(totalNet)}
                   </span>
                 )}
               </div>
