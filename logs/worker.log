@@ -450,3 +450,44 @@
 2026-03-17 20:03:38,027 INFO worker: Updated 22 positions from order history
 2026-03-17 20:03:38,278 INFO worker: Cycle complete: 20 total results, 6 orders placed across 1 models
 2026-03-17 20:03:38,279 INFO worker: Sleeping 1200s until next cycle...
+2026-03-17 20:23:43,900 INFO ai_prophet_core.betting.engine: BettingEngine initialized: strategy=default, mode=DRY RUN, enabled=True, db=yes
+2026-03-17 20:23:43,901 INFO worker: BettingEngine ready: strategy=default, dry_run=True
+2026-03-17 20:23:44,853 INFO worker: Starting cycle: models=['gemini:gemini-3.1-pro-preview'], strategy=default, max_markets=25, max_active=80
+2026-03-17 20:23:45,364 INFO worker: Re-fetching 35 sticky markets: {'KXIPOCLUELY-26APR01', 'KXSTRIPEIPO-26APR01', 'KXFREDDIE-26APR01', 'KXAMBMALAY-26JAN06-APR01', 'KXDHSFUND-26MAR20', 'KXGROK-GROK5-26APR01', 'KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01', 'KXIPOBREX-26APR01', 'KXIPODISCORD-26APR01', 'KXTVSEASONRELEASETHELASTOFUS-26-APR', 'KXIPOGLEAN-26APR01', 'KXIPOBEASTINDUSTRIES-26APR01', 'KXIPHONERELEASE-IPHONE18-26APR01', 'KXBONDIOUT-26APR01', 'KXIPOSTARLINK-26APR01', 'KXIPOSPACEX-26APR01', 'KXGREENTERRITORY-29-26APR', 'KXLUTNICKOUT-26APR01', 'KXDIAZOUT-MDC-26APR01', 'KXUSAIRANAGREEMENT-27-26APR', 'KXMEDIARELEASESPIDERMAN-APR26', 'KXIPOANDURIL-26APR01', 'KXLEAVESTARMER-26APR01', 'KXELECTVENEZUELA-26APR01', 'KXNETANYAHUPARDON-26-APR01', 'KXTRUMPUFC-UFC327', 'KXIPOOURA-26APR01', 'KXMNDAYCARECHARGE-26APR01', 'KXMULLINCONF-26APR15', 'KXTRUMPOUT27-27-26APR01', 'KXIPOOPENAI-26APR01', 'KXIPOFANNIE-26APR01', 'KXCABLEAVE-26MAR-26APR', 'KXUSHOMEVAL-26MAR19-T360000', 'KXIPOOLIPOP-26APR01'}
+2026-03-17 20:23:49,561 INFO worker: Selected 34 markets (from 35 candidates, 2000 events, 10 pages)
+2026-03-17 20:23:49,562 INFO worker: Fetched 0 new markets (34 candidates, 34 excluded as already tracked)
+2026-03-17 20:23:49,562 INFO worker: Total markets this cycle: 35 sticky + 0 new = 35
+2026-03-17 20:23:53,440 INFO worker:   Skipping KXDHSFUND-26MAR20 — market prices unchanged (yes=0.02, no=0.99)
+2026-03-17 20:23:54,084 INFO worker:   Skipping KXGROK-GROK5-26APR01 — market prices unchanged (yes=0.03, no=0.99)
+2026-03-17 20:23:56,360 INFO worker:   Skipping KXIPODISCORD-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-17 20:24:00,292 INFO worker:   Skipping KXBONDIOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-17 20:24:00,928 INFO worker:   Skipping KXIPOSTARLINK-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-17 20:24:01,563 INFO worker:   Skipping KXIPOSPACEX-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-17 20:24:03,024 INFO worker:   Skipping KXLUTNICKOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-17 20:24:03,661 INFO worker:   Skipping KXDIAZOUT-MDC-26APR01 — market prices unchanged (yes=0.18, no=0.84)
+2026-03-17 20:24:04,298 INFO worker:   Skipping KXUSAIRANAGREEMENT-27-26APR — market prices unchanged (yes=0.03, no=0.98)
+2026-03-17 20:24:04,936 INFO worker:   Skipping KXMEDIARELEASESPIDERMAN-APR26 — market prices unchanged (yes=0.05, no=0.97)
+2026-03-17 20:24:06,395 INFO worker:   Skipping KXLEAVESTARMER-26APR01 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-17 20:24:07,032 INFO worker:   Skipping KXELECTVENEZUELA-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-17 20:24:07,667 INFO worker:   Skipping KXNETANYAHUPARDON-26-APR01 — market prices unchanged (yes=0.05, no=0.96)
+2026-03-17 20:24:08,311 INFO worker:   Skipping KXTRUMPUFC-UFC327 — market prices unchanged (yes=0.33, no=0.70)
+2026-03-17 20:24:09,775 INFO worker:   Skipping KXMNDAYCARECHARGE-26APR01 — market prices unchanged (yes=0.12, no=0.91)
+2026-03-17 20:24:10,405 INFO worker:   Skipping KXMULLINCONF-26APR15 — market prices unchanged (yes=0.94, no=0.09)
+2026-03-17 20:24:11,043 INFO worker:   Skipping KXTRUMPOUT27-27-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-17 20:24:11,683 INFO worker:   Skipping KXIPOOPENAI-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-17 20:24:12,319 INFO worker:   Skipping KXIPOFANNIE-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-17 20:24:13,036 INFO worker:   Skipping KXCABLEAVE-26MAR-26APR — market prices unchanged (yes=0.05, no=0.96)
+2026-03-17 20:24:13,796 INFO worker:   Skipping KXIPOOLIPOP-26APR01 — market prices unchanged (yes=0.04, no=0.99)
+2026-03-17 20:24:13,874 INFO worker: Phase A complete: 13 markets to analyze (from 35 raw)
+2026-03-17 20:24:13,874 INFO worker: Using remote predictor: https://predictor-441548451945.us-west1.run.app (parallel fanout)
+2026-03-17 20:24:13,875 INFO worker: Fanning out 13 prediction tasks (13 markets × 1 models) with max_workers=20
+2026-03-17 20:24:30,638 INFO worker:   [gemini-3.1-pro-preview] KXSTRIPEIPO-26APR01 → p_yes=0.010
+2026-03-17 20:24:33,402 INFO worker:   [gemini-3.1-pro-preview] KXAMBMALAY-26JAN06-APR01 → p_yes=0.000
+2026-03-17 20:24:34,565 INFO worker:   [gemini-3.1-pro-preview] KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01 → p_yes=0.090
+2026-03-17 20:24:36,142 INFO worker:   [gemini-3.1-pro-preview] KXIPOCLUELY-26APR01 → p_yes=0.001
+2026-03-17 20:24:37,192 INFO worker:   [gemini-3.1-pro-preview] KXTVSEASONRELEASETHELASTOFUS-26-APR → p_yes=0.000
+2026-03-17 20:24:40,771 INFO worker:   [gemini-3.1-pro-preview] KXIPOBEASTINDUSTRIES-26APR01 → p_yes=0.020
+2026-03-17 20:24:41,050 INFO worker:   [gemini-3.1-pro-preview] KXIPOGLEAN-26APR01 → p_yes=0.010
+2026-03-17 20:24:42,019 INFO worker:   [gemini-3.1-pro-preview] KXIPOBREX-26APR01 → p_yes=0.010
+2026-03-17 20:24:44,206 INFO worker:   [gemini-3.1-pro-preview] KXIPHONERELEASE-IPHONE18-26APR01 → p_yes=0.010
+2026-03-17 20:24:45,382 INFO worker:   [gemini-3.1-pro-preview] KXIPOANDURIL-26APR01 → p_yes=0.010

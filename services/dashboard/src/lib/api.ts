@@ -57,7 +57,9 @@ export interface Market {
   category: string | null;
   expiration: string | null;
   last_price: number | null;
+  yes_bid: number | null;
   yes_ask: number | null;
+  no_bid: number | null;
   no_ask: number | null;
   volume_24h: number | null;
   updated_at: string;
