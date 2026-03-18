@@ -28,6 +28,7 @@ TABLES = [
     "betting_signals",
     "betting_predictions",
     "trading_positions",
+    "market_price_snapshots",
     "trading_markets",
     "model_runs",
     "system_logs",
