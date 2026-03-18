@@ -462,10 +462,7 @@ def submit(submission: str, server_url: str | None, api_key: str | None, verbose
 
     client = ServerAPIClient(base_url=url, api_key=key)
     try:
-        result = client.submit_forecast(
-            team_name=sub.team_name,
-            predictions=predictions,
-        )
+        result = client.submit_forecast(predictions=predictions)
     finally:
         client.close()
 

@@ -399,11 +399,10 @@ class ServerAPIClient:
 
     def submit_forecast(
         self,
-        team_name: str,
         predictions: list[dict],
     ) -> ForecastSubmitResponse:
-        """Submit predictions for open forecast events."""
-        req = ForecastSubmitRequest(team_name=team_name, predictions=predictions)
+        """Submit predictions for open forecast events. Team is resolved from the API key."""
+        req = ForecastSubmitRequest(predictions=predictions)
         response = self._post("/forecast/submit", json=req.model_dump(mode="json"))
         return self._parse_response(response, ForecastSubmitResponse)
 

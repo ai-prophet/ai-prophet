@@ -284,7 +284,6 @@ class ForecastEventResponse(BaseModel):
 
 class ForecastSubmitRequest(BaseModel):
     """Request body for submitting predictions."""
-    team_name: str
     predictions: list[dict]
 
 
