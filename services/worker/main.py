@@ -478,6 +478,32 @@ def get_traded_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str
         return set()
 
 
+def get_peer_tickers(db_engine, peer_instance_name: str) -> set[str]:
+    """Return tickers currently tracked by a peer instance.
+
+    Used by non-fetcher workers to mirror the market list of the designated
+    market-fetcher instance instead of independently querying Kalshi.
+    """
+    if db_engine is None:
+        return set()
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import TradingMarket
+
+        with get_session(db_engine) as session:
+            rows = (
+                session.query(TradingMarket.ticker)
+                .filter(TradingMarket.instance_name == peer_instance_name)
+                .all()
+            )
+            tickers = {r[0] for r in rows if r[0]}
+            logger.info("Read %d tickers from peer instance '%s'", len(tickers), peer_instance_name)
+            return tickers
+    except Exception as e:
+        logger.warning("Failed to query peer tickers from '%s': %s", peer_instance_name, e)
+        return set()
+
+
 def get_tracked_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
     """Return all tickers currently in the trading_markets table."""
     if db_engine is None:
@@ -1041,8 +1067,14 @@ def build_betting_engine(strategy_name: str = "default", dry_run_override: bool 
 # ── Main trading cycle ────────────────────────────────────────────
 
 def run_cycle(args) -> None:
-    """Run one trading cycle: fetch markets → LLM predict → BettingEngine."""
-    strategy_name = _instance_setting("WORKER_STRATEGY", "default")
+    """Run one trading cycle: fetch markets → LLM predict → BettingEngine.
+
+    When MARKET_FETCHER=true (default), this instance discovers new markets
+    from Kalshi.  When MARKET_FETCHER=false, it mirrors the market list from
+    the peer instance (WORKER_PEER_INSTANCES) instead of querying Kalshi for
+    new markets — ensuring both workers always predict on the same events.
+    """
+    strategy_name = _instance_setting("WORKER_STRATEGY", "rebalancing")
     dry_run_override = True if args.dry_run else None
     max_markets = _instance_int_setting("WORKER_MAX_MARKETS", 25)
     max_active = _instance_int_setting("WORKER_MAX_ACTIVE_MARKETS", 40)
@@ -1050,6 +1082,8 @@ def run_cycle(args) -> None:
     model_specs = [m.strip() for m in models_str.split(",") if m.strip()]
     predictor_service_url = _instance_setting("PREDICTOR_SERVICE_URL", "").rstrip("/")
     predictor_api_key = _instance_setting("PREDICTOR_API_KEY", "")
+    is_market_fetcher = _instance_setting("MARKET_FETCHER", "true").lower() in ("true", "1", "yes")
+    peer_instances = [p.strip() for p in _instance_setting("WORKER_PEER_INSTANCES", "").split(",") if p.strip()]
 
     # Build engine
     betting_engine, db_engine = build_betting_engine(
@@ -1090,18 +1124,34 @@ def run_cycle(args) -> None:
             else:
                 logger.info("  Sticky market %s no longer active, skipping", ticker)
 
-    # 2. Fetch NEW markets from Kalshi, excluding already-tracked ones
+    # 2. Discover NEW markets — either from Kalshi (fetcher) or from peer instance (mirror)
     new_slots = max(0, max_active - len(sticky_markets))
     if new_slots > 0:
-        # Fetch more candidates than needed so we have enough after excluding sticky
-        all_new = fetch_kalshi_markets(adapter, max_markets=max_markets + len(tracked_tickers))
-        # Filter out already-tracked tickers
-        new_markets = [m for m in all_new if m["ticker"] not in tracked_tickers]
-        new_markets = new_markets[:new_slots]
-        logger.info(
-            "Fetched %d new markets (%d candidates, %d excluded as already tracked)",
-            len(new_markets), len(all_new), len(all_new) - len(new_markets),
-        )
+        if is_market_fetcher:
+            # This instance owns market discovery — pull ranked candidates from Kalshi
+            all_new = fetch_kalshi_markets(adapter, max_markets=max_markets + len(tracked_tickers))
+            new_markets = [m for m in all_new if m["ticker"] not in tracked_tickers]
+            new_markets = new_markets[:new_slots]
+            logger.info(
+                "Fetched %d new markets from Kalshi (%d candidates, %d excluded as already tracked)",
+                len(new_markets), len(all_new), len(all_new) - len(new_markets),
+            )
+        else:
+            # Mirror the peer instance's market list — fetch live prices for tickers
+            # the fetcher has already discovered, skipping ones we already track.
+            peer = peer_instances[0] if peer_instances else None
+            if not peer:
+                logger.warning("MARKET_FETCHER=false but no WORKER_PEER_INSTANCES set — no new markets")
+                new_markets = []
+            else:
+                peer_tickers = get_peer_tickers(db_engine, peer) - tracked_tickers
+                logger.info("Mirroring %d new tickers from peer '%s'", len(peer_tickers), peer)
+                new_markets = []
+                for ticker in list(peer_tickers)[:new_slots]:
+                    mkt = fetch_market_by_ticker(adapter, ticker)
+                    if mkt:
+                        new_markets.append(mkt)
+                logger.info("Fetched live prices for %d mirrored markets", len(new_markets))
     else:
         new_markets = []
         logger.info("At max active markets (%d), not fetching new ones", max_active)
