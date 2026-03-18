@@ -331,6 +331,11 @@ function MarketRow({
                   </a>
                 </>
               )}
+              {row.category && (
+                <span className="px-1 py-px rounded bg-t-panel-alt border border-t-border/60 text-[8px] text-txt-muted uppercase tracking-wider">
+                  {row.category}
+                </span>
+              )}
             </div>
           </div>
         </td>

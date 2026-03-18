@@ -541,7 +541,18 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                 if _ya + _na > 1.03:
                     continue
 
-                # Rank by volume with a small soft bonus for prices near 50%
+                # Urgency bonus: markets closing sooner rank higher
+                # 1.0 if closing today, 0.0 if closing in 30 days
+                urgency_bonus = 0.0
+                if close_time_str:
+                    try:
+                        close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                        days_left = (close_dt - datetime.now(UTC)).total_seconds() / 86400
+                        urgency_bonus = max(0.0, 1.0 - (days_left / 30)) * volume * 0.5
+                    except (ValueError, AttributeError):
+                        pass
+
+                # Rank by volume with a soft bonus for prices near 50% and urgency
                 proximity_bonus = 1.0 - 2.0 * abs(price - 0.5)
                 candidates.append({
                     "ticker": ticker,
@@ -554,7 +565,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     "last_price": last_price,
                     "close_time": close_time_str,
                     "volume_24h": volume,
-                    "_score": volume + proximity_bonus,
+                    "_score": volume + proximity_bonus + urgency_bonus,
                 })
 
         if not cursor:
@@ -1212,11 +1223,18 @@ def run_cycle(args) -> None:
                 all_edges.append((market_id, ms, abs(p_yes - yes_ask)))
 
                 # Save individual model run
-                decision = "HOLD"
+                _no_ask = no_ask if no_ask > 0 else (1.0 - yes_ask)
                 if p_yes > yes_ask:
                     decision = "BUY_YES"
-                elif p_yes < yes_ask:
+                elif p_yes < (1.0 - _no_ask):
+                    # p_yes is below the band floor — genuine NO edge
                     decision = "BUY_NO"
+                elif abs(p_yes - yes_ask) < 0.001:
+                    # Model probability matches market price — no directional view
+                    decision = "HOLD_MATCH"
+                else:
+                    # p_yes is inside [1-no_ask, yes_ask] band — spread absorbs edge
+                    decision = "HOLD_BAND"
 
                 if db_engine:
                     save_model_run(
