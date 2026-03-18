@@ -115,16 +115,25 @@ def create_llm_client(
             max_retries, retry_delay, verbose=verbose,
         )
 
-    # --- OpenAI Responses API (GPT-5 family) ------------------------------
+    # --- OpenAI -----------------------------------------------------------
     if provider_lower == "openai":
-        return OpenAIClient(
-            model, api_key,
-            max_tokens=max_tokens,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
-            verbose=verbose,
-            reasoning_effort="none",
-            verbosity="medium",
+        # GPT-5 family uses the Responses API; older models (gpt-4o, etc.)
+        # use Chat Completions via the compat client.
+        if model.startswith("gpt-5"):
+            return OpenAIClient(
+                model, api_key,
+                max_tokens=max_tokens,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+                verbose=verbose,
+                reasoning_effort="none",
+                verbosity="medium",
+            )
+        return OpenAICompatibleClient(
+            model, api_key, temperature, max_tokens,
+            max_retries, retry_delay, verbose=verbose,
+            base_url="https://api.openai.com/v1",
+            http_timeout=http_timeout,
         )
 
     # --- Gemini / Google --------------------------------------------------
