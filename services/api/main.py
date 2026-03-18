@@ -332,6 +332,19 @@ def get_trades(
             ):
                 preds_by_id[p.id] = p
 
+        prediction_market_ids = list({
+            p.market_id for p in preds_by_id.values() if p.market_id
+        })
+        model_runs_by_market: dict[str, list[ModelRun]] = defaultdict(list)
+        if prediction_market_ids:
+            for run in (
+                _instance_query(session, ModelRun, resolved_instance)
+                .filter(ModelRun.market_id.in_(prediction_market_ids))
+                .order_by(ModelRun.timestamp.desc())
+                .all()
+            ):
+                model_runs_by_market[run.market_id].append(run)
+
         trade_market_ids = list({f"kalshi:{r.ticker}" for r in rows if r.ticker})
         market_titles: dict[str, str] = {}
         if trade_market_ids:
@@ -349,12 +362,45 @@ def get_trades(
             if sig and sig.prediction_id:
                 pred = preds_by_id.get(sig.prediction_id)
                 if pred:
+                    reasoning = None
+                    sources: list[dict[str, str]] = []
+                    trade_ts = row.created_at
+                    match_window = timedelta(minutes=15)
+                    market_runs = model_runs_by_market.get(pred.market_id, [])
+                    matched_meta = None
+                    matched_delta = None
+
+                    for run in market_runs:
+                        if run.model_name != pred.source:
+                            continue
+                        delta_seconds = abs((run.timestamp - trade_ts).total_seconds())
+                        if delta_seconds > match_window.total_seconds():
+                            continue
+                        if not run.metadata_json:
+                            continue
+                        try:
+                            meta = json.loads(run.metadata_json)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        p_yes = meta.get("p_yes")
+                        if p_yes is None or abs(float(p_yes) - float(pred.p_yes)) > 0.0005:
+                            continue
+                        if matched_delta is None or delta_seconds < matched_delta:
+                            matched_meta = meta
+                            matched_delta = delta_seconds
+
+                    if matched_meta:
+                        reasoning = matched_meta.get("reasoning")
+                        sources = matched_meta.get("sources", [])
+
                     prediction = {
                         "p_yes": pred.p_yes,
                         "yes_ask": pred.yes_ask,
                         "no_ask": pred.no_ask,
                         "source": pred.source,
                         "market_id": pred.market_id,
+                        "reasoning": reasoning,
+                        "sources": sources,
                     }
 
             market_title = market_titles.get(f"kalshi:{row.ticker}")
@@ -456,11 +502,13 @@ def get_markets(
                     seen_models.add(run.model_name)
                     p_yes = None
                     reasoning = None
+                    sources = []
                     if run.metadata_json:
                         try:
                             meta = json.loads(run.metadata_json)
                             p_yes = meta.get("p_yes")
                             reasoning = meta.get("reasoning")
+                            sources = meta.get("sources", [])
                         except (json.JSONDecodeError, TypeError):
                             pass
                     pred = {
@@ -470,6 +518,7 @@ def get_markets(
                         "p_yes": p_yes,
                         "timestamp": run.timestamp.isoformat(),
                         "reasoning": reasoning,
+                        "sources": sources,
                     }
                     model_predictions.append(pred)
                     if aggregated_p_yes is None:
@@ -1450,12 +1499,14 @@ def get_model_runs(
         for row in rows:
             p_yes = None
             reasoning = None
+            sources = []
             models_breakdown = None
             if row.metadata_json:
                 try:
                     meta = json.loads(row.metadata_json)
                     p_yes = meta.get("p_yes")
                     reasoning = meta.get("reasoning")
+                    sources = meta.get("sources", [])
                     models_breakdown = meta.get("models")
                 except (json.JSONDecodeError, TypeError):
                     pass
@@ -1468,6 +1519,7 @@ def get_model_runs(
                 "market_id": row.market_id,
                 "p_yes": p_yes,
                 "reasoning": reasoning,
+                "sources": sources,
             }
             if models_breakdown:
                 entry["models"] = models_breakdown

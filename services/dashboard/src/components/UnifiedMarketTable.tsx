@@ -17,6 +17,7 @@ import type {
   Position,
   UnifiedMarketRow,
   PriceHistoryPoint,
+  ModelRun,
 } from "@/lib/api";
 import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
@@ -463,7 +464,20 @@ export function UnifiedMarketTable({
       {/* Table */}
       <div className="overflow-x-auto">
         {viewMode === "markets" ? (
-          <table className="w-full text-xs">
+          <table className="w-full table-fixed text-xs">
+            <colgroup>
+              <col />
+              <col className="w-[140px]" />
+              <col className="w-[130px]" />
+              <col className="w-[110px]" />
+              <col className="w-[110px]" />
+              <col className="w-[140px]" />
+              <col className="w-[110px]" />
+              <col className="w-[110px]" />
+              <col className="w-[130px]" />
+              <col className="w-[160px]" />
+              <col className="w-[160px]" />
+            </colgroup>
             <thead>
               <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
                 <Th k="title" sortKeys={sortKeys} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
@@ -853,7 +867,7 @@ function MarketRow({
       {/* Expanded detail panel */}
       {isExpanded && (
         <tr>
-          <td colSpan={10} className="p-0">
+          <td colSpan={11} className="p-0">
             <ExpandedPanel
               row={row}
               apiClient={apiClient}
@@ -878,10 +892,43 @@ function ExpandedPanel({
   instanceCacheKey: string;
 }) {
   const [activeTab, setActiveTab] = useState<"timeline" | "trades" | "models">("trades");
+  const [modelRuns, setModelRuns] = useState<ModelRun[] | null>(null);
+  const [loadingRuns, setLoadingRuns] = useState(false);
+  const modelRunsCacheRef = useRef<Map<string, ModelRun[]>>(new Map());
+
+  useEffect(() => {
+    const cacheKey = `runs:${instanceCacheKey}:${row.market_id}`;
+    const cachedRuns = modelRunsCacheRef.current.get(cacheKey);
+    if (cachedRuns) {
+      setModelRuns(cachedRuns);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingRuns(true);
+    apiClient.getMarketModelRuns(row.market_id).then((data) => {
+      if (cancelled) return;
+      modelRunsCacheRef.current.set(cacheKey, data);
+      setModelRuns(data);
+      setLoadingRuns(false);
+    }).catch(() => {
+      if (cancelled) return;
+      setModelRuns([]);
+      setLoadingRuns(false);
+    });
+    return () => { cancelled = true; };
+  }, [apiClient, instanceCacheKey, row.market_id]);
+
+  const timelineCount = useMemo(() => {
+    const chronTrades = [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const chronRuns = [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
+    return tradesWithRuns.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
+  }, [row.trades, modelRuns]);
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
     { key: "trades", label: "Trades", count: row.trade_count },
-    { key: "timeline", label: "Timeline", count: row.trade_count },
+    { key: "timeline", label: "Timeline", count: timelineCount },
     { key: "models", label: "Models", count: row.model_predictions.length },
   ];
 
@@ -923,13 +970,17 @@ function ExpandedPanel({
 
       {/* Tab content */}
       <div className="px-4 py-3">
-        {activeTab === "timeline" && <TimelineTab row={row} />}
+        {activeTab === "timeline" && (
+          <TimelineTab row={row} modelRuns={modelRuns} loadingRuns={loadingRuns} />
+        )}
         {activeTab === "trades" && <TradesTab row={row} />}
         {activeTab === "models" && (
           <ModelsTab
             row={row}
-            apiClient={apiClient}
             instanceCacheKey={instanceCacheKey}
+            apiClient={apiClient}
+            modelRuns={modelRuns}
+            loadingRuns={loadingRuns}
           />
         )}
       </div>
@@ -941,20 +992,102 @@ function ExpandedPanel({
 
 const SKIP_THRESHOLD_MS = 25 * 60 * 1000; // 25 min — 1.5× the ~15-min poll interval
 
-function TimelineTab({ row }: { row: UnifiedMarketRow }) {
+type TimelineTradeItem = {
+  trade: Trade;
+  idx: number;
+  matchedRun: ModelRun | null;
+};
+
+function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): TimelineTradeItem[] {
+  const matchWindowMs = 15 * 60 * 1000;
+  return chronTrades.map((trade, idx) => {
+    const pred = trade.prediction;
+    const tradeTs = new Date(trade.created_at).getTime();
+    let matchedRun: ModelRun | null = null;
+
+    if (pred) {
+      const candidates = chronRuns.filter((run) => {
+        if (run.model_name !== pred.source) return false;
+        if (run.p_yes == null) return false;
+        if (Math.abs(run.p_yes - pred.p_yes) > 0.0005) return false;
+        const runTs = new Date(run.timestamp).getTime();
+        return !isNaN(runTs) && Math.abs(runTs - tradeTs) <= matchWindowMs;
+      });
+
+      if (candidates.length > 0) {
+        matchedRun = candidates.reduce((best, run) => {
+          const bestDiff = Math.abs(new Date(best.timestamp).getTime() - tradeTs);
+          const runDiff = Math.abs(new Date(run.timestamp).getTime() - tradeTs);
+          return runDiff < bestDiff ? run : best;
+        });
+      }
+    }
+
+    return { trade, idx, matchedRun };
+  });
+}
+
+function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: ModelRun[]): ModelRun[] {
+  const matchedIds = new Set(
+    tradesWithRuns
+      .map((item) => item.matchedRun?.id)
+      .filter((id): id is number => id != null)
+  );
+  return chronRuns.filter((run) => !matchedIds.has(run.id));
+}
+
+function TimelineTab({
+  row,
+  modelRuns,
+  loadingRuns,
+}: {
+  row: UnifiedMarketRow;
+  modelRuns: ModelRun[] | null;
+  loadingRuns: boolean;
+}) {
+  const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
+
   // Show trades in chronological order (oldest first)
   const chronTrades = useMemo(
     () => [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
     [row.trades]
   );
 
-  // Sorted prediction timestamps (oldest first, deduplicated by minute)
+  const chronRuns = useMemo(
+    () => [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+    [modelRuns]
+  );
+
+  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
+  const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
+  const events = useMemo(() => {
+    const tradeEvents = tradesWithRuns.map((item) => ({
+      type: "trade" as const,
+      key: `trade-${item.trade.id}`,
+      sortTs: new Date(item.trade.created_at).getTime(),
+      item,
+    }));
+    const predictionEvents = unmatchedRuns.map((run) => ({
+      type: "prediction" as const,
+      key: `prediction-${run.id}`,
+      sortTs: new Date(run.timestamp).getTime(),
+      run,
+    }));
+    return [...tradeEvents, ...predictionEvents].sort((a, b) => a.sortTs - b.sortTs);
+  }, [tradesWithRuns, unmatchedRuns]);
+
+  // Sorted prediction timestamps (oldest first, deduplicated by exact timestamp)
   const predTimes = useMemo(() => {
-    return [...row.model_predictions]
-      .map((p) => new Date(p.timestamp).getTime())
-      .filter((t) => !isNaN(t))
-      .sort((a, b) => a - b);
-  }, [row.model_predictions]);
+    const unique = new Set<number>();
+    for (const run of [
+      ...tradesWithRuns.map((item) => item.matchedRun).filter((run): run is ModelRun => run != null),
+      ...unmatchedRuns,
+    ]) {
+      const ts = new Date(run.timestamp).getTime();
+      if (!isNaN(ts)) unique.add(ts);
+    }
+    return Array.from(unique).sort((a, b) => a - b);
+  }, [tradesWithRuns, unmatchedRuns]);
 
   // Build skip gap markers between consecutive predictions and since the last one
   const skipGaps = useMemo(() => {
@@ -969,7 +1102,17 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
     return gaps;
   }, [predTimes]);
 
-  if (chronTrades.length === 0) {
+  const skipGapsByAfterMs = useMemo(() => {
+    const map = new Map<number, Array<{ afterMs: number; skippedMs: number }>>();
+    for (const gap of skipGaps) {
+      const existing = map.get(gap.afterMs) ?? [];
+      existing.push(gap);
+      map.set(gap.afterMs, existing);
+    }
+    return map;
+  }, [skipGaps]);
+
+  if (!loadingRuns && events.length === 0) {
     return <div className="text-[10px] text-txt-muted">No activity for this market</div>;
   }
 
@@ -977,11 +1120,117 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
     <div className="relative pl-4 max-h-[400px] overflow-y-auto">
       <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
 
-      {chronTrades.map((trade, idx) => {
+      {loadingRuns && (
+        <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
+      )}
+
+      {events.map((event, eventIdx) => {
+        const currentRunTs = event.type === "prediction"
+          ? new Date(event.run.timestamp).getTime()
+          : event.item.matchedRun
+            ? new Date(event.item.matchedRun.timestamp).getTime()
+            : null;
+        const nextRunTs = (() => {
+          for (const nextEvent of events.slice(eventIdx + 1)) {
+            if (nextEvent.type === "prediction") return new Date(nextEvent.run.timestamp).getTime();
+            if (nextEvent.item.matchedRun) return new Date(nextEvent.item.matchedRun.timestamp).getTime();
+          }
+          return null;
+        })();
+        const showGapAfterEvent = currentRunTs != null && currentRunTs !== nextRunTs;
+
+        if (event.type === "prediction") {
+          const { run } = event;
+          const detailReasoning = run.reasoning ?? null;
+          const detailSources = run.sources ?? [];
+          const hasDetail = !!(detailReasoning || detailSources.length > 0);
+          const isExpanded = expandedEntryId === event.key;
+
+          return (
+            <div key={event.key}>
+              <div className="relative py-1.5">
+                <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-400 border-2 border-t-bg z-10" />
+
+                <div className="flex items-start gap-3">
+                  <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                    {fmtTime(run.timestamp)}
+                  </div>
+
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <button
+                      type="button"
+                      className={`w-full flex flex-wrap items-center gap-2.5 rounded px-1 -mx-1 text-[10px] font-mono text-left transition-colors ${
+                        hasDetail ? "hover:bg-t-panel-hover/40" : ""
+                      }`}
+                      onClick={() => {
+                        if (!hasDetail) return;
+                        setExpandedEntryId(isExpanded ? null : event.key);
+                      }}
+                    >
+                      <span className={`font-medium ${MODEL_COLORS[0]}`}>
+                        {shortModelName(run.model_name)}
+                      </span>
+                      <span className="text-accent">
+                        p: {run.p_yes != null ? `${(run.p_yes * 100).toFixed(1)}%` : "--"}
+                      </span>
+                      <span
+                        className={`text-[9px] px-1 py-px rounded font-bold ${
+                          run.decision === "BUY_YES"
+                            ? "bg-profit-dim text-profit"
+                            : run.decision === "BUY_NO"
+                              ? "bg-loss-dim text-loss"
+                              : "bg-t-border/30 text-txt-muted"
+                        }`}
+                      >
+                        {run.decision}
+                      </span>
+                      {detailSources.length > 0 && (
+                        <span className="text-[9px] text-txt-muted">
+                          {detailSources.length} source{detailSources.length !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {hasDetail && (
+                        <span className="text-[8px] text-txt-muted ml-auto">
+                          {isExpanded ? "▲" : "▼"}
+                        </span>
+                      )}
+                    </button>
+                    {isExpanded && hasDetail && (
+                      <div className="pt-1">
+                        <RationalePanel reasoning={detailReasoning} sources={detailSources} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
+                const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+                const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
+                const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
+                return (
+                  <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
+                    <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
+                    <div className="w-[100px] flex-shrink-0" />
+                    <div className="text-[9px] text-txt-muted italic">
+                      ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
+
+        const { trade, idx, matchedRun } = event.item;
         const qty = trade.filled_shares || trade.count;
         const isSell = trade.action?.toUpperCase() === "SELL";
         const cost = (trade.price_cents / 100) * qty;
         const pred = trade.prediction;
+        const detailReasoning = pred?.reasoning ?? matchedRun?.reasoning ?? null;
+        const detailSources = pred?.sources ?? matchedRun?.sources ?? [];
+        const hasDetail = !!(detailReasoning || detailSources.length > 0);
+        const isExpanded = expandedEntryId === event.key;
 
         // Cumulative position + sell P&L tracking
         let cumYes = 0, cumNo = 0, cumCost = 0;
@@ -1015,74 +1264,103 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
         const currentSellPnl = isSell ? sellPnl : 0;
 
         return (
-          <div key={trade.id} className="relative flex items-start gap-3 py-1.5">
-            <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
+          <div key={event.key}>
+            <div className="relative py-1.5">
+              <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
 
-            <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-              {fmtTime(trade.created_at)}
+              <div className="flex items-start gap-3">
+                <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                  {fmtTime(trade.created_at)}
+                </div>
+
+                <div className="flex-1 min-w-0 overflow-hidden">
+                  <button
+                    type="button"
+                    className={`w-full flex flex-wrap items-center gap-2.5 rounded px-1 -mx-1 text-[10px] font-mono text-left transition-colors ${
+                      hasDetail ? "hover:bg-t-panel-hover/40" : ""
+                    }`}
+                    onClick={() => {
+                      if (!hasDetail) return;
+                      setExpandedEntryId(isExpanded ? null : event.key);
+                    }}
+                  >
+                    {isSell && (
+                      <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
+                    )}
+                    <span
+                      className={`text-[9px] px-1 py-px rounded font-bold ${
+                        trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
+                      }`}
+                    >
+                      {trade.side.toUpperCase()}
+                    </span>
+                    <span className="text-txt-primary">
+                      {isSell ? "-" : "+"}{qty} @ {trade.price_cents}c
+                    </span>
+                    <span className="text-txt-muted">
+                      {isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}
+                    </span>
+                    {isSell && (
+                      <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>
+                        {currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}
+                      </span>
+                    )}
+                    <span className="text-txt-muted">
+                      total: {cumulativeQty} · ${Math.max(0, cumCost).toFixed(2)}
+                    </span>
+                    {pred && (
+                      <>
+                        <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
+                        <span className="text-accent">
+                          model: {(pred.p_yes * 100).toFixed(0)}%
+                        </span>
+                        <span className={pnlCls(pred.p_yes - pred.yes_ask)}>
+                          edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}
+                          {((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp
+                        </span>
+                      </>
+                    )}
+                    <span
+                      className={`text-[9px] px-1 py-px rounded font-bold ${
+                        trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
+                      }`}
+                    >
+                      {trade.dry_run ? "DRY" : "LIVE"}
+                    </span>
+                    {detailSources.length > 0 && (
+                      <span className="text-[9px] text-txt-muted">
+                        {detailSources.length} source{detailSources.length !== 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {hasDetail && (
+                      <span className="text-[8px] text-txt-muted ml-auto">
+                        {isExpanded ? "▲" : "▼"}
+                      </span>
+                    )}
+                  </button>
+                  {isExpanded && hasDetail && (
+                    <div className="pt-1">
+                      <RationalePanel reasoning={detailReasoning} sources={detailSources} />
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5 flex-1 text-[10px] font-mono">
-              {isSell && (
-                <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
-              )}
-              <span
-                className={`text-[9px] px-1 py-px rounded font-bold ${
-                  trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
-                }`}
-              >
-                {trade.side.toUpperCase()}
-              </span>
-              <span className="text-txt-primary">
-                {isSell ? "-" : "+"}{qty} @ {trade.price_cents}c
-              </span>
-              <span className="text-txt-muted">
-                {isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}
-              </span>
-              {isSell && (
-                <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>
-                  {currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}
-                </span>
-              )}
-              <span className="text-txt-muted">
-                total: {cumulativeQty} · ${Math.max(0, cumCost).toFixed(2)}
-              </span>
-              {pred && (
-                <>
-                  <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
-                  <span className="text-accent">
-                    model: {(pred.p_yes * 100).toFixed(0)}%
-                  </span>
-                  <span className={pnlCls(pred.p_yes - pred.yes_ask)}>
-                    edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}
-                    {((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp
-                  </span>
-                </>
-              )}
-              <span
-                className={`text-[9px] px-1 py-px rounded font-bold ${
-                  trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
-                }`}
-              >
-                {trade.dry_run ? "DRY" : "LIVE"}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-
-      {/* Skip gap markers */}
-      {skipGaps.map((gap, i) => {
-        const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
-        const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
-        const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
-        return (
-          <div key={i} className="relative flex items-start gap-3 py-1">
-            <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
-            <div className="w-[100px] flex-shrink-0" />
-            <div className="text-[9px] text-txt-muted italic">
-              ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
-            </div>
+            {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
+              const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+              const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
+              const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
+              return (
+                <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
+                  <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
+                  <div className="w-[100px] flex-shrink-0" />
+                  <div className="text-[9px] text-txt-muted italic">
+                    ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       })}
@@ -1254,103 +1532,122 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Tab 3: Model Predictions ────────────────────────────────
 
+function RationalePanel({
+  reasoning,
+  sources,
+}: {
+  reasoning: string | null | undefined;
+  sources: Array<{ url: string; title: string }> | null | undefined;
+}) {
+  if (!reasoning && (!sources || sources.length === 0)) return null;
+  return (
+    <div className="mt-2 w-full min-w-0 overflow-hidden rounded border border-t-border/40 bg-t-bg/60 p-2.5 space-y-2">
+      {reasoning && (
+        <p className="text-[10px] text-txt-secondary leading-relaxed break-words whitespace-pre-wrap">{reasoning}</p>
+      )}
+      {sources && sources.length > 0 && (
+        <div className="min-w-0 space-y-0.5">
+          <div className="text-[8px] uppercase tracking-widest text-txt-muted font-medium mb-1">Sources</div>
+          {sources.map((s, i) => (
+            <a
+              key={i}
+              href={s.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex w-full min-w-0 items-start gap-1.5 overflow-hidden text-[9px] text-accent transition-colors hover:text-accent/80"
+              title={s.url}
+            >
+              <span className="text-txt-muted group-hover:text-txt-secondary mt-px">↗</span>
+              <span className="min-w-0 truncate">{s.title || s.url}</span>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelsTab({
   row,
   apiClient,
   instanceCacheKey,
+  modelRuns,
+  loadingRuns,
 }: {
   row: UnifiedMarketRow;
   apiClient: ApiClient;
   instanceCacheKey: string;
+  modelRuns: ModelRun[] | null;
+  loadingRuns: boolean;
 }) {
   const [priceHistory, setPriceHistory] = useState<PriceHistoryPoint[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loadingChart, setLoadingChart] = useState(false);
   const priceHistoryCacheRef = useRef<Map<string, PriceHistoryPoint[]>>(new Map());
 
   useEffect(() => {
     const cacheKey = `${instanceCacheKey}:${row.market_id}`;
-    const cached = priceHistoryCacheRef.current.get(cacheKey);
-    if (cached) {
-      setPriceHistory(cached);
-      return;
-    }
 
-    let cancelled = false;
-    setLoading(true);
-    apiClient
-      .getPriceHistory(row.market_id)
-      .then((data) => {
+    // Fetch price history
+    const cachedChart = priceHistoryCacheRef.current.get(cacheKey);
+    if (cachedChart) {
+      setPriceHistory(cachedChart);
+    } else {
+      let cancelled = false;
+      setLoadingChart(true);
+      apiClient.getPriceHistory(row.market_id).then((data) => {
         if (cancelled) return;
         const nextData = Array.isArray(data) ? data : [];
         priceHistoryCacheRef.current.set(cacheKey, nextData);
         setPriceHistory(nextData);
-        setLoading(false);
-      })
-      .catch(() => {
+        setLoadingChart(false);
+      }).catch(() => {
         if (cancelled) return;
         setPriceHistory([]);
-        setLoading(false);
+        setLoadingChart(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
+      return () => { cancelled = true; };
+    }
   }, [apiClient, instanceCacheKey, row.market_id]);
 
   const preds = row.model_predictions;
-  const yesAsk = row.yes_ask;
+  const modelSummary = useMemo(() => {
+    const names = [
+      ...preds.map((pred) => pred.model_name),
+      ...(modelRuns ?? []).map((run) => run.model_name),
+      ...(priceHistory ?? []).map((point) => point.model_name).filter((name): name is string => !!name),
+    ].filter(Boolean);
+    const unique = Array.from(new Set(names));
+    if (unique.length === 0) return null;
+    if (unique.length === 1) return shortModelName(unique[0]);
+    return unique.map(shortModelName).join(", ");
+  }, [preds, modelRuns, priceHistory]);
 
   return (
     <div className="space-y-4">
-      {/* Per-model breakdown */}
+      {/* Current cycle per-model breakdown */}
       {preds.length > 0 ? (
         <div>
           <div className="flex items-center gap-4 text-[9px] text-txt-muted uppercase tracking-wider mb-2">
-            <span>Per-Model Predictions</span>
-            {yesAsk != null && (
-              <span className="normal-case tracking-normal">
-                yes_ask: <span className="text-txt-primary font-mono">{(yesAsk * 100).toFixed(1)}c</span>
-              </span>
-            )}
+            <span>Models</span>
           </div>
-          <div className="grid gap-1">
-            {preds.map((pred, i) => {
-              const modelEdge = pred.p_yes != null && yesAsk != null ? pred.p_yes - yesAsk : null;
-              return (
-                <div key={pred.model_name} className="flex items-center gap-3 text-[10px] font-mono">
-                  <span className={`w-28 truncate font-medium ${MODEL_COLORS[i % MODEL_COLORS.length]}`}>
-                    {shortModelName(pred.model_name)}
-                  </span>
-                  <span className="text-txt-primary w-14 text-right">
-                    p: {pred.p_yes != null ? `${(pred.p_yes * 100).toFixed(1)}%` : "--"}
-                  </span>
-                  <span className={`w-20 text-right ${modelEdge != null ? pnlCls(modelEdge) : "text-txt-muted"}`}>
-                    {modelEdge != null
-                      ? `edge: ${modelEdge >= 0 ? "+" : ""}${(modelEdge * 100).toFixed(1)}pp`
-                      : "--"}
-                  </span>
-                  <span
-                    className={`px-1.5 py-px rounded text-[8px] font-bold ${
-                      pred.decision === "BUY_YES"
-                        ? "bg-profit-dim text-profit"
-                        : pred.decision === "BUY_NO"
-                          ? "bg-loss-dim text-loss"
-                          : "bg-t-border/30 text-txt-muted"
-                    }`}
-                  >
-                    {pred.decision}
-                  </span>
-                </div>
-              );
-            })}
+          <div className="grid gap-2">
+            {preds.map((pred, i) => (
+              <div key={pred.model_name} className="flex items-center gap-3 text-[10px] font-mono">
+                <span className={`min-w-0 truncate font-medium ${MODEL_COLORS[i % MODEL_COLORS.length]}`}>
+                  {shortModelName(pred.model_name)}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       ) : (
-        <div className="text-[10px] text-txt-muted">No model predictions available</div>
+        <div className="text-[10px] text-txt-muted">
+          {modelSummary ?? "Model"}
+        </div>
       )}
 
       {/* Price history chart */}
-      {loading && (
+      {loadingChart && (
         <div className="text-[10px] text-txt-muted">Loading price history...</div>
       )}
       {priceHistory && priceHistory.length > 0 && (

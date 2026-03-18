@@ -22,7 +22,13 @@ const SEVERITY_CONFIG = {
   },
 } as const;
 
-export function AlertsPanel({ alerts }: { alerts: Alert[] }) {
+export function AlertsPanel({
+  alerts,
+  onAlertClick,
+}: {
+  alerts: Alert[];
+  onAlertClick?: (marketId: string) => void;
+}) {
   const sortedAlerts = useMemo(() => {
     return [...alerts].sort((a, b) => {
       const sevA = SEVERITY_CONFIG[a.severity]?.order ?? 3;
@@ -74,9 +80,18 @@ export function AlertsPanel({ alerts }: { alerts: Alert[] }) {
               const config = SEVERITY_CONFIG[alert.severity] ?? SEVERITY_CONFIG.info;
 
               return (
-                <div
+                <button
                   key={`${alert.type}-${alert.timestamp}-${idx}`}
-                  className="px-3 py-2 hover:bg-t-panel-hover transition-colors"
+                  type="button"
+                  disabled={!alert.market_id}
+                  onClick={() => {
+                    if (alert.market_id) onAlertClick?.(alert.market_id);
+                  }}
+                  className={`w-full px-3 py-2 text-left transition-colors ${
+                    alert.market_id
+                      ? "hover:bg-t-panel-hover cursor-pointer"
+                      : "cursor-default"
+                  }`}
                 >
                   <div className="flex items-start gap-2">
                     {/* Severity dot */}
@@ -110,7 +125,7 @@ export function AlertsPanel({ alerts }: { alerts: Alert[] }) {
                       )}
                     </div>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>

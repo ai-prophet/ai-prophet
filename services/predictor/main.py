@@ -39,6 +39,7 @@ class PredictResponse(BaseModel):
     confidence: float
     reasoning: str
     analysis: dict = {}
+    sources: list[dict] = []
 
 
 # ── Endpoints ─────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ def _parse_prediction(content: str) -> dict:
         "confidence": float(result.get("confidence", 0.5)),
         "reasoning": result.get("rationale", result.get("reasoning", "")),
         "analysis": result.get("analysis", {}),
+        "sources": result.get("sources", []),
     }
 
 
@@ -239,8 +241,21 @@ def _predict_gemini(model_name: str, market_info: dict, include_market: bool) ->
     parts = candidates[0].get("content", {}).get("parts", [])
     text = "".join(p.get("text", "") for p in parts)
 
-    logger.info("Gemini API call took %.1fs", elapsed)
-    return _parse_prediction(text)
+    sources: list[dict] = []
+    try:
+        grounding_meta = candidates[0].get("groundingMetadata", {})
+        for chunk in grounding_meta.get("groundingChunks", []):
+            web = chunk.get("web", {})
+            uri = web.get("uri", "")
+            if uri:
+                sources.append({"url": uri, "title": web.get("title", uri)})
+    except Exception:
+        pass
+
+    logger.info("Gemini API call took %.1fs (%d sources)", elapsed, len(sources))
+    result = _parse_prediction(text)
+    result["sources"] = sources
+    return result
 
 
 # ── Main prediction router ────────────────────────────────────────

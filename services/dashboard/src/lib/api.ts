@@ -86,6 +86,8 @@ export interface Trade {
     no_ask: number;
     source: string;
     market_id: string;
+    reasoning?: string | null;
+    sources?: PredictionSource[] | null;
   } | null;
 }
 
@@ -95,6 +97,11 @@ export interface TradesResponse {
   has_more: boolean;
 }
 
+export interface PredictionSource {
+  url: string;
+  title: string;
+}
+
 export interface ModelPrediction {
   model_name: string;
   decision: string;
@@ -102,6 +109,7 @@ export interface ModelPrediction {
   p_yes: number | null;
   timestamp: string;
   reasoning?: string | null;
+  sources?: PredictionSource[] | null;
   models?: Record<string, { p_yes: number; confidence: number }> | null;
 }
 
@@ -194,6 +202,7 @@ export interface ModelRun {
   market_id: string;
   p_yes: number | null;
   reasoning: string | null;
+  sources?: PredictionSource[] | null;
 }
 
 export interface SystemLogEntry {
@@ -687,6 +696,8 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
     getHealth: () => fetchJSON<HealthData>(normalizedBaseUrl, buildPath("/health")),
     getModelRuns: (limit = 100) =>
       fetchJSON<ModelRun[]>(normalizedBaseUrl, buildPath(`/model-runs?limit=${limit}`)),
+    getMarketModelRuns: (marketId: string, limit = 200) =>
+      fetchJSON<ModelRun[]>(normalizedBaseUrl, buildPath(`/model-runs?market_id=${encodeURIComponent(marketId)}&limit=${limit}`)).catch(() => [] as ModelRun[]),
     getSystemLogs: (limit = 50) =>
       fetchJSON<SystemLogEntry[]>(normalizedBaseUrl, buildPath(`/system-logs?limit=${limit}`)),
     getKalshiBalance: () => fetchJSON<KalshiBalanceData>(normalizedBaseUrl, buildPath("/kalshi/balance")),

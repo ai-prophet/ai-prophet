@@ -962,14 +962,29 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
             if not candidates:
                 raise ValueError(f"Gemini returned no candidates: {data}")
 
-            parts = candidates[0].get("content", {}).get("parts", [])
+            candidate = candidates[0]
+            parts = candidate.get("content", {}).get("parts", [])
             text = "".join(p.get("text", "") for p in parts)
 
-            logger.info("Gemini API call took %.1fs", elapsed)
-            return _parse_prediction(text)
+            # Extract grounding sources from search metadata
+            sources: list[dict] = []
+            try:
+                grounding_meta = candidate.get("groundingMetadata", {})
+                for chunk in grounding_meta.get("groundingChunks", []):
+                    web = chunk.get("web", {})
+                    uri = web.get("uri", "")
+                    if uri:
+                        sources.append({"url": uri, "title": web.get("title", uri)})
+            except Exception:
+                pass
+
+            logger.info("Gemini API call took %.1fs (%d sources)", elapsed, len(sources))
+            result = _parse_prediction(text)
+            result["sources"] = sources
+            return result
         except Exception as e:
             logger.error("Gemini prediction failed (%.1fs): %s", time.time() - t0, e)
-            return {"p_yes": 0.5, "confidence": 0.0, "reasoning": f"Error: {e}"}
+            return {"p_yes": 0.5, "confidence": 0.0, "reasoning": f"Error: {e}", "sources": []}
 
     return predict
 
@@ -1432,33 +1447,11 @@ def run_cycle(args) -> None:
                     "confidence": confidence,
                     "reasoning": reasoning,
                     "analysis": pred.get("analysis", {}),
+                    "sources": pred.get("sources", []),
                 }
 
                 # Track edge for alert checking
                 all_edges.append((market_id, ms, abs(p_yes - yes_ask)))
-
-                # Save individual model run
-                _no_ask = no_ask if no_ask > 0 else (1.0 - yes_ask)
-                if p_yes > yes_ask:
-                    decision = "BUY_YES"
-                elif p_yes < (1.0 - _no_ask):
-                    # p_yes is below the band floor — genuine NO edge
-                    decision = "BUY_NO"
-                elif abs(p_yes - yes_ask) < 0.001:
-                    # Model probability matches market price — no directional view
-                    decision = "HOLD_MATCH"
-                else:
-                    # p_yes is inside [1-no_ask, yes_ask] band — spread absorbs edge
-                    decision = "HOLD_SPREAD"
-
-                if db_engine:
-                    save_model_run(
-                        db_engine, ms, market_id, decision, confidence,
-                        metadata={"p_yes": p_yes, "reasoning": reasoning,
-                                  "analysis": pred.get("analysis", {}),
-                                  "yes_ask": yes_ask, "no_ask": no_ask},
-                        instance_name=INSTANCE_NAME,
-                    )
 
         if not model_predictions:
             logger.warning("  No model predictions for %s, skipping", ticker)
@@ -1529,6 +1522,33 @@ def run_cycle(args) -> None:
 
             except Exception as e:
                 logger.debug("Could not load position for portfolio: %s", e)
+
+        if db_engine and betting_engine is not None:
+            for ms, pred in model_predictions.items():
+                try:
+                    betting_engine.strategy._portfolio = portfolio
+                    strategy_signal = betting_engine.strategy.evaluate(
+                        market_id=market_id,
+                        p_yes=pred["p_yes"],
+                        yes_ask=yes_ask,
+                        no_ask=no_ask,
+                    )
+                    decision = (
+                        f"BUY_{strategy_signal.side.upper()}"
+                        if strategy_signal is not None
+                        else "HOLD"
+                    )
+                except Exception:
+                    decision = "HOLD"
+
+                save_model_run(
+                    db_engine, ms, market_id, decision, pred.get("confidence"),
+                    metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
+                              "analysis": pred.get("analysis", {}),
+                              "sources": pred.get("sources", []),
+                              "yes_ask": yes_ask, "no_ask": no_ask},
+                    instance_name=INSTANCE_NAME,
+                )
 
         # Feed prediction directly into BettingEngine (strategy decides edge threshold)
         result = betting_engine.on_forecast(

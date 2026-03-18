@@ -20,6 +20,10 @@
   --text-muted: #5a6577;
 }
 
+html {
+  scrollbar-gutter: stable;
+}
+
 body {
   background-color: var(--bg-primary);
   color: var(--text-primary);

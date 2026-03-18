@@ -615,18 +615,31 @@ export default function Dashboard() {
         </div>
         */}
 
-        {/* Row 4: Position Heatmap */}
-        {positions.length > 0 && (
+        {/* Row 4: Position Heatmap + Alerts */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
           <div>
-            <SectionLabel text="Position Heatmap" count={positions.length} />
-            <PositionHeatmap
-              positions={positions}
-              markets={markets}
-              pnlByMarket={livePnlByMarket}
-              onCellClick={setScrollToMarketId}
+            <SectionLabel text="Position Heatmap" count={positions.length > 0 ? positions.length : undefined} />
+            {positions.length > 0 ? (
+              <PositionHeatmap
+                positions={positions}
+                markets={markets}
+                pnlByMarket={livePnlByMarket}
+                onCellClick={setScrollToMarketId}
+              />
+            ) : (
+              <div className="bg-t-panel border border-t-border rounded p-6 text-center text-txt-muted text-[10px]">
+                No positions to visualize
+              </div>
+            )}
+          </div>
+          <div>
+            <SectionLabel text="Alerts" count={alerts.length > 0 ? alerts.length : undefined} />
+            <AlertsPanel
+              alerts={alerts}
+              onAlertClick={(marketId) => setScrollToMarketId(marketId)}
             />
           </div>
-        )}
+        </div>
 
         {/* Row 5: Unified Market Table */}
         <div>
@@ -649,16 +662,10 @@ export default function Dashboard() {
           <ModelCalibration resolvedMarkets={resolvedMarkets} />
         </div>
 
-        {/* Row 7: Alerts + System Activity */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          <div>
-            <SectionLabel text="Alerts" count={alerts.length > 0 ? alerts.length : undefined} />
-            <AlertsPanel alerts={alerts} />
-          </div>
-          <div>
-            <SectionLabel text="System Activity" />
-            <LiveActivity logs={logs} />
-          </div>
+        {/* Row 7: System Activity */}
+        <div>
+          <SectionLabel text="System Activity" />
+          <LiveActivity logs={logs} />
         </div>
         </div>
       </div>
