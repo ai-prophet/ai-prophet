@@ -76,6 +76,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
   const [scrollToMarketId, setScrollToMarketId] = useState<string | null>(null);
+  const [supportTab, setSupportTab] = useState<"risk" | "alerts" | "activity">("risk");
   const dataCacheRef = useRef<Record<string, DashboardSnapshot>>({});
   const activeRequestRef = useRef(0);
   const selectedInstance =
@@ -603,8 +604,39 @@ export default function Dashboard() {
             />
           </div>
           <div className="lg:col-span-2">
-            <SectionLabel text="Risk & Performance" />
-            <RiskMetrics analytics={analytics} />
+            <div className="flex items-center gap-1.5 mb-1.5">
+              {[
+                { key: "risk" as const, label: "Risk & Performance", count: undefined },
+                { key: "alerts" as const, label: "Alerts", count: alerts.length > 0 ? alerts.length : undefined },
+                { key: "activity" as const, label: "System Activity", count: undefined },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setSupportTab(tab.key)}
+                  className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+                    supportTab === tab.key
+                      ? "bg-accent/20 text-accent"
+                      : "text-txt-muted hover:text-txt-primary hover:bg-t-panel"
+                  }`}
+                >
+                  {tab.label}
+                  {tab.count != null && (
+                    <span className="ml-1 rounded bg-t-border px-1.5 py-px font-mono text-[9px] text-txt-muted">
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+            {supportTab === "risk" && <RiskMetrics analytics={analytics} />}
+            {supportTab === "alerts" && (
+              <AlertsPanel
+                alerts={alerts}
+                onAlertClick={(marketId) => setScrollToMarketId(marketId)}
+              />
+            )}
+            {supportTab === "activity" && <LiveActivity logs={logs} />}
           </div>
         </div>
 
@@ -615,30 +647,21 @@ export default function Dashboard() {
         </div>
         */}
 
-        {/* Row 4: Position Heatmap + Alerts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          <div>
-            <SectionLabel text="Position Heatmap" count={positions.length > 0 ? positions.length : undefined} />
-            {positions.length > 0 ? (
-              <PositionHeatmap
-                positions={positions}
-                markets={markets}
-                pnlByMarket={livePnlByMarket}
-                onCellClick={setScrollToMarketId}
-              />
-            ) : (
-              <div className="bg-t-panel border border-t-border rounded p-6 text-center text-txt-muted text-[10px]">
-                No positions to visualize
-              </div>
-            )}
-          </div>
-          <div>
-            <SectionLabel text="Alerts" count={alerts.length > 0 ? alerts.length : undefined} />
-            <AlertsPanel
-              alerts={alerts}
-              onAlertClick={(marketId) => setScrollToMarketId(marketId)}
+        {/* Row 4: Position Heatmap */}
+        <div>
+          <SectionLabel text="Position Heatmap" count={positions.length > 0 ? positions.length : undefined} />
+          {positions.length > 0 ? (
+            <PositionHeatmap
+              positions={positions}
+              markets={markets}
+              pnlByMarket={livePnlByMarket}
+              onCellClick={setScrollToMarketId}
             />
-          </div>
+          ) : (
+            <div className="bg-t-panel border border-t-border rounded p-6 text-center text-txt-muted text-[10px]">
+              No positions to visualize
+            </div>
+          )}
         </div>
 
         {/* Row 5: Unified Market Table */}
@@ -662,11 +685,6 @@ export default function Dashboard() {
           <ModelCalibration resolvedMarkets={resolvedMarkets} />
         </div>
 
-        {/* Row 7: System Activity */}
-        <div>
-          <SectionLabel text="System Activity" />
-          <LiveActivity logs={logs} />
-        </div>
         </div>
       </div>
     </main>
