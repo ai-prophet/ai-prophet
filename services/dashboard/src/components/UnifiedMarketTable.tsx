@@ -583,11 +583,6 @@ function EventGroupRowView({
             )}
             <div className="flex items-center gap-1.5 text-[9px] font-mono text-txt-muted">
               {group.event_ticker && <span>{group.event_ticker}</span>}
-              {group.category && (
-                <span className={`px-1 py-px rounded border text-[8px] uppercase tracking-wider ${categoryChipClass(group.category)}`}>
-                  {group.category}
-                </span>
-              )}
               <span className="text-[8px] text-txt-muted">
                 {isExpanded ? "\u25B2" : "\u25BC"}
               </span>
@@ -722,7 +717,7 @@ function MarketRow({
         onClick={onToggle}
       >
         {/* Market */}
-        <td className="px-3 py-2 max-w-[260px]">
+        <td className="px-3 py-2 max-w-[260px] overflow-hidden">
           <div className="flex flex-col gap-0.5">
             {row.event_ticker ? (
               <a
@@ -739,16 +734,16 @@ function MarketRow({
                 {row.title}
               </span>
             )}
-            <div className="flex items-center gap-1.5 text-[9px] font-mono text-txt-muted">
-              <span>{row.ticker}</span>
+            <div className="flex items-center gap-1.5 text-[9px] font-mono text-txt-muted overflow-hidden">
+              <span className="shrink-0">{row.ticker}</span>
               {row.event_ticker && (
                 <>
-                  <span className="text-t-border-light">/</span>
+                  <span className="text-t-border-light shrink-0">/</span>
                   <a
                     href={kalshiEventUrl(row.event_ticker)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="hover:text-accent transition-colors"
+                    className="hover:text-accent transition-colors truncate"
                     onClick={(e) => e.stopPropagation()}
                   >
                     {row.event_ticker}

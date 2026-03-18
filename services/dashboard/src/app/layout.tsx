@@ -2,8 +2,11 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Prophet Arena - Trading Dashboard",
+  title: "AI Prophet",
   description: "Live trading monitor for Kalshi prediction markets",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({
