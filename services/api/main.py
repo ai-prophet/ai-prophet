@@ -437,7 +437,6 @@ def get_positions(
                 "quantity": row.quantity,
                 "avg_price": row.avg_price,
                 "realized_pnl": row.realized_pnl,
-                "unrealized_pnl": row.unrealized_pnl,
                 "updated_at": row.updated_at.isoformat(),
             })
         return {
@@ -499,6 +498,8 @@ def get_pnl(
             current_prices[mkt.ticker] = {
                 "yes_ask": mkt.yes_ask,
                 "no_ask": mkt.no_ask,
+                "yes_bid": mkt.yes_bid,
+                "no_bid": mkt.no_bid,
             }
 
         # Market titles for trade markers
@@ -567,10 +568,14 @@ def get_pnl(
                 # Use current market prices (most accurate), fall back to historical
                 prices = current_prices.get(t) or historical_prices.get(t)
                 if prices:
-                    price_key = f"{p['side']}_ask"
-                    mkt_price = prices.get(price_key)
-                    if mkt_price is not None:
-                        cumulative_unrealized += mkt_price * p["qty"] - p["total_cost"]
+                    if p["side"] == "yes":
+                        bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
+                    else:
+                        bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
+                    if bid is None:
+                        continue
+                    avg_price = _safe_div(p["total_cost"], p["qty"])
+                    cumulative_unrealized += (bid - avg_price) * p["qty"]
 
             cumulative_pnl = cumulative_realized + cumulative_unrealized
 
@@ -598,14 +603,25 @@ def get_pnl(
                 "pnl_impact": round(pnl_impact, 4),
             })
 
-        # Position-level P&L for summary (most accurate / source of truth)
+        # Position-level P&L for summary — use live bid prices for unrealized
         positions = session.query(TradingPosition).all()
         total_realized = sum(p.realized_pnl for p in positions)
-        total_unrealized = sum(p.unrealized_pnl for p in positions)
+        total_unrealized = 0.0
+        for p in positions:
+            mkt_ticker = p.market_id[len("kalshi:"):] if p.market_id.startswith("kalshi:") else p.market_id
+            prices = current_prices.get(mkt_ticker)
+            if prices:
+                if p.contract == "yes":
+                    bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
+                else:
+                    bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
+                if bid is not None:
+                    total_unrealized += (bid - p.avg_price) * p.quantity
+                    continue
+            pass  # no market data, skip this position's unrealized
         total_pnl = total_realized + total_unrealized
 
-        # Correct the final series point to match position-based P&L
-        # (transaction replay can drift from update_positions due to rounding)
+        # Correct the final series point to match live P&L
         if pnl_series:
             pnl_series[-1]["pnl"] = round(total_pnl, 4)
             pnl_series[-1]["realized_pnl"] = round(total_realized, 4)
@@ -679,7 +695,7 @@ def get_analytics_summary() -> dict[str, Any]:
         for pos in positions:
             market_key = pos.market_id
             mkt = market_by_id.get(market_key)
-            total_pnl = pos.realized_pnl + pos.unrealized_pnl
+            total_pnl = pos.realized_pnl
             trade_count = orders_per_market.get(market_key, 0)
             trade_pnls.append(total_pnl)
 

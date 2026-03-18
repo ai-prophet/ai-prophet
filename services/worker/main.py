@@ -211,11 +211,11 @@ def save_model_run(db_engine, model_name: str, market_id: str,
         logger.warning("Failed to save model run: %s", e)
 
 
-def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -> None:
+def update_positions(db_engine) -> None:
     """Aggregate betting_orders into trading_positions for the dashboard.
 
     For each ticker with filled/dry-run orders, computes net position
-    (side, quantity, avg_price) and unrealized P&L based on current market price.
+    (side, quantity, avg_price) and realized P&L.
     """
     if db_engine is None:
         return
@@ -309,15 +309,7 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                 qty = abs(net_shares)
                 avg_price = abs(pos["total_cost"] / net_shares) if net_shares != 0 else 0
 
-                # Unrealized P&L: (current_price - avg_price) * quantity
                 market_id = f"kalshi:{ticker}"
-                unrealized = 0.0
-                if market_id in market_prices:
-                    yes_ask, no_ask = market_prices[market_id]
-                    # Exit price = bid (what you receive when selling)
-                    # yes_bid = 1 - no_ask, no_bid = 1 - yes_ask
-                    current = (1.0 - no_ask) if side == "yes" else (1.0 - yes_ask)
-                    unrealized = (current - avg_price) * qty
 
                 existing = session.query(TradingPosition).filter_by(
                     market_id=market_id
@@ -465,12 +457,12 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
     """Fetch active binary markets from Kalshi via the events endpoint.
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
-    pages, collects candidates closing within 30 days, then returns the top
+    pages, collects candidates closing within 15 days, then returns the top
     ``max_markets`` ranked by volume (with a soft bonus for prices near 50%).
     """
     base_url = adapter._base_url
     path = "/trade-api/v2/events"
-    cutoff = datetime.now(UTC) + timedelta(days=30)
+    cutoff = datetime.now(UTC) + timedelta(days=15)
 
     candidates: list[dict] = []
     cursor = ""
@@ -514,7 +506,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                 if status not in ("open", "active"):
                     continue
 
-                # Only trade markets closing within 30 days
+                # Only trade markets closing within 15 days
                 close_time_str = mkt.get("close_time")
                 if close_time_str:
                     try:
@@ -548,13 +540,13 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     continue
 
                 # Urgency bonus: markets closing sooner rank higher
-                # 1.0 if closing today, 0.0 if closing in 30 days
+                # 1.0 if closing today, 0.0 if closing in 15 days
                 urgency_bonus = 0.0
                 if close_time_str:
                     try:
                         close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
                         days_left = (close_dt - datetime.now(UTC)).total_seconds() / 86400
-                        urgency_bonus = max(0.0, 1.0 - (days_left / 30)) * volume * 0.5
+                        urgency_bonus = max(0.0, 1.0 - (days_left / 15)) * volume * 0.5
                     except (ValueError, AttributeError):
                         pass
 
@@ -583,18 +575,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
 
     # Rank: prefer higher volume, soft bonus for prices near 50%
     candidates.sort(key=lambda m: m["_score"], reverse=True)
-
-    # Deduplicate by event_ticker — keep only the highest-scoring market per event
-    seen_events: set[str] = set()
-    deduped: list[dict] = []
-    for m in candidates:
-        ev = m.get("event_ticker", "") or m.get("ticker", "")
-        if ev and ev in seen_events:
-            continue
-        seen_events.add(ev)
-        deduped.append(m)
-
-    markets = deduped[:max_markets]
+    markets = candidates[:max_markets]
 
     # Clean up internal scoring field
     for m in markets:
@@ -1401,7 +1382,7 @@ def run_cycle(args) -> None:
                 logger.debug("Failed to load cached market prices: %s", e)
 
         # Always update positions (even without prices — deployed capital still tracked)
-        update_positions(db_engine, all_market_prices)
+        update_positions(db_engine)
 
     # Cleanup
     if betting_engine is not None:

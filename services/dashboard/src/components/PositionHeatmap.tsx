@@ -80,7 +80,7 @@ export function PositionHeatmap({
     return positions
       .map((pos) => {
         const capital = pos.avg_price * pos.quantity;
-        const pnl = pnlByMarket?.get(pos.market_id) ?? pos.unrealized_pnl;
+        const pnl = pnlByMarket?.get(pos.market_id) ?? 0;
         const returnPct = capital > 0 ? (pnl / capital) * 100 : 0;
 
         return {

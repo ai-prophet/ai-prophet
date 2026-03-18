@@ -76,7 +76,6 @@ export interface Position {
   quantity: number;
   avg_price: number;
   realized_pnl: number;
-  unrealized_pnl: number;
   updated_at: string;
 }
 
@@ -275,9 +274,7 @@ export interface UnifiedMarketRow {
     quantity: number;
     avg_price: number;
     realized_pnl: number;
-    unrealized_pnl: number;
     capital: number;
-    return_pct: number;
   } | null;
 
   trades: Trade[];
@@ -355,16 +352,12 @@ export function buildUnifiedMarketRows(
 
     let positionData: UnifiedMarketRow["position"] = null;
     if (pos) {
-      const capital = pos.avg_price * pos.quantity;
-      const totalPnl = pos.realized_pnl + pos.unrealized_pnl;
       positionData = {
         contract: pos.contract,
         quantity: pos.quantity,
         avg_price: pos.avg_price,
         realized_pnl: pos.realized_pnl,
-        unrealized_pnl: pos.unrealized_pnl,
-        capital,
-        return_pct: capital > 0 ? (totalPnl / capital) * 100 : 0,
+        capital: pos.avg_price * pos.quantity,
       };
     }
 
@@ -397,8 +390,6 @@ export function buildUnifiedMarketRows(
   // Handle orphan positions (position exists but no matching market)
   for (const pos of positions) {
     if (seenMarketIds.has(pos.market_id)) continue;
-    const capital = pos.avg_price * pos.quantity;
-    const totalPnl = pos.realized_pnl + pos.unrealized_pnl;
     const mktTrades = (pos.ticker ? tradesByTicker.get(pos.ticker) : null) ?? [];
     const sortedTrades = [...mktTrades].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -423,9 +414,7 @@ export function buildUnifiedMarketRows(
         quantity: pos.quantity,
         avg_price: pos.avg_price,
         realized_pnl: pos.realized_pnl,
-        unrealized_pnl: pos.unrealized_pnl,
-        capital,
-        return_pct: capital > 0 ? (totalPnl / capital) * 100 : 0,
+        capital: pos.avg_price * pos.quantity,
       },
       trades: sortedTrades,
       trade_count: sortedTrades.length,
@@ -476,7 +465,7 @@ export function computePortfolioMetrics(
         }
       }
     }
-    return sum + p.unrealized_pnl;
+    return sum; // no market data available, skip
   }, 0);
 
   const totalPnl = totalRealizedPnl + totalUnrealizedPnl;
@@ -532,14 +521,14 @@ export function groupByMarket(positions: Position[], trades: Trade[]) {
     const capital = pos.avg_price * pos.quantity;
     if (existing) {
       existing.capitalDeployed += capital;
-      existing.pnl += pos.realized_pnl + pos.unrealized_pnl;
+      existing.pnl += pos.realized_pnl;
       existing.openSize += pos.quantity;
     } else {
       marketMap.set(key, {
         marketId: key,
         title: pos.market_title ?? pos.ticker ?? key,
         capitalDeployed: capital,
-        pnl: pos.realized_pnl + pos.unrealized_pnl,
+        pnl: pos.realized_pnl,
         tradeCount: 0,
         openSize: pos.quantity,
         contract: pos.contract,

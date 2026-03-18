@@ -146,7 +146,7 @@ export default function Dashboard() {
 
   const unrealizedBreakdown = positions.map((p) => {
     const mkt = marketById.get(p.market_id);
-    let unrealized = p.unrealized_pnl;
+    let unrealized = 0;
     let currentBid: number | null = null;
     if (mkt) {
       currentBid = p.contract.toLowerCase() === "yes"

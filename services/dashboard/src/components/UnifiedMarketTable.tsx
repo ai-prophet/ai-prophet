@@ -125,9 +125,10 @@ export function UnifiedMarketTable({
         case "unrealized": {
           const pa = liveNetPnl(a);
           const pb = liveNetPnl(b);
-          if (pa == null && pb == null) { diff = 0; break; }
-          if (pa == null) { return 1; }
-          if (pb == null) { return -1; }
+          // Nulls always sort to bottom regardless of direction
+          if (pa == null && pb == null) return 0;
+          if (pa == null) return 1;
+          if (pb == null) return -1;
           diff = pa - pb;
           break;
         }
@@ -138,9 +139,12 @@ export function UnifiedMarketTable({
           diff = (a.last_trade_time ? new Date(a.last_trade_time).getTime() : 0) -
                  (b.last_trade_time ? new Date(b.last_trade_time).getTime() : 0);
           break;
-        case "return":
-          diff = (a.position?.return_pct ?? 0) - (b.position?.return_pct ?? 0);
+        case "return": {
+          const ra = a.position ? (liveNetPnl(a) ?? 0) / (a.position.capital || 1) : 0;
+          const rb = b.position ? (liveNetPnl(b) ?? 0) / (b.position.capital || 1) : 0;
+          diff = ra - rb;
           break;
+        }
       }
       return sortAsc ? diff : -diff;
     });
@@ -435,8 +439,8 @@ function ExpandedPanel({ row }: { row: UnifiedMarketRow }) {
   const [activeTab, setActiveTab] = useState<"timeline" | "trades" | "models">("trades");
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
-    { key: "timeline", label: "Timeline", count: row.trade_count },
     { key: "trades", label: "Trades", count: row.trade_count },
+    { key: "timeline", label: "Timeline", count: row.trade_count },
     { key: "models", label: "Models", count: row.model_predictions.length },
   ];
 

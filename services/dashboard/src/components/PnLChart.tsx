@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Area,
   XAxis,
@@ -44,6 +44,17 @@ export function PnLChart({
   const [showDrawdown, setShowDrawdown] = useState(false);
   const [showTradeMarkers, setShowTradeMarkers] = useState(true);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("all");
+  const [brushRange, setBrushRange] = useState<{ startIndex: number; endIndex: number } | null>(null);
+
+  // Reset brush when timeframe changes
+  useEffect(() => { setBrushRange(null); }, [timeFrame]);
+
+  const handleTimeFrameChange = (nextTimeFrame: TimeFrame) => {
+    if (nextTimeFrame === "all") {
+      setBrushRange(null);
+    }
+    setTimeFrame(nextTimeFrame);
+  };
 
   const chartData = useMemo(() => {
     if (data.length === 0) return [];
@@ -140,7 +151,7 @@ export function PnLChart({
           {(["1h", "1d", "1w", "all"] as TimeFrame[]).map((tf) => (
             <button
               key={tf}
-              onClick={() => setTimeFrame(tf)}
+              onClick={() => handleTimeFrameChange(tf)}
               className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors ${
                 timeFrame === tf
                   ? "bg-accent/20 text-accent"
@@ -152,7 +163,7 @@ export function PnLChart({
           ))}
           {timeFrame !== "all" && (
             <button
-              onClick={() => setTimeFrame("all")}
+              onClick={() => handleTimeFrameChange("all")}
               className="px-1.5 py-0.5 rounded text-[8px] font-medium text-txt-muted hover:text-accent border border-t-border transition-colors ml-1"
               title="Reset to all time"
             >
@@ -180,6 +191,18 @@ export function PnLChart({
             />
             Trades
           </label>
+          {showTradeMarkers && (
+            <div className="flex items-center gap-2 text-[9px] text-txt-muted border-l border-t-border pl-2">
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-accent" />
+                Buy
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-full bg-loss" />
+                Sell
+              </span>
+            </div>
+          )}
           {showDrawdown && maxDrawdown < 0 && (
             <span className="text-[9px] font-mono text-loss">
               Max DD: ${Math.abs(maxDrawdown).toFixed(2)}
@@ -305,6 +328,13 @@ export function PnLChart({
                 stroke={CHART_COLORS.reference}
                 fill="#0f1419"
                 travellerWidth={8}
+                startIndex={brushRange?.startIndex ?? 0}
+                endIndex={brushRange?.endIndex ?? filteredData.length - 1}
+                onChange={(range) => {
+                  if (range.startIndex != null && range.endIndex != null) {
+                    setBrushRange({ startIndex: range.startIndex, endIndex: range.endIndex });
+                  }
+                }}
               />
             )}
           </ComposedChart>

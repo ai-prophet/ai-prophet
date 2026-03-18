@@ -54,13 +54,6 @@ export function RiskMetrics({
           colorClass={metricColor(analytics.sharpe_ratio, 1, 0)}
         />
 
-        {/* Sortino Ratio */}
-        <MetricCell
-          label="Sortino Ratio"
-          value={analytics.sortino_ratio.toFixed(2)}
-          colorClass={metricColor(analytics.sortino_ratio, 1, 0)}
-        />
-
         {/* Max Drawdown */}
         <MetricCell
           label="Max Drawdown"
