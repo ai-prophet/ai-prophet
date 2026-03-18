@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY packages/core /app/packages/core
+COPY services /app/services
+
+RUN pip install --no-cache-dir -e /app/packages/core \
+    && pip install --no-cache-dir \
+        psycopg2-binary \
+        python-dotenv \
+        openai \
+        anthropic \
+        google-genai \
+        sqlalchemy \
+        requests \
+        fastapi \
+        uvicorn \
+        httpx \
+        cryptography
+
+ENTRYPOINT ["python", "services/worker/main.py"]

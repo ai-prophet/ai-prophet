@@ -10,8 +10,15 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
-import type { Trade, Market, Position, UnifiedMarketRow, PriceHistoryPoint } from "@/lib/api";
-import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
+import type {
+  ApiClient,
+  Trade,
+  Market,
+  Position,
+  UnifiedMarketRow,
+  PriceHistoryPoint,
+} from "@/lib/api";
+import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
 // ── Shared helpers ──────────────────────────────────────────
@@ -48,9 +55,25 @@ type SortKey =
   | "unrealized"
   | "capital"
   | "last_trade"
-  | "return";
+  | "return"
+  | "expiration";
 
 type FilterMode = "all" | "has_position";
+type ViewMode = "markets" | "events";
+type EventSortKey = "title" | "market_count" | "position_count" | "total_trade_count" | "total_capital" | "total_pnl" | "last_trade_time";
+type EventGroupRow = {
+  event_key: string;
+  event_ticker: string;
+  title: string;
+  category: string | null;
+  rows: UnifiedMarketRow[];
+  market_count: number;
+  position_count: number;
+  total_pnl: number;
+  total_capital: number;
+  total_trade_count: number;
+  last_trade_time: string | null;
+};
 
 const PAGE_SIZE = 25;
 
@@ -60,21 +83,31 @@ export function UnifiedMarketTable({
   markets,
   positions,
   trades,
+  apiClient,
+  instanceCacheKey,
   scrollToMarketId,
   onScrollComplete,
 }: {
   markets: Market[];
   positions: Position[];
   trades: Trade[];
+  apiClient: ApiClient;
+  instanceCacheKey: string;
   scrollToMarketId?: string | null;
   onScrollComplete?: () => void;
 }) {
-  const [sortKey, setSortKey] = useState<SortKey>("unrealized");
-  const [sortAsc, setSortAsc] = useState(false);
+  const [sortKeys, setSortKeys] = useState<Array<{ key: SortKey; asc: boolean }>>(
+    [{ key: "unrealized", asc: false }]
+  );
+  const [eventSortKeys, setEventSortKeys] = useState<Array<{ key: EventSortKey; asc: boolean }>>(
+    [{ key: "total_pnl", asc: false }]
+  );
   const [search, setSearch] = useState("");
+  const [viewMode, setViewMode] = useState<ViewMode>("markets");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [expandedMarketId, setExpandedMarketId] = useState<string | null>(null);
+  const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
 
   const rows = useMemo(
@@ -94,61 +127,90 @@ export function UnifiedMarketTable({
     });
   }, [scrollToMarketId, onScrollComplete]);
 
-  const handleSort = (key: SortKey) => {
-    if (sortKey === key) setSortAsc(!sortAsc);
-    else { setSortKey(key); setSortAsc(false); }
+  const handleSort = (key: SortKey, multi: boolean) => {
+    setSortKeys((prev) => {
+      const idx = prev.findIndex((s) => s.key === key);
+      if (multi) {
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = { key, asc: !prev[idx].asc };
+          return updated;
+        }
+        return [...prev, { key, asc: false }];
+      }
+      if (idx === 0 && prev.length === 1) return [{ key, asc: !prev[0].asc }];
+      return [{ key, asc: false }];
+    });
   };
+
+  const handleEventSort = (key: EventSortKey, multi: boolean) => {
+    setEventSortKeys((prev) => {
+      const idx = prev.findIndex((s) => s.key === key);
+      if (multi) {
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = { key, asc: !prev[idx].asc };
+          return updated;
+        }
+        return [...prev, { key, asc: false }];
+      }
+      if (idx === 0 && prev.length === 1) return [{ key, asc: !prev[0].asc }];
+      return [{ key, asc: false }];
+    });
+  };
+
+  const computeMarketDiff = useCallback((key: SortKey, a: UnifiedMarketRow, b: UnifiedMarketRow): number | null => {
+    switch (key) {
+      case "title": return a.title.localeCompare(b.title);
+      case "yes_ask": return (a.yes_ask ?? 0) - (b.yes_ask ?? 0);
+      case "predicted": return (a.aggregated_p_yes ?? 0) - (b.aggregated_p_yes ?? 0);
+      case "edge": return Math.abs(a.edge ?? 0) - Math.abs(b.edge ?? 0);
+      case "position": return (a.position?.quantity ?? 0) - (b.position?.quantity ?? 0);
+      case "avg_price": return (a.position?.avg_price ?? 0) - (b.position?.avg_price ?? 0);
+      case "unrealized": {
+        const pa = liveNetPnl(a);
+        const pb = liveNetPnl(b);
+        if (pa == null && pb == null) return 0;
+        if (pa == null) return null; // nulls to bottom
+        if (pb == null) return null;
+        return pa - pb;
+      }
+      case "capital": return (a.position?.capital ?? 0) - (b.position?.capital ?? 0);
+      case "last_trade":
+        return (a.last_trade_time ? new Date(a.last_trade_time).getTime() : 0) -
+               (b.last_trade_time ? new Date(b.last_trade_time).getTime() : 0);
+      case "expiration": {
+        if (!a.expiration && !b.expiration) return 0;
+        if (!a.expiration) return null;
+        if (!b.expiration) return null;
+        return new Date(a.expiration).getTime() - new Date(b.expiration).getTime();
+      }
+      case "return": {
+        const ra = a.position ? (liveNetPnl(a) ?? 0) / (a.position.capital || 1) : 0;
+        const rb = b.position ? (liveNetPnl(b) ?? 0) / (b.position.capital || 1) : 0;
+        return ra - rb;
+      }
+    }
+  }, []);
 
   // Sort
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
-      let diff = 0;
-      switch (sortKey) {
-        case "title":
-          diff = a.title.localeCompare(b.title);
-          break;
-        case "yes_ask":
-          diff = (a.yes_ask ?? 0) - (b.yes_ask ?? 0);
-          break;
-        case "predicted":
-          diff = (a.aggregated_p_yes ?? 0) - (b.aggregated_p_yes ?? 0);
-          break;
-        case "edge":
-          diff = Math.abs(a.edge ?? 0) - Math.abs(b.edge ?? 0);
-          break;
-        case "position":
-          diff = (a.position?.quantity ?? 0) - (b.position?.quantity ?? 0);
-          break;
-        case "avg_price":
-          diff = (a.position?.avg_price ?? 0) - (b.position?.avg_price ?? 0);
-          break;
-        case "unrealized": {
-          const pa = liveNetPnl(a);
-          const pb = liveNetPnl(b);
-          // Nulls always sort to bottom regardless of direction
-          if (pa == null && pb == null) return 0;
-          if (pa == null) return 1;
-          if (pb == null) return -1;
-          diff = pa - pb;
-          break;
+      for (const { key, asc } of sortKeys) {
+        const diff = computeMarketDiff(key, a, b);
+        // null means "sort to bottom regardless of direction"
+        if (diff === null) {
+          const pa = key === "unrealized" ? liveNetPnl(a) : key === "expiration" ? a.expiration : null;
+          const pb = key === "unrealized" ? liveNetPnl(b) : key === "expiration" ? b.expiration : null;
+          if (pa == null && pb != null) return 1;
+          if (pa != null && pb == null) return -1;
+          continue;
         }
-        case "capital":
-          diff = (a.position?.capital ?? 0) - (b.position?.capital ?? 0);
-          break;
-        case "last_trade":
-          diff = (a.last_trade_time ? new Date(a.last_trade_time).getTime() : 0) -
-                 (b.last_trade_time ? new Date(b.last_trade_time).getTime() : 0);
-          break;
-        case "return": {
-          const ra = a.position ? (liveNetPnl(a) ?? 0) / (a.position.capital || 1) : 0;
-          const rb = b.position ? (liveNetPnl(b) ?? 0) / (b.position.capital || 1) : 0;
-          diff = ra - rb;
-          break;
-        }
+        if (diff !== 0) return asc ? diff : -diff;
       }
-      return sortAsc ? diff : -diff;
+      return 0;
     });
-  }, [rows, sortKey, sortAsc]);
+  }, [rows, sortKeys, computeMarketDiff]);
 
   // Filter
   const filtered = useMemo(() => {
@@ -173,6 +235,92 @@ export function UnifiedMarketTable({
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
 
+  const eventGroups = useMemo(() => {
+    const groups = new Map<string, EventGroupRow>();
+
+    for (const row of rows) {
+      const eventKey = row.event_ticker || `market:${row.market_id}`;
+      const eventTitle = row.event_ticker
+        ? row.title.split(":")[0]?.trim() || row.title
+        : row.title;
+      const pnl = liveNetPnl(row) ?? 0;
+      const capital = row.position?.capital ?? 0;
+
+      const existing = groups.get(eventKey);
+      if (existing) {
+        existing.rows.push(row);
+        existing.market_count += 1;
+        existing.position_count += row.has_position ? 1 : 0;
+        existing.total_pnl += pnl;
+        existing.total_capital += capital;
+        existing.total_trade_count += row.trade_count;
+        if (row.last_trade_time && (!existing.last_trade_time || new Date(row.last_trade_time) > new Date(existing.last_trade_time))) {
+          existing.last_trade_time = row.last_trade_time;
+        }
+      } else {
+        groups.set(eventKey, {
+          event_key: eventKey,
+          event_ticker: row.event_ticker,
+          title: eventTitle,
+          category: row.category,
+          rows: [row],
+          market_count: 1,
+          position_count: row.has_position ? 1 : 0,
+          total_pnl: pnl,
+          total_capital: capital,
+          total_trade_count: row.trade_count,
+          last_trade_time: row.last_trade_time,
+        });
+      }
+    }
+
+    return Array.from(groups.values()).map((group) => ({
+        ...group,
+        rows: [...group.rows].sort((a, b) => (liveNetPnl(b) ?? Number.NEGATIVE_INFINITY) - (liveNetPnl(a) ?? Number.NEGATIVE_INFINITY)),
+      }));
+  }, [rows]);
+
+  const sortedEventGroups = useMemo(() => {
+    return [...eventGroups].sort((a, b) => {
+      for (const { key, asc } of eventSortKeys) {
+        let diff = 0;
+        switch (key) {
+          case "title": diff = a.title.localeCompare(b.title); break;
+          case "market_count": diff = a.market_count - b.market_count; break;
+          case "position_count": diff = a.position_count - b.position_count; break;
+          case "total_trade_count": diff = a.total_trade_count - b.total_trade_count; break;
+          case "total_capital": diff = a.total_capital - b.total_capital; break;
+          case "total_pnl": diff = a.total_pnl - b.total_pnl; break;
+          case "last_trade_time":
+            diff = (a.last_trade_time ? new Date(a.last_trade_time).getTime() : 0)
+              - (b.last_trade_time ? new Date(b.last_trade_time).getTime() : 0);
+            break;
+        }
+        if (diff !== 0) return asc ? diff : -diff;
+      }
+      return 0;
+    });
+  }, [eventGroups, eventSortKeys]);
+
+  const filteredEventGroups = useMemo(() => {
+    let result = sortedEventGroups;
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter((group) =>
+        group.title.toLowerCase().includes(q) ||
+        group.event_ticker.toLowerCase().includes(q) ||
+        group.rows.some((row) => row.title.toLowerCase().includes(q) || row.ticker.toLowerCase().includes(q))
+      );
+    }
+    if (filterMode === "has_position") {
+      result = result.filter((group) => group.position_count > 0);
+    }
+    return result;
+  }, [sortedEventGroups, search, filterMode]);
+
+  const visibleEventGroups = filteredEventGroups.slice(0, visibleCount);
+  const hasMoreEventGroups = visibleCount < filteredEventGroups.length;
+
   if (rows.length === 0) {
     return (
       <div className="bg-t-panel border border-t-border rounded p-8 text-center text-txt-muted text-xs">
@@ -183,6 +331,9 @@ export function UnifiedMarketTable({
 
   const posCount = rows.filter((r) => r.has_position).length;
   const predCount = rows.filter((r) => r.has_prediction).length;
+  const countLabel = viewMode === "events"
+    ? `${filteredEventGroups.length} events · ${filtered.length} markets · ${posCount} positions`
+    : `${filtered.length} markets · ${posCount} positions · ${predCount} predictions`;
 
   return (
     <div className="bg-t-panel border border-t-border rounded overflow-hidden">
@@ -195,6 +346,24 @@ export function UnifiedMarketTable({
           onChange={(e) => { setSearch(e.target.value); setVisibleCount(PAGE_SIZE); }}
           className="bg-t-bg border border-t-border rounded px-2 py-1 text-xs text-txt-primary placeholder-txt-muted focus:outline-none focus:border-accent w-48 font-mono"
         />
+        <div className="flex items-center gap-1">
+          {(["markets", "events"] as ViewMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => {
+                setViewMode(mode);
+                setVisibleCount(PAGE_SIZE);
+              }}
+              className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors ${
+                viewMode === mode
+                  ? "bg-accent/20 text-accent"
+                  : "text-txt-muted hover:text-txt-secondary"
+              }`}
+            >
+              {mode === "markets" ? "Markets" : "Events"}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-1">
           {(["all", "has_position"] as FilterMode[]).map((mode) => {
             const labels: Record<FilterMode, string> = {
@@ -217,54 +386,91 @@ export function UnifiedMarketTable({
           })}
         </div>
         <span className="text-[9px] text-txt-muted ml-auto font-mono">
-          {filtered.length} markets · {posCount} positions · {predCount} predictions
+          {countLabel}
+        </span>
+        <span className="text-[9px] text-txt-muted font-mono border border-t-border/60 rounded px-1.5 py-0.5 whitespace-nowrap">
+          <kbd className="font-sans">⇧</kbd> click to multi-sort
         </span>
       </div>
 
       {/* Table */}
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
-              <Th k="title" cur={sortKey} asc={sortAsc} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
-              <Th k="yes_ask" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Current Yes / No ask prices on Kalshi">Mkt Price</Th>
-              <Th k="predicted" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Model probability (p_yes from the prediction model)">Model P</Th>
-              <Th k="edge" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
-              <Th k="position" cur={sortKey} asc={sortAsc} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
-              <Th k="avg_price" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
-              <Th k="unrealized" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
-              <Th k="capital" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Total capital invested: avg entry price × quantity">Investment</Th>
-              <Th k="last_trade" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-t-border/40">
-            {visible.map((row) => {
-              const isExpanded = expandedMarketId === row.market_id;
-              const hasMultipleModels = row.model_predictions.length > 1;
+        {viewMode === "markets" ? (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
+                <Th k="title" sortKeys={sortKeys} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
+                <Th k="yes_ask" sortKeys={sortKeys} onClick={handleSort} align="right" info="Current Yes / No ask prices on Kalshi">Mkt Price</Th>
+                <Th k="predicted" sortKeys={sortKeys} onClick={handleSort} align="right" info="Model probability (p_yes from the prediction model)">Model P</Th>
+                <Th k="edge" sortKeys={sortKeys} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
+                <Th k="position" sortKeys={sortKeys} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
+                <Th k="avg_price" sortKeys={sortKeys} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
+                <Th k="unrealized" sortKeys={sortKeys} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
+                <Th k="capital" sortKeys={sortKeys} onClick={handleSort} align="right" info="Total capital invested: avg entry price × quantity">Investment</Th>
+                <Th k="last_trade" sortKeys={sortKeys} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
+                <Th k="expiration" sortKeys={sortKeys} onClick={handleSort} align="right" info="Market close/expiration date">Closes</Th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-t-border/40">
+              {visible.map((row) => {
+                const isExpanded = expandedMarketId === row.market_id;
+                const hasMultipleModels = row.model_predictions.length > 1;
 
-              return (
-                <MarketRow
-                  key={row.market_id}
-                  row={row}
-                  isExpanded={isExpanded}
-                  hasMultipleModels={hasMultipleModels}
-                  onToggle={() => setExpandedMarketId(isExpanded ? null : row.market_id)}
-                  rowRef={(el) => {
-                    if (el) rowRefs.current.set(row.market_id, el);
-                    else rowRefs.current.delete(row.market_id);
-                  }}
+                return (
+                  <MarketRow
+                    key={row.market_id}
+                    row={row}
+                    isExpanded={isExpanded}
+                    hasMultipleModels={hasMultipleModels}
+                    apiClient={apiClient}
+                    instanceCacheKey={instanceCacheKey}
+                    onToggle={() => setExpandedMarketId(isExpanded ? null : row.market_id)}
+                    rowRef={(el) => {
+                      if (el) rowRefs.current.set(row.market_id, el);
+                      else rowRefs.current.delete(row.market_id);
+                    }}
+                  />
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
+                <EventTh k="title" sortKeys={eventSortKeys} onClick={handleEventSort} align="left">Event</EventTh>
+                <EventTh k="market_count" sortKeys={eventSortKeys} onClick={handleEventSort} align="right">Markets</EventTh>
+                <EventTh k="position_count" sortKeys={eventSortKeys} onClick={handleEventSort} align="right">Positions</EventTh>
+                <EventTh k="total_trade_count" sortKeys={eventSortKeys} onClick={handleEventSort} align="right">Trades</EventTh>
+                <EventTh k="total_capital" sortKeys={eventSortKeys} onClick={handleEventSort} align="right">Investment</EventTh>
+                <EventTh k="total_pnl" sortKeys={eventSortKeys} onClick={handleEventSort} align="right">P&amp;L</EventTh>
+                <EventTh k="last_trade_time" sortKeys={eventSortKeys} onClick={handleEventSort} align="right">Last Trade</EventTh>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-t-border/40">
+              {visibleEventGroups.map((group) => (
+                <EventGroupRowView
+                  key={group.event_key}
+                  group={group}
+                  isExpanded={expandedEventKey === group.event_key}
+                  onToggle={() => setExpandedEventKey(expandedEventKey === group.event_key ? null : group.event_key)}
                 />
-              );
-            })}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {/* Pagination */}
-      {(hasMore || filtered.length > PAGE_SIZE) && (
+      {((viewMode === "markets" && (hasMore || filtered.length > PAGE_SIZE))
+        || (viewMode === "events" && (hasMoreEventGroups || filteredEventGroups.length > PAGE_SIZE))) && (
         <div className="px-3 py-2 border-t border-t-border flex items-center justify-between text-[10px] text-txt-muted">
-          <span>Showing {visible.length} of {filtered.length}</span>
-          {hasMore && (
+          <span>
+            {viewMode === "markets"
+              ? `Showing ${visible.length} of ${filtered.length}`
+              : `Showing ${visibleEventGroups.length} of ${filteredEventGroups.length}`}
+          </span>
+          {(viewMode === "markets" ? hasMore : hasMoreEventGroups) && (
             <button
               onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
               className="text-accent hover:text-accent/80 font-medium"
@@ -278,18 +484,162 @@ export function UnifiedMarketTable({
   );
 }
 
+function EventGroupRowView({
+  group,
+  isExpanded,
+  onToggle,
+}: {
+  group: EventGroupRow;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <>
+      <tr className="hover:bg-t-panel-hover transition-colors cursor-pointer" onClick={onToggle}>
+        <td className="px-3 py-2">
+          <div className="flex flex-col gap-0.5">
+            {group.event_ticker ? (
+              <a
+                href={kalshiEventUrl(group.event_ticker)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-txt-primary hover:text-accent transition-colors font-medium truncate text-xs"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {group.title}
+              </a>
+            ) : (
+              <span className="text-txt-primary font-medium truncate text-xs">
+                {group.title}
+              </span>
+            )}
+            <div className="flex items-center gap-1.5 text-[9px] font-mono text-txt-muted">
+              {group.event_ticker && <span>{group.event_ticker}</span>}
+              {group.category && (
+                <span className="px-1 py-px rounded bg-t-panel-alt border border-t-border/60 text-[8px] text-txt-muted uppercase tracking-wider">
+                  {group.category}
+                </span>
+              )}
+              <span className="text-[8px] text-txt-muted">
+                {isExpanded ? "\u25B2" : "\u25BC"}
+              </span>
+            </div>
+          </div>
+        </td>
+        <td className="px-3 py-2 text-right font-mono text-txt-primary">{group.market_count}</td>
+        <td className="px-3 py-2 text-right font-mono text-txt-primary">{group.position_count}</td>
+        <td className="px-3 py-2 text-right font-mono text-txt-primary">{group.total_trade_count}</td>
+        <td className="px-3 py-2 text-right font-mono text-txt-primary">{fmtDollar(group.total_capital)}</td>
+        <td className={`px-3 py-2 text-right font-mono font-medium ${pnlCls(group.total_pnl)}`}>
+          {fmtDollar(group.total_pnl)}
+        </td>
+        <td className="px-3 py-2 text-right font-mono text-txt-muted text-[10px]">
+          {group.last_trade_time ? fmtTime(group.last_trade_time) : "--"}
+        </td>
+      </tr>
+      {isExpanded && (
+        <tr>
+          <td colSpan={7} className="bg-t-bg/50 px-3 py-3">
+            <div className="overflow-x-auto">
+              <table className="w-full text-[10px]">
+                <thead>
+                  <tr className="border-b border-t-border/40 text-txt-muted text-[9px] uppercase tracking-widest">
+                    <th className="px-2 py-1.5 text-left font-medium">Market</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Ticker</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Investment</th>
+                    <th className="px-2 py-1.5 text-right font-medium">P&amp;L</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Last Trade</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-t-border/20">
+                  {group.rows.map((row) => {
+                    const net = liveNetPnl(row);
+                    return (
+                      <tr key={row.market_id} className="hover:bg-t-panel-hover/50">
+                        <td className="px-2 py-1.5">
+                          <a
+                            href={kalshiMarketUrl(row.event_ticker || row.ticker)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-txt-primary hover:text-accent transition-colors"
+                          >
+                            {row.title}
+                          </a>
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-txt-muted">{row.ticker}</td>
+                        <td className="px-2 py-1.5 text-right font-mono text-txt-primary">
+                          {fmtDollar(row.position?.capital ?? 0)}
+                        </td>
+                        <td className={`px-2 py-1.5 text-right font-mono font-medium ${net != null ? pnlCls(net) : "text-txt-muted"}`}>
+                          {net != null ? fmtDollar(net) : "--"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono text-txt-muted">
+                          {row.last_trade_time ? fmtTime(row.last_trade_time) : "--"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function EventTh({
+  k,
+  sortKeys,
+  onClick,
+  align = "left",
+  children,
+}: {
+  k: EventSortKey;
+  sortKeys: Array<{ key: EventSortKey; asc: boolean }>;
+  onClick: (k: EventSortKey, multi: boolean) => void;
+  align?: "left" | "right";
+  children: React.ReactNode;
+}) {
+  const idx = sortKeys.findIndex((s) => s.key === k);
+  const active = idx >= 0;
+  const asc = active ? sortKeys[idx].asc : false;
+  const multi = sortKeys.length > 1;
+  return (
+    <th
+      className={`px-3 py-2 font-medium cursor-pointer select-none hover:text-txt-secondary transition-colors ${align === "right" ? "text-right" : "text-left"}`}
+      onClick={(e) => onClick(k, e.shiftKey)}
+    >
+      <span className={`inline-flex items-center gap-1 ${align === "right" ? "justify-end w-full" : ""}`}>
+        {children}
+        {active && (
+          <>
+            {multi && <span className="text-[7px] text-txt-muted">{idx + 1}</span>}
+            <span className="text-[8px]">{asc ? "\u25B2" : "\u25BC"}</span>
+          </>
+        )}
+      </span>
+    </th>
+  );
+}
+
 // ── Market Row ──────────────────────────────────────────────
 
 function MarketRow({
   row,
   isExpanded,
   hasMultipleModels,
+  apiClient,
+  instanceCacheKey,
   onToggle,
   rowRef,
 }: {
   row: UnifiedMarketRow;
   isExpanded: boolean;
   hasMultipleModels: boolean;
+  apiClient: ApiClient;
+  instanceCacheKey: string;
   onToggle: () => void;
   rowRef: (el: HTMLTableRowElement | null) => void;
 }) {
@@ -419,13 +769,22 @@ function MarketRow({
         <td className="px-3 py-2 text-right font-mono text-txt-muted text-[10px]">
           {row.last_trade_time ? fmtTime(row.last_trade_time) : "--"}
         </td>
+
+        {/* Closes */}
+        <td className="px-3 py-2 text-right font-mono text-txt-muted text-[10px]">
+          {row.expiration ? fmtTime(row.expiration) : "--"}
+        </td>
       </tr>
 
       {/* Expanded detail panel */}
       {isExpanded && (
         <tr>
-          <td colSpan={9} className="p-0">
-            <ExpandedPanel row={row} />
+          <td colSpan={10} className="p-0">
+            <ExpandedPanel
+              row={row}
+              apiClient={apiClient}
+              instanceCacheKey={instanceCacheKey}
+            />
           </td>
         </tr>
       )}
@@ -435,7 +794,15 @@ function MarketRow({
 
 // ── Expanded Panel with Tabs ────────────────────────────────
 
-function ExpandedPanel({ row }: { row: UnifiedMarketRow }) {
+function ExpandedPanel({
+  row,
+  apiClient,
+  instanceCacheKey,
+}: {
+  row: UnifiedMarketRow;
+  apiClient: ApiClient;
+  instanceCacheKey: string;
+}) {
   const [activeTab, setActiveTab] = useState<"timeline" | "trades" | "models">("trades");
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
@@ -484,7 +851,13 @@ function ExpandedPanel({ row }: { row: UnifiedMarketRow }) {
       <div className="px-4 py-3">
         {activeTab === "timeline" && <TimelineTab row={row} />}
         {activeTab === "trades" && <TradesTab row={row} />}
-        {activeTab === "models" && <ModelsTab row={row} />}
+        {activeTab === "models" && (
+          <ModelsTab
+            row={row}
+            apiClient={apiClient}
+            instanceCacheKey={instanceCacheKey}
+          />
+        )}
       </div>
     </div>
   );
@@ -768,20 +1141,48 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Tab 3: Model Predictions ────────────────────────────────
 
-function ModelsTab({ row }: { row: UnifiedMarketRow }) {
+function ModelsTab({
+  row,
+  apiClient,
+  instanceCacheKey,
+}: {
+  row: UnifiedMarketRow;
+  apiClient: ApiClient;
+  instanceCacheKey: string;
+}) {
   const [priceHistory, setPriceHistory] = useState<PriceHistoryPoint[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const fetched = useRef(false);
+  const priceHistoryCacheRef = useRef<Map<string, PriceHistoryPoint[]>>(new Map());
 
   useEffect(() => {
-    if (fetched.current) return;
-    fetched.current = true;
+    const cacheKey = `${instanceCacheKey}:${row.market_id}`;
+    const cached = priceHistoryCacheRef.current.get(cacheKey);
+    if (cached) {
+      setPriceHistory(cached);
+      return;
+    }
+
+    let cancelled = false;
     setLoading(true);
-    api.getPriceHistory(row.market_id).then((data) => {
-      setPriceHistory(Array.isArray(data) ? data : []);
-      setLoading(false);
-    });
-  }, [row.market_id]);
+    apiClient
+      .getPriceHistory(row.market_id)
+      .then((data) => {
+        if (cancelled) return;
+        const nextData = Array.isArray(data) ? data : [];
+        priceHistoryCacheRef.current.set(cacheKey, nextData);
+        setPriceHistory(nextData);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPriceHistory([]);
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiClient, instanceCacheKey, row.market_id]);
 
   const preds = row.model_predictions;
   const yesAsk = row.yes_ask;
@@ -959,31 +1360,33 @@ function InfoButton({ text }: { text: string }) {
 function Th({
   children,
   k,
-  cur,
-  asc,
+  sortKeys,
   onClick,
   align,
   info,
 }: {
   children: React.ReactNode;
   k: SortKey;
-  cur: SortKey;
-  asc: boolean;
-  onClick: (k: SortKey) => void;
+  sortKeys: Array<{ key: SortKey; asc: boolean }>;
+  onClick: (k: SortKey, multi: boolean) => void;
   align: "left" | "center" | "right";
   info?: string;
 }) {
-  const active = k === cur;
+  const idx = sortKeys.findIndex((s) => s.key === k);
+  const active = idx >= 0;
+  const asc = active ? sortKeys[idx].asc : false;
+  const multi = sortKeys.length > 1;
   const cls = align === "left" ? "text-left" : align === "right" ? "text-right" : "text-center";
   return (
     <th
       className={`px-3 py-2 font-medium cursor-pointer select-none hover:text-txt-primary transition-colors ${cls} ${active ? "text-txt-primary" : ""}`}
-      onClick={() => onClick(k)}
+      onClick={(e) => onClick(k, e.shiftKey)}
     >
       {children}
       {info && <InfoButton text={info} />}
       {active && (
         <span className="ml-0.5 text-accent text-[8px]">
+          {multi && <span className="text-[7px] text-txt-muted mr-0.5">{idx + 1}</span>}
           {asc ? "\u25B2" : "\u25BC"}
         </span>
       )}

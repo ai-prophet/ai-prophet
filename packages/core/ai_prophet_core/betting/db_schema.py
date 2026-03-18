@@ -31,6 +31,7 @@ class BettingPrediction(Base):
     __tablename__ = "betting_predictions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
     tick_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     market_id: Mapped[str] = mapped_column(String(255), nullable=False)
     source: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -40,9 +41,10 @@ class BettingPrediction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_betting_pred_tick_market", "tick_ts", "market_id"),
-        Index("ix_betting_pred_source", "source"),
-        UniqueConstraint("source", "tick_ts", "market_id", name="uq_betting_prediction"),
+        Index("ix_betting_pred_instance_tick_market", "instance_name", "tick_ts", "market_id"),
+        Index("ix_betting_pred_instance_source", "instance_name", "source"),
+        Index("ix_betting_pred_instance_market", "instance_name", "market_id"),
+        UniqueConstraint("instance_name", "source", "tick_ts", "market_id", name="uq_betting_prediction"),
     )
 
 
@@ -52,6 +54,7 @@ class BettingSignal(Base):
     __tablename__ = "betting_signals"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
     prediction_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("betting_predictions.id"), nullable=False
     )
@@ -64,8 +67,8 @@ class BettingSignal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_betting_signal_pred", "prediction_id"),
-        Index("ix_betting_signal_strategy", "strategy_name"),
+        Index("ix_betting_signal_instance_pred", "instance_name", "prediction_id"),
+        Index("ix_betting_signal_instance_strategy", "instance_name", "strategy_name"),
     )
 
 
@@ -75,6 +78,7 @@ class BettingOrder(Base):
     __tablename__ = "betting_orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
     signal_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("betting_signals.id"), nullable=False
     )
@@ -92,6 +96,8 @@ class BettingOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_betting_order_signal", "signal_id"),
-        Index("ix_betting_order_status", "status"),
+        Index("ix_betting_order_instance_signal", "instance_name", "signal_id"),
+        Index("ix_betting_order_instance_status", "instance_name", "status"),
+        Index("ix_betting_order_instance_ticker", "instance_name", "ticker"),
+        Index("ix_betting_order_instance_created", "instance_name", "created_at"),
     )

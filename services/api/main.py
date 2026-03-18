@@ -38,6 +38,7 @@ import logging
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, text
+from instance_config import DEFAULT_INSTANCE_NAME, get_instance_env, normalize_instance_name
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +112,55 @@ def _safe_div(numerator: float, denominator: float, default: float = 0.0) -> flo
     return numerator / denominator
 
 
+def _instance_name(instance_name: str | None) -> str:
+    return normalize_instance_name(instance_name or os.getenv("TRADING_INSTANCE_NAME", DEFAULT_INSTANCE_NAME))
+
+
+def _instance_filter(query, model, instance_name: str):
+    if hasattr(model, "instance_name"):
+        return query.filter(model.instance_name == instance_name)
+    return query
+
+
+def _instance_query(session, model, instance_name: str):
+    return _instance_filter(session.query(model), model, instance_name)
+
+
+def _instance_setting(key: str, instance_name: str, default: str) -> str:
+    return str(get_instance_env(key, instance_name, default=default) or default)
+
+
+def _instance_bool_setting(key: str, instance_name: str, default: bool) -> bool:
+    raw = _instance_setting(key, instance_name, "true" if default else "false").strip().lower()
+    return raw in ("true", "1", "yes", "on")
+
+
+def _instance_list_setting(key: str, instance_name: str) -> list[str]:
+    raw = _instance_setting(key, instance_name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _build_kalshi_adapter(instance_name: str):
+    from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
+
+    dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", instance_name, True)
+    return KalshiAdapter(
+        api_key_id=_instance_setting("KALSHI_API_KEY_ID", instance_name, ""),
+        private_key_base64=_instance_setting("KALSHI_PRIVATE_KEY_B64", instance_name, ""),
+        base_url=_instance_setting("KALSHI_BASE_URL", instance_name, "https://api.elections.kalshi.com"),
+        dry_run=dry_run,
+    )
+
+
 def _build_pred_by_signal(
-    session, signal_ids: list[int]
+    session, signal_ids: list[int], instance_name: str
 ) -> dict[int, BettingPrediction]:
     """Build a mapping of signal_id -> BettingPrediction."""
     pred_by_signal: dict[int, BettingPrediction] = {}
     if not signal_ids:
         return pred_by_signal
     signals = (
-        session.query(BettingSignal)
+        _instance_query(session, BettingSignal, instance_name)
         .filter(BettingSignal.id.in_(signal_ids))
         .all()
     )
@@ -127,7 +168,7 @@ def _build_pred_by_signal(
     preds: dict[int, BettingPrediction] = {}
     if pred_ids:
         for p in (
-            session.query(BettingPrediction)
+            _instance_query(session, BettingPrediction, instance_name)
             .filter(BettingPrediction.id.in_(pred_ids))
             .all()
         ):
@@ -142,8 +183,9 @@ def _build_pred_by_signal(
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """System health: DB status, last worker heartbeat, trading mode."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     db_ok = False
     try:
@@ -159,7 +201,7 @@ def health() -> dict[str, Any]:
     try:
         with get_session(engine) as session:
             row = (
-                session.query(SystemLog)
+                _instance_query(session, SystemLog, resolved_instance)
                 .filter(SystemLog.level == "HEARTBEAT", SystemLog.component == "worker")
                 .order_by(SystemLog.created_at.desc())
                 .first()
@@ -171,12 +213,12 @@ def health() -> dict[str, Any]:
     except Exception:
         pass
 
-    # Find last cycle_end heartbeat for countdown timer
+    # Find last cycle_end heartbeat for countdown timer (instance-specific)
     last_cycle_end = None
     try:
         with get_session(engine) as session:
             row = (
-                session.query(SystemLog)
+                _instance_query(session, SystemLog, resolved_instance)
                 .filter(
                     SystemLog.level == "HEARTBEAT",
                     SystemLog.component == "worker",
@@ -190,9 +232,37 @@ def health() -> dict[str, Any]:
     except Exception:
         pass
 
-    dry_run = os.getenv("LIVE_BETTING_DRY_RUN", "true").lower() in ("true", "1", "yes")
-    enabled = os.getenv("LIVE_BETTING_ENABLED", "false").lower() in ("true", "1", "yes")
-    poll_interval = int(os.getenv("WORKER_POLL_INTERVAL_SEC", "900"))
+    # Effective last cycle_end = max across ALL instances (for synced countdown timer)
+    effective_last_cycle_end = last_cycle_end
+    try:
+        with get_session(engine) as session:
+            rows = (
+                session.query(SystemLog)
+                .filter(
+                    SystemLog.level == "HEARTBEAT",
+                    SystemLog.component == "worker",
+                    SystemLog.message == "cycle_end",
+                )
+                .order_by(SystemLog.created_at.desc())
+                .limit(10)
+                .all()
+            )
+            # Most recent cycle_end per instance, then take the max
+            seen: set[str] = set()
+            latest_per: dict[str, Any] = {}
+            for r in rows:
+                if r.instance_name not in seen:
+                    seen.add(r.instance_name)
+                    latest_per[r.instance_name] = r.created_at
+            if latest_per:
+                effective_last_cycle_end = max(latest_per.values()).isoformat()
+    except Exception:
+        pass
+
+    dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
+    enabled = _instance_bool_setting("LIVE_BETTING_ENABLED", resolved_instance, False)
+    poll_interval = int(_instance_setting("WORKER_POLL_INTERVAL_SEC", resolved_instance, "900"))
+    worker_models = _instance_list_setting("WORKER_MODELS", resolved_instance)
 
     return {
         "status": "ok" if db_ok else "degraded",
@@ -200,9 +270,12 @@ def health() -> dict[str, Any]:
         "worker": worker_status,
         "last_heartbeat": last_heartbeat,
         "last_cycle_end": last_cycle_end,
+        "effective_last_cycle_end": effective_last_cycle_end,
         "poll_interval_sec": poll_interval,
         "mode": "dry_run" if dry_run else "live",
         "betting_enabled": enabled,
+        "instance_name": resolved_instance,
+        "worker_models": worker_models,
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
@@ -214,46 +287,77 @@ def health() -> dict[str, Any]:
 def get_trades(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
     """Recent trades (betting orders) with prediction context.
 
     Returns paginated results with total count.
     """
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        total_count = session.query(func.count(BettingOrder.id)).scalar() or 0
+        total_count = (
+            _instance_query(session, BettingOrder, resolved_instance)
+            .with_entities(func.count(BettingOrder.id))
+            .scalar()
+            or 0
+        )
 
         rows = (
-            session.query(BettingOrder)
+            _instance_query(session, BettingOrder, resolved_instance)
             .order_by(BettingOrder.created_at.desc())
             .offset(offset)
             .limit(limit)
             .all()
         )
+
+        # Bulk-load signals, predictions, and market titles (avoid N+1)
+        signal_ids = [r.signal_id for r in rows if r.signal_id]
+        signals_by_id: dict[int, BettingSignal] = {}
+        if signal_ids:
+            for s in (
+                _instance_query(session, BettingSignal, resolved_instance)
+                .filter(BettingSignal.id.in_(signal_ids))
+                .all()
+            ):
+                signals_by_id[s.id] = s
+
+        pred_ids = [s.prediction_id for s in signals_by_id.values() if s.prediction_id]
+        preds_by_id: dict[int, BettingPrediction] = {}
+        if pred_ids:
+            for p in (
+                _instance_query(session, BettingPrediction, resolved_instance)
+                .filter(BettingPrediction.id.in_(pred_ids))
+                .all()
+            ):
+                preds_by_id[p.id] = p
+
+        trade_market_ids = list({f"kalshi:{r.ticker}" for r in rows if r.ticker})
+        market_titles: dict[str, str] = {}
+        if trade_market_ids:
+            for m in (
+                _instance_query(session, TradingMarket, resolved_instance)
+                .filter(TradingMarket.market_id.in_(trade_market_ids))
+                .all()
+            ):
+                market_titles[m.market_id] = m.title
+
         results = []
         for row in rows:
-            # Get the prediction for context (via signal -> prediction)
             prediction = None
-            if row.signal_id:
-                signal = session.query(BettingSignal).filter_by(id=row.signal_id).first()
-                if signal and signal.prediction_id:
-                    pred = session.query(BettingPrediction).filter_by(id=signal.prediction_id).first()
-                    if pred:
-                        prediction = {
-                            "p_yes": pred.p_yes,
-                            "yes_ask": pred.yes_ask,
-                            "no_ask": pred.no_ask,
-                            "source": pred.source,
-                            "market_id": pred.market_id,
-                        }
+            sig = signals_by_id.get(row.signal_id) if row.signal_id else None
+            if sig and sig.prediction_id:
+                pred = preds_by_id.get(sig.prediction_id)
+                if pred:
+                    prediction = {
+                        "p_yes": pred.p_yes,
+                        "yes_ask": pred.yes_ask,
+                        "no_ask": pred.no_ask,
+                        "source": pred.source,
+                        "market_id": pred.market_id,
+                    }
 
-            # Look up market title
-            market_title = None
-            mkt = session.query(TradingMarket).filter_by(
-                market_id=f"kalshi:{row.ticker}"
-            ).first()
-            if mkt:
-                market_title = mkt.title
+            market_title = market_titles.get(f"kalshi:{row.ticker}")
 
             results.append({
                 "id": row.id,
@@ -286,12 +390,14 @@ def get_trades(
 @app.get("/markets")
 def get_markets(
     limit: int = Query(50, ge=1, le=200),
+    instance_name: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """Markets currently being tracked, with latest model prediction."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
         rows = (
-            session.query(TradingMarket)
+            _instance_query(session, TradingMarket, resolved_instance)
             .order_by(TradingMarket.updated_at.desc())
             .limit(limit)
             .all()
@@ -300,8 +406,23 @@ def get_markets(
         # (these are shown regardless of spread)
         active_positions: set[str] = {
             p.market_id
-            for p in session.query(TradingPosition.market_id).all()
+            for p in _instance_query(session, TradingPosition, resolved_instance)
+            .with_entities(TradingPosition.market_id)
+            .all()
         }
+
+        # Bulk-load all recent model runs for these markets (avoid N+1)
+        market_ids_for_runs = [r.market_id for r in rows]
+        all_recent_runs = (
+            _instance_query(session, ModelRun, resolved_instance)
+            .filter(ModelRun.market_id.in_(market_ids_for_runs))
+            .order_by(ModelRun.timestamp.desc())
+            .all()
+        )
+        # Group runs by market_id (already desc order)
+        runs_by_market: dict[str, list] = defaultdict(list)
+        for run in all_recent_runs:
+            runs_by_market[run.market_id].append(run)
 
         MAX_SPREAD = 1.03
         results = []
@@ -313,29 +434,21 @@ def get_markets(
             if yes_ask + no_ask > MAX_SPREAD and row.market_id not in active_positions:
                 continue
 
-            # Find the most recent model run for this market (any model)
-            latest_run = (
-                session.query(ModelRun)
-                .filter(ModelRun.market_id == row.market_id)
-                .order_by(ModelRun.timestamp.desc())
-                .first()
-            )
+            market_runs = runs_by_market.get(row.market_id, [])
+            latest_run = market_runs[0] if market_runs else None
 
             model_predictions = []
             aggregated_p_yes = None
             model_prediction = None
 
             if latest_run:
-                # Get all model runs from the same cycle (within 10min of latest)
+                # Filter to same cycle (within 10min of latest) using the pre-loaded runs
                 cycle_start = latest_run.timestamp - timedelta(seconds=600)
-                cycle_runs = (
-                    session.query(ModelRun)
-                    .filter(ModelRun.market_id == row.market_id,
-                            ModelRun.timestamp >= cycle_start,
-                            ModelRun.timestamp <= latest_run.timestamp)
-                    .order_by(ModelRun.timestamp.asc())
-                    .all()
-                )
+                cycle_runs = [
+                    r for r in market_runs
+                    if cycle_start <= r.timestamp <= latest_run.timestamp
+                ]
+                cycle_runs.sort(key=lambda r: r.timestamp)
                 seen_models: set[str] = set()
                 for run in cycle_runs:
                     if run.model_name in seen_models:
@@ -394,27 +507,36 @@ def get_positions(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     search: str | None = Query(None, description="Search by market title or ticker"),
+    instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
     """Current trading positions with market context (paginated)."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        query = session.query(TradingPosition).order_by(TradingPosition.updated_at.desc())
+        query = _instance_query(session, TradingPosition, resolved_instance).order_by(TradingPosition.updated_at.desc())
 
         # Get total count before pagination
         total = query.count()
 
         rows = query.offset(offset).limit(limit).all()
 
+        # Bulk-load market info for all positions (avoid N+1)
+        pos_market_ids = [r.market_id for r in rows]
+        pos_markets: dict[str, TradingMarket] = {}
+        if pos_market_ids:
+            for m in (
+                _instance_query(session, TradingMarket, resolved_instance)
+                .filter(TradingMarket.market_id.in_(pos_market_ids))
+                .all()
+            ):
+                pos_markets[m.market_id] = m
+
         results = []
         for row in rows:
-            market_title = None
-            event_ticker = None
-            ticker = None
-            mkt = session.query(TradingMarket).filter_by(market_id=row.market_id).first()
-            if mkt:
-                market_title = mkt.title
-                event_ticker = mkt.event_ticker
-                ticker = mkt.ticker
+            mkt = pos_markets.get(row.market_id)
+            market_title = mkt.title if mkt else None
+            event_ticker = mkt.event_ticker if mkt else None
+            ticker = mkt.ticker if mkt else None
 
             # Apply search filter after join (search on title or ticker)
             if search:
@@ -454,16 +576,18 @@ def get_pnl(
     days: int = Query(30, ge=1, le=365),
     market_id: str | None = Query(None, description="Filter by market_id"),
     model: str | None = Query(None, description="Filter by model/source"),
+    instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
     """P&L data: cumulative P&L over time from filled orders.
 
     Returns combined, realized, and unrealized series plus trade markers.
     Supports filtering by market_id and model/source.
     """
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
         query = (
-            session.query(BettingOrder)
+            _instance_query(session, BettingOrder, resolved_instance)
             .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
             .order_by(BettingOrder.created_at.asc())
         )
@@ -471,7 +595,7 @@ def get_pnl(
 
         # Build map: signal_id -> prediction (for historical prices at trade time)
         signal_ids = [r.signal_id for r in rows if r.signal_id]
-        pred_by_signal = _build_pred_by_signal(session, signal_ids)
+        pred_by_signal = _build_pred_by_signal(session, signal_ids, resolved_instance)
 
         # Apply filters: narrow rows based on market_id and model/source
         if market_id or model:
@@ -494,7 +618,7 @@ def get_pnl(
 
         # Current prices for final valuation
         current_prices: dict[str, dict[str, float | None]] = {}
-        for mkt in session.query(TradingMarket).all():
+        for mkt in _instance_query(session, TradingMarket, resolved_instance).all():
             current_prices[mkt.ticker] = {
                 "yes_ask": mkt.yes_ask,
                 "no_ask": mkt.no_ask,
@@ -504,7 +628,7 @@ def get_pnl(
 
         # Market titles for trade markers
         market_titles: dict[str, str] = {}
-        for mkt in session.query(TradingMarket).all():
+        for mkt in _instance_query(session, TradingMarket, resolved_instance).all():
             market_titles[mkt.ticker] = mkt.title or ""
 
         ticker_positions: dict[str, dict[str, Any]] = {}
@@ -604,7 +728,7 @@ def get_pnl(
             })
 
         # Position-level P&L for summary — use live bid prices for unrealized
-        positions = session.query(TradingPosition).all()
+        positions = _instance_query(session, TradingPosition, resolved_instance).all()
         total_realized = sum(p.realized_pnl for p in positions)
         total_unrealized = 0.0
         for p in positions:
@@ -643,22 +767,23 @@ def get_pnl(
 
 
 @app.get("/analytics/summary")
-def get_analytics_summary() -> dict[str, Any]:
+def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Comprehensive trading analytics: risk metrics, win rate, model/market breakdowns."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
         # Fetch all filled orders
         orders = (
-            session.query(BettingOrder)
+            _instance_query(session, BettingOrder, resolved_instance)
             .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
             .order_by(BettingOrder.created_at.asc())
             .all()
         )
 
         # Fetch positions for realized/unrealized PnL
-        positions = session.query(TradingPosition).all()
+        positions = _instance_query(session, TradingPosition, resolved_instance).all()
         # Fetch market info
-        markets = session.query(TradingMarket).all()
+        markets = _instance_query(session, TradingMarket, resolved_instance).all()
         market_by_id: dict[str, TradingMarket] = {m.market_id: m for m in markets}
 
         # ── Per-trade P&L computation ─────────────────────────────
@@ -677,7 +802,7 @@ def get_analytics_summary() -> dict[str, Any]:
         market_model_source: dict[str, str] = {}
         try:
             all_preds = (
-                session.query(BettingPrediction)
+                _instance_query(session, BettingPrediction, resolved_instance)
                 .order_by(BettingPrediction.created_at.desc())
                 .all()
             )
@@ -828,17 +953,19 @@ def get_analytics_summary() -> dict[str, Any]:
 def get_model_calibration(
     model_name: str | None = Query(None, description="Filter by model name"),
     bins: int = Query(10, ge=2, le=50, description="Number of calibration bins"),
+    instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
     """Model calibration analysis: compare predicted probabilities with outcomes.
 
     For resolved markets (expired with last_price of 0 or 1), compares
     model p_yes predictions against actual outcomes.
     """
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
         # Get resolved markets: expired and last_price is 0 or 1
         resolved_markets = (
-            session.query(TradingMarket)
+            _instance_query(session, TradingMarket, resolved_instance)
             .filter(
                 TradingMarket.expiration < datetime.now(UTC),
                 TradingMarket.last_price.in_([0.0, 1.0]),
@@ -858,7 +985,7 @@ def get_model_calibration(
             }
 
         # Get predictions for resolved markets
-        pred_query = session.query(BettingPrediction).filter(
+        pred_query = _instance_query(session, BettingPrediction, resolved_instance).filter(
             BettingPrediction.market_id.in_(list(resolved_map.keys()))
         )
         if model_name:
@@ -978,12 +1105,124 @@ def get_model_calibration(
         }
 
 
+# ── GET /analytics/resolved-markets ─────────────────────────────
+
+
+@app.get("/analytics/resolved-markets")
+def get_resolved_markets(
+    instance_name: str | None = Query(None),
+) -> dict[str, Any]:
+    """Resolved markets P&L: all expired markets (last_price 0 or 1) with position results."""
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+    with get_session(engine) as session:
+        markets = (
+            _instance_query(session, TradingMarket, resolved_instance)
+            .filter(
+                TradingMarket.expiration < datetime.now(UTC),
+                TradingMarket.last_price.in_([0.0, 1.0]),
+            )
+            .order_by(TradingMarket.expiration.desc())
+            .all()
+        )
+
+        if not markets:
+            return {
+                "markets": [],
+                "summary": {
+                    "total_pnl": 0.0,
+                    "total_markets": 0,
+                    "markets_with_position": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "total_capital": 0.0,
+                    "win_rate": 0.0,
+                },
+            }
+
+        market_ids = [m.market_id for m in markets]
+        positions: dict[str, TradingPosition] = {}
+        for p in (
+            _instance_query(session, TradingPosition, resolved_instance)
+            .filter(TradingPosition.market_id.in_(market_ids))
+            .all()
+        ):
+            positions[p.market_id] = p
+
+        rows = []
+        for mkt in markets:
+            pos = positions.get(mkt.market_id)
+            outcome = mkt.last_price  # 0.0 = NO, 1.0 = YES
+            resolved_at = mkt.expiration.isoformat() if mkt.expiration else None
+
+            if pos:
+                capital = round(pos.quantity * pos.avg_price, 4)
+                pnl = round(pos.realized_pnl, 4)
+                ret_pct = round(pnl / capital * 100, 2) if capital else 0.0
+                correct = (
+                    (pos.contract == "yes" and outcome == 1.0) or
+                    (pos.contract == "no" and outcome == 0.0)
+                )
+                rows.append({
+                    "market_id": mkt.market_id,
+                    "title": mkt.title,
+                    "ticker": mkt.ticker,
+                    "category": mkt.category,
+                    "resolved_at": resolved_at,
+                    "outcome": "YES" if outcome == 1.0 else "NO",
+                    "position_side": pos.contract.upper(),
+                    "quantity": pos.quantity,
+                    "avg_price": round(pos.avg_price, 4),
+                    "capital": capital,
+                    "pnl": pnl,
+                    "return_pct": ret_pct,
+                    "correct": correct,
+                })
+            else:
+                rows.append({
+                    "market_id": mkt.market_id,
+                    "title": mkt.title,
+                    "ticker": mkt.ticker,
+                    "category": mkt.category,
+                    "resolved_at": resolved_at,
+                    "outcome": "YES" if outcome == 1.0 else "NO",
+                    "position_side": None,
+                    "quantity": 0,
+                    "avg_price": 0.0,
+                    "capital": 0.0,
+                    "pnl": 0.0,
+                    "return_pct": 0.0,
+                    "correct": None,
+                })
+
+        with_pos = [r for r in rows if r["position_side"] is not None]
+        total_pnl = round(sum(r["pnl"] for r in with_pos), 4)
+        total_capital = round(sum(r["capital"] for r in with_pos), 4)
+        win_count = sum(1 for r in with_pos if r["pnl"] > 0)
+        loss_count = sum(1 for r in with_pos if r["pnl"] < 0)
+        win_rate = round(win_count / len(with_pos) * 100, 1) if with_pos else 0.0
+
+        return {
+            "markets": rows,
+            "summary": {
+                "total_pnl": total_pnl,
+                "total_markets": len(rows),
+                "markets_with_position": len(with_pos),
+                "win_count": win_count,
+                "loss_count": loss_count,
+                "total_capital": total_capital,
+                "win_rate": win_rate,
+            },
+        }
+
+
 # ── GET /alerts ──────────────────────────────────────────────────
 
 
 @app.get("/alerts")
-def get_alerts() -> dict[str, Any]:
+def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Active system alerts: stale workers, exposure limits, model divergences, errors."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     alerts: list[dict[str, Any]] = []
     now = datetime.now(UTC)
@@ -991,7 +1230,7 @@ def get_alerts() -> dict[str, Any]:
     with get_session(engine) as session:
         # 1. Stale worker check: heartbeat > 30 min
         last_heartbeat = (
-            session.query(SystemLog)
+            _instance_query(session, SystemLog, resolved_instance)
             .filter(SystemLog.level == "HEARTBEAT", SystemLog.component == "worker")
             .order_by(SystemLog.created_at.desc())
             .first()
@@ -1015,7 +1254,7 @@ def get_alerts() -> dict[str, Any]:
             })
 
         # 2. Total exposure check
-        positions = session.query(TradingPosition).all()
+        positions = _instance_query(session, TradingPosition, resolved_instance).all()
         total_exposure = sum(
             p.quantity * p.avg_price for p in positions if p.quantity > 0
         )
@@ -1029,13 +1268,13 @@ def get_alerts() -> dict[str, Any]:
             })
 
         # 3. Model-market divergence > 20pp
-        markets = session.query(TradingMarket).all()
+        markets = _instance_query(session, TradingMarket, resolved_instance).all()
         for mkt in markets:
             if mkt.yes_ask is None:
                 continue
             # Get latest prediction for this market
             latest_pred = (
-                session.query(BettingPrediction)
+                _instance_query(session, BettingPrediction, resolved_instance)
                 .filter(BettingPrediction.market_id == mkt.market_id)
                 .order_by(BettingPrediction.created_at.desc())
                 .first()
@@ -1058,7 +1297,7 @@ def get_alerts() -> dict[str, Any]:
         # 4. Recent ERROR logs (last 1 hour)
         one_hour_ago = now - timedelta(hours=1)
         error_logs = (
-            session.query(SystemLog)
+            _instance_query(session, SystemLog, resolved_instance)
             .filter(
                 SystemLog.level == "ERROR",
                 SystemLog.created_at >= one_hour_ago,
@@ -1085,13 +1324,15 @@ def get_alerts() -> dict[str, Any]:
 def get_predictions(
     market_id: str,
     limit: int = Query(500, ge=1, le=5000),
+    instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
     """Time series of predictions and prices for a specific market."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
         # Get predictions for this market
         predictions = (
-            session.query(BettingPrediction)
+            _instance_query(session, BettingPrediction, resolved_instance)
             .filter(BettingPrediction.market_id == market_id)
             .order_by(BettingPrediction.created_at.asc())
             .limit(limit)
@@ -1100,7 +1341,7 @@ def get_predictions(
 
         # Get price snapshots for this market
         snapshots = (
-            session.query(MarketPriceSnapshot)
+            _instance_query(session, MarketPriceSnapshot, resolved_instance)
             .filter(MarketPriceSnapshot.market_id == market_id)
             .order_by(MarketPriceSnapshot.timestamp.asc())
             .limit(limit)
@@ -1152,12 +1393,14 @@ def get_predictions(
 def get_market_price_history(
     market_id: str,
     limit: int = Query(1000, ge=1, le=10000),
+    instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
     """Time series of price snapshots from MarketPriceSnapshot table."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
         snapshots = (
-            session.query(MarketPriceSnapshot)
+            _instance_query(session, MarketPriceSnapshot, resolved_instance)
             .filter(MarketPriceSnapshot.market_id == market_id)
             .order_by(MarketPriceSnapshot.timestamp.asc())
             .limit(limit)
@@ -1191,11 +1434,13 @@ def get_model_runs(
     limit: int = Query(50, ge=1, le=200),
     model_name: str | None = Query(None),
     market_id: str | None = Query(None),
+    instance_name: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """Recent model decisions with prediction data."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        query = session.query(ModelRun).order_by(ModelRun.timestamp.desc())
+        query = _instance_query(session, ModelRun, resolved_instance).order_by(ModelRun.timestamp.desc())
         if model_name:
             query = query.filter(ModelRun.model_name == model_name)
         if market_id:
@@ -1237,11 +1482,13 @@ def get_model_runs(
 def get_system_logs(
     limit: int = Query(50, ge=1, le=200),
     level: str | None = Query(None),
+    instance_name: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """Recent system logs."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        query = session.query(SystemLog).order_by(SystemLog.created_at.desc())
+        query = _instance_query(session, SystemLog, resolved_instance).order_by(SystemLog.created_at.desc())
         if level:
             query = query.filter(SystemLog.level == level)
         rows = query.limit(limit).all()
@@ -1261,7 +1508,7 @@ def get_system_logs(
 
 
 @app.get("/kalshi/balance")
-def get_kalshi_balance() -> dict[str, Any]:
+def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Fetch Kalshi account balance (works in both live and dry-run modes).
 
     In dry-run mode, computes a virtual balance:
@@ -1270,17 +1517,16 @@ def get_kalshi_balance() -> dict[str, Any]:
     when gains are realized.
     """
     try:
-        from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
-
-        dry_run = os.getenv("LIVE_BETTING_DRY_RUN", "true").lower() in ("true", "1", "yes")
-        adapter = KalshiAdapter(dry_run=dry_run)
+        resolved_instance = _instance_name(instance_name)
+        dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
+        adapter = _build_kalshi_adapter(resolved_instance)
         real_balance = float(adapter.get_balance())
         adapter.close()
 
         if dry_run:
             db_engine = get_db()
             with get_session(db_engine) as session:
-                positions = session.query(TradingPosition).all()
+                positions = _instance_query(session, TradingPosition, resolved_instance).all()
                 capital_deployed = sum(p.avg_price * p.quantity for p in positions)
                 realized_pnl = sum(p.realized_pnl for p in positions)
             balance = real_balance - capital_deployed + realized_pnl
@@ -1290,6 +1536,7 @@ def get_kalshi_balance() -> dict[str, Any]:
         return {
             "balance": balance,
             "dry_run": dry_run,
+            "instance_name": resolved_instance,
             "timestamp": datetime.now(UTC).isoformat(),
         }
     except Exception as e:
@@ -1298,6 +1545,7 @@ def get_kalshi_balance() -> dict[str, Any]:
             "balance": 0.0,
             "dry_run": True,
             "error": str(e),
+            "instance_name": _instance_name(instance_name),
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
@@ -1306,19 +1554,19 @@ def get_kalshi_balance() -> dict[str, Any]:
 
 
 @app.get("/kalshi/positions")
-def get_kalshi_positions() -> dict[str, Any]:
+def get_kalshi_positions(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Fetch live Kalshi positions (works in both live and dry-run modes)."""
     try:
-        from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
-
-        dry_run = os.getenv("LIVE_BETTING_DRY_RUN", "true").lower() in ("true", "1", "yes")
-        adapter = KalshiAdapter(dry_run=dry_run)
+        resolved_instance = _instance_name(instance_name)
+        dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
+        adapter = _build_kalshi_adapter(resolved_instance)
         positions = adapter.get_positions()
         adapter.close()
 
         return {
             "positions": positions,
             "dry_run": dry_run,
+            "instance_name": resolved_instance,
             "timestamp": datetime.now(UTC).isoformat(),
         }
     except Exception as e:
@@ -1327,6 +1575,7 @@ def get_kalshi_positions() -> dict[str, Any]:
             "positions": [],
             "dry_run": True,
             "error": str(e),
+            "instance_name": _instance_name(instance_name),
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
@@ -1335,22 +1584,24 @@ def get_kalshi_positions() -> dict[str, Any]:
 
 
 @app.delete("/data/clear")
-def clear_all_data() -> dict[str, Any]:
+def clear_all_data(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Clear all trading data from the database."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
     deleted = {}
     with get_session(engine) as session:
-        deleted["betting_orders"] = session.query(BettingOrder).delete()
-        deleted["betting_signals"] = session.query(BettingSignal).delete()
-        deleted["betting_predictions"] = session.query(BettingPrediction).delete()
-        deleted["trading_positions"] = session.query(TradingPosition).delete()
-        deleted["trading_markets"] = session.query(TradingMarket).delete()
-        deleted["model_runs"] = session.query(ModelRun).delete()
-        deleted["system_logs"] = session.query(SystemLog).delete()
+        deleted["betting_orders"] = _instance_query(session, BettingOrder, resolved_instance).delete()
+        deleted["betting_signals"] = _instance_query(session, BettingSignal, resolved_instance).delete()
+        deleted["betting_predictions"] = _instance_query(session, BettingPrediction, resolved_instance).delete()
+        deleted["trading_positions"] = _instance_query(session, TradingPosition, resolved_instance).delete()
+        deleted["trading_markets"] = _instance_query(session, TradingMarket, resolved_instance).delete()
+        deleted["model_runs"] = _instance_query(session, ModelRun, resolved_instance).delete()
+        deleted["system_logs"] = _instance_query(session, SystemLog, resolved_instance).delete()
         session.commit()
 
     return {
         "status": "cleared",
+        "instance_name": resolved_instance,
         "deleted": deleted,
         "timestamp": datetime.now(UTC).isoformat(),
     }

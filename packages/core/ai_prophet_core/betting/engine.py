@@ -79,11 +79,13 @@ class BettingEngine:
         kalshi_config: KalshiConfig | None = None,
         enabled: bool = True,
         max_markets_per_tick: int = MAX_MARKETS_PER_TICK,
+        instance_name: str = "Haifeng",
     ) -> None:
         self.strategy = strategy or DefaultBettingStrategy()
         self.dry_run = dry_run
         self.enabled = enabled
         self.max_markets_per_tick = max_markets_per_tick
+        self.instance_name = instance_name
         self._engine = db_engine
         self._kalshi_config = kalshi_config or KalshiConfig.from_env()
         self._adapter = None
@@ -521,6 +523,7 @@ class BettingEngine:
 
         now = datetime.now(UTC)
         row = BettingPrediction(
+            instance_name=self.instance_name,
             tick_ts=tick_ts,
             market_id=market_id,
             source=source,
@@ -552,6 +555,7 @@ class BettingEngine:
         now = datetime.now(UTC)
         metadata_json = json.dumps(signal.metadata) if signal.metadata else None
         row = BettingSignal(
+            instance_name=self.instance_name,
             prediction_id=prediction_id,
             strategy_name=self.strategy.name,
             side=signal.side,
@@ -592,6 +596,7 @@ class BettingEngine:
 
         now = datetime.now(UTC)
         row = BettingOrder(
+            instance_name=self.instance_name,
             signal_id=signal_id,
             order_id=order_id,
             ticker=ticker,
@@ -625,6 +630,7 @@ class BettingEngine:
         with get_session(self._engine) as session:
             rows = (
                 session.query(BettingPrediction)
+                .filter(BettingPrediction.instance_name == self.instance_name)
                 .order_by(BettingPrediction.created_at.desc())
                 .limit(limit)
                 .all()

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ai_prophet_core.betting.db_schema import Base
@@ -20,7 +20,8 @@ class TradingMarket(Base):
     __tablename__ = "trading_markets"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    market_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    market_id: Mapped[str] = mapped_column(String(255), nullable=False)
     ticker: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     event_ticker: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -35,7 +36,9 @@ class TradingMarket(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_trading_market_category", "category"),
+        UniqueConstraint("instance_name", "market_id", name="uq_trading_market_instance_market"),
+        Index("ix_trading_market_instance_category", "instance_name", "category"),
+        Index("ix_trading_market_instance_ticker", "instance_name", "ticker"),
     )
 
 
@@ -45,7 +48,8 @@ class TradingPosition(Base):
     __tablename__ = "trading_positions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    market_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    market_id: Mapped[str] = mapped_column(String(255), nullable=False)
     contract: Mapped[str] = mapped_column(String(16), nullable=False)  # "yes" or "no"
     quantity: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     avg_price: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -56,7 +60,8 @@ class TradingPosition(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_trading_position_market", "market_id"),
+        UniqueConstraint("instance_name", "market_id", name="uq_trading_position_instance_market"),
+        Index("ix_trading_position_instance_market", "instance_name", "market_id"),
     )
 
 
@@ -66,6 +71,7 @@ class ModelRun(Base):
     __tablename__ = "model_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)  # BUY_YES, BUY_NO, HOLD, SKIP
@@ -74,9 +80,9 @@ class ModelRun(Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        Index("ix_model_run_model", "model_name"),
-        Index("ix_model_run_ts", "timestamp"),
-        Index("ix_model_run_market", "market_id"),
+        Index("ix_model_run_instance_model", "instance_name", "model_name"),
+        Index("ix_model_run_instance_ts", "instance_name", "timestamp"),
+        Index("ix_model_run_instance_market", "instance_name", "market_id"),
     )
 
 
@@ -86,15 +92,16 @@ class SystemLog(Base):
     __tablename__ = "system_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
     level: Mapped[str] = mapped_column(String(16), nullable=False)  # INFO, WARNING, ERROR, HEARTBEAT, ALERT
     message: Mapped[str] = mapped_column(Text, nullable=False)
     component: Mapped[str] = mapped_column(String(64), nullable=False)  # worker, api, system
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_system_log_level", "level"),
-        Index("ix_system_log_component", "component"),
-        Index("ix_system_log_created", "created_at"),
+        Index("ix_system_log_instance_level", "instance_name", "level"),
+        Index("ix_system_log_instance_component", "instance_name", "component"),
+        Index("ix_system_log_instance_created", "instance_name", "created_at"),
     )
 
 
@@ -104,6 +111,7 @@ class MarketPriceSnapshot(Base):
     __tablename__ = "market_price_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
     market_id: Mapped[str] = mapped_column(String(255), nullable=False)
     ticker: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     yes_ask: Mapped[float] = mapped_column(Float, nullable=False)
@@ -114,7 +122,7 @@ class MarketPriceSnapshot(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
-        Index("ix_price_snap_market_ts", "market_id", "timestamp"),
-        Index("ix_price_snap_ticker", "ticker"),
-        Index("ix_price_snap_ts", "timestamp"),
+        Index("ix_price_snap_instance_market_ts", "instance_name", "market_id", "timestamp"),
+        Index("ix_price_snap_instance_ticker", "instance_name", "ticker"),
+        Index("ix_price_snap_instance_ts", "instance_name", "timestamp"),
     )

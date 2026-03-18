@@ -13,8 +13,7 @@ import {
   Line,
   ReferenceLine,
 } from "recharts";
-import type { Position, Market } from "@/lib/api";
-import { api } from "@/lib/api";
+import type { ApiClient, Position, Market } from "@/lib/api";
 import { fmtEdge, fmtTimeShort, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
 type View = "current" | "history";
@@ -37,9 +36,11 @@ function getMarketForPosition(
 export function EdgeChart({
   positions,
   markets,
+  apiClient,
 }: {
   positions: Position[];
   markets: Market[];
+  apiClient: ApiClient;
 }) {
   const [view, setView] = useState<View>("current");
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
@@ -92,7 +93,7 @@ export function EdgeChart({
       return;
     }
     setLoadingHistory(true);
-    api.getPriceHistory(selectedMarketId).then((data) => {
+    apiClient.getPriceHistory(selectedMarketId).then((data) => {
       const points: EdgeHistoryPoint[] = (data ?? [])
         .filter((p) => p.model_p_yes != null)
         .map((p) => ({
@@ -104,7 +105,7 @@ export function EdgeChart({
       setEdgeHistory(points);
       setLoadingHistory(false);
     });
-  }, [selectedMarketId]);
+  }, [apiClient, selectedMarketId]);
 
   if (positions.length === 0 || edgeData.length === 0) {
     return (

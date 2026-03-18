@@ -47,9 +47,67 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from instance_config import get_current_instance_name, get_instance_env
+
 load_dotenv()
 
 logger = logging.getLogger("worker")
+INSTANCE_NAME = get_current_instance_name()
+
+
+def _instance_setting(key: str, default: str = "") -> str:
+    return str(get_instance_env(key, INSTANCE_NAME, default=default) or default)
+
+
+def _instance_bool_setting(key: str, default: bool) -> bool:
+    return _instance_setting(key, "true" if default else "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _instance_int_setting(key: str, default: int) -> int:
+    raw = _instance_setting(key, str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid integer for %s on instance=%s: %r; using %d",
+            key,
+            INSTANCE_NAME,
+            raw,
+            default,
+        )
+        return default
+
+
+def _build_instance_env() -> dict[str, str]:
+    env_map = dict(os.environ)
+    instance_keys = [
+        "LIVE_BETTING_ENABLED",
+        "LIVE_BETTING_DRY_RUN",
+        "KALSHI_API_KEY_ID",
+        "KALSHI_PRIVATE_KEY_B64",
+        "KALSHI_BASE_URL",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "PREDICTOR_SERVICE_URL",
+        "PREDICTOR_API_KEY",
+        "WORKER_STRATEGY",
+        "WORKER_MAX_MARKETS",
+        "WORKER_MAX_ACTIVE_MARKETS",
+        "WORKER_MODELS",
+        "WORKER_POLL_INTERVAL_SEC",
+    ]
+    for key in instance_keys:
+        value = get_instance_env(key, INSTANCE_NAME, env=env_map)
+        if value is not None:
+            env_map[key] = value
+    return env_map
 
 # ── Shutdown handling ──────────────────────────────────────────────
 
@@ -80,7 +138,12 @@ def setup_logging(verbose: bool = False) -> None:
 
 # ── DB helpers ────────────────────────────────────────────────────
 
-def log_heartbeat(db_engine, component: str = "worker", message: str = "alive") -> None:
+def log_heartbeat(
+    db_engine,
+    component: str = "worker",
+    message: str = "alive",
+    instance_name: str = INSTANCE_NAME,
+) -> None:
     """Write a heartbeat row to system_logs."""
     try:
         from ai_prophet_core.betting.db import get_session
@@ -88,6 +151,7 @@ def log_heartbeat(db_engine, component: str = "worker", message: str = "alive") 
 
         with get_session(db_engine) as session:
             session.add(SystemLog(
+                instance_name=instance_name,
                 level="HEARTBEAT",
                 message=message,
                 component=component,
@@ -97,7 +161,13 @@ def log_heartbeat(db_engine, component: str = "worker", message: str = "alive") 
         logger.warning("Failed to write heartbeat: %s", e)
 
 
-def log_system_event(db_engine, level: str, message: str, component: str = "worker") -> None:
+def log_system_event(
+    db_engine,
+    level: str,
+    message: str,
+    component: str = "worker",
+    instance_name: str = INSTANCE_NAME,
+) -> None:
     """Write a system event to system_logs."""
     try:
         from ai_prophet_core.betting.db import get_session
@@ -105,6 +175,7 @@ def log_system_event(db_engine, level: str, message: str, component: str = "work
 
         with get_session(db_engine) as session:
             session.add(SystemLog(
+                instance_name=instance_name,
                 level=level,
                 message=message[:2000],
                 component=component,
@@ -118,7 +189,8 @@ def save_price_snapshot(db_engine, market_id: str, ticker: str,
                         yes_ask: float, no_ask: float,
                         volume_24h: float = 0,
                         model_p_yes: float | None = None,
-                        model_name: str | None = None) -> None:
+                        model_name: str | None = None,
+                        instance_name: str = INSTANCE_NAME) -> None:
     """Record a point-in-time price snapshot for time-series analysis."""
     try:
         from ai_prophet_core.betting.db import get_session
@@ -126,6 +198,7 @@ def save_price_snapshot(db_engine, market_id: str, ticker: str,
 
         with get_session(db_engine) as session:
             session.add(MarketPriceSnapshot(
+                instance_name=instance_name,
                 market_id=market_id,
                 ticker=ticker,
                 yes_ask=yes_ask,
@@ -143,7 +216,8 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                          yes_ask: float, no_ask: float | None = None,
                          yes_bid: float | None = None, no_bid: float | None = None,
                          expiration=None, ticker: str = "",
-                         event_ticker: str = "", volume_24h: float = 0) -> None:
+                         event_ticker: str = "", volume_24h: float = 0,
+                         instance_name: str = INSTANCE_NAME) -> None:
     """Upsert a market snapshot into trading_markets."""
     try:
         from ai_prophet_core.betting.db import get_session
@@ -156,7 +230,10 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
 
         now = datetime.now(UTC)
         with get_session(db_engine) as session:
-            existing = session.query(TradingMarket).filter_by(market_id=market_id).first()
+            existing = session.query(TradingMarket).filter_by(
+                instance_name=instance_name,
+                market_id=market_id,
+            ).first()
             if existing:
                 existing.title = title
                 existing.category = category
@@ -172,6 +249,7 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                 existing.updated_at = now
             else:
                 session.add(TradingMarket(
+                    instance_name=instance_name,
                     market_id=market_id,
                     ticker=ticker,
                     event_ticker=event_ticker,
@@ -192,7 +270,8 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
 
 def save_model_run(db_engine, model_name: str, market_id: str,
                    decision: str, confidence: float | None,
-                   metadata: dict | None = None) -> None:
+                   metadata: dict | None = None,
+                   instance_name: str = INSTANCE_NAME) -> None:
     """Log a model decision to model_runs."""
     try:
         from ai_prophet_core.betting.db import get_session
@@ -200,6 +279,7 @@ def save_model_run(db_engine, model_name: str, market_id: str,
 
         with get_session(db_engine) as session:
             session.add(ModelRun(
+                instance_name=instance_name,
                 model_name=model_name,
                 timestamp=datetime.now(UTC),
                 decision=decision,
@@ -211,7 +291,7 @@ def save_model_run(db_engine, model_name: str, market_id: str,
         logger.warning("Failed to save model run: %s", e)
 
 
-def update_positions(db_engine) -> None:
+def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
     """Aggregate betting_orders into trading_positions for the dashboard.
 
     For each ticker with filled/dry-run orders, computes net position
@@ -222,14 +302,24 @@ def update_positions(db_engine) -> None:
     try:
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
-        from db_models import TradingPosition
+        from db_models import TradingMarket, TradingPosition
 
         now = datetime.now(UTC)
 
         with get_session(db_engine) as session:
+            market_rows = (
+                session.query(TradingMarket)
+                .filter(TradingMarket.instance_name == instance_name)
+                .all()
+            )
+            markets_by_ticker = {
+                market.ticker: market for market in market_rows if market.ticker
+            }
+
             # Get all filled/dry-run orders grouped by ticker
             orders = (
                 session.query(BettingOrder)
+                .filter(BettingOrder.instance_name == instance_name)
                 .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
                 .order_by(BettingOrder.created_at.asc())
                 .all()
@@ -244,6 +334,8 @@ def update_positions(db_engine) -> None:
                         "yes_shares": 0.0,
                         "total_cost": 0.0,
                         "realized_pnl": 0.0,
+                        "max_position": 0.0,
+                        "realized_trades": 0,
                     }
 
                 shares = order.filled_shares if order.filled_shares > 0 else float(order.count)
@@ -268,6 +360,7 @@ def update_positions(db_engine) -> None:
                         avg_entry = abs(pos["total_cost"] / pos["yes_shares"]) if pos["yes_shares"] != 0 else 0
                         realized = (price - avg_entry) * shares
                         pos["realized_pnl"] += realized
+                        pos["realized_trades"] += 1
 
                         # Reduce cost basis by avg_entry (not sell price)
                         # to keep avg_price accurate for remaining shares
@@ -294,6 +387,8 @@ def update_positions(db_engine) -> None:
                 if abs(pos["yes_shares"]) < 0.001:
                     pos["total_cost"] = 0.0
                     pos["yes_shares"] = 0.0
+                else:
+                    pos["max_position"] = max(pos["max_position"], abs(pos["yes_shares"]))
 
             # Upsert into trading_positions
             for ticker, pos in positions.items():
@@ -301,6 +396,7 @@ def update_positions(db_engine) -> None:
                 if abs(net_shares) < 0.001:
                     # No position — remove if exists
                     session.query(TradingPosition).filter_by(
+                        instance_name=instance_name,
                         market_id=f"kalshi:{ticker}"
                     ).delete()
                     continue
@@ -310,8 +406,23 @@ def update_positions(db_engine) -> None:
                 avg_price = abs(pos["total_cost"] / net_shares) if net_shares != 0 else 0
 
                 market_id = f"kalshi:{ticker}"
+                market = markets_by_ticker.get(ticker)
+
+                current_bid = None
+                if market is not None:
+                    if side == "yes":
+                        current_bid = market.yes_bid
+                        if current_bid is None and market.no_ask is not None:
+                            current_bid = 1.0 - market.no_ask
+                    else:
+                        current_bid = market.no_bid
+                        if current_bid is None and market.yes_ask is not None:
+                            current_bid = 1.0 - market.yes_ask
+
+                unrealized = 0.0 if current_bid is None else (current_bid - avg_price) * qty
 
                 existing = session.query(TradingPosition).filter_by(
+                    instance_name=instance_name,
                     market_id=market_id
                 ).first()
                 if existing:
@@ -320,15 +431,20 @@ def update_positions(db_engine) -> None:
                     existing.avg_price = round(avg_price, 4)
                     existing.realized_pnl = round(pos["realized_pnl"], 4)
                     existing.unrealized_pnl = round(unrealized, 4)
+                    existing.max_position = max(existing.max_position or 0.0, pos["max_position"], qty)
+                    existing.realized_trades = pos["realized_trades"]
                     existing.updated_at = now
                 else:
                     session.add(TradingPosition(
+                        instance_name=instance_name,
                         market_id=market_id,
                         contract=side,
                         quantity=qty,
                         avg_price=round(avg_price, 4),
                         realized_pnl=round(pos["realized_pnl"], 4),
                         unrealized_pnl=round(unrealized, 4),
+                        max_position=max(pos["max_position"], qty),
+                        realized_trades=pos["realized_trades"],
                         updated_at=now,
                     ))
 
@@ -339,7 +455,7 @@ def update_positions(db_engine) -> None:
 
 # ── Sticky market tracking ────────────────────────────────────────
 
-def get_traded_tickers(db_engine) -> set[str]:
+def get_traded_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
     """Return tickers with orders placed in the last 30 days (still relevant)."""
     if db_engine is None:
         return set()
@@ -352,6 +468,7 @@ def get_traded_tickers(db_engine) -> set[str]:
         with get_session(db_engine) as session:
             rows = (
                 session.query(distinct(BettingOrder.ticker))
+                .filter(BettingOrder.instance_name == instance_name)
                 .filter(BettingOrder.created_at >= cutoff)
                 .all()
             )
@@ -361,7 +478,7 @@ def get_traded_tickers(db_engine) -> set[str]:
         return set()
 
 
-def get_tracked_tickers(db_engine) -> set[str]:
+def get_tracked_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
     """Return all tickers currently in the trading_markets table."""
     if db_engine is None:
         return set()
@@ -370,7 +487,11 @@ def get_tracked_tickers(db_engine) -> set[str]:
         from db_models import TradingMarket
 
         with get_session(db_engine) as session:
-            rows = session.query(TradingMarket.ticker).all()
+            rows = (
+                session.query(TradingMarket.ticker)
+                .filter(TradingMarket.instance_name == instance_name)
+                .all()
+            )
             return {r[0] for r in rows if r[0]}
     except Exception as e:
         logger.warning("Failed to query tracked tickers: %s", e)
@@ -719,7 +840,7 @@ def _parse_prediction(content: str) -> dict:
 def _openai_predictor(model_name: str, include_market: bool = False):
     """Return a predictor function using OpenAI."""
     import openai
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = openai.OpenAI(api_key=_instance_setting("OPENAI_API_KEY"))
 
     def predict(market_info: dict) -> dict:
         system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
@@ -745,7 +866,7 @@ def _openai_predictor(model_name: str, include_market: bool = False):
 def _anthropic_predictor(model_name: str, include_market: bool = False):
     """Return a predictor function using Anthropic."""
     import anthropic
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic(api_key=_instance_setting("ANTHROPIC_API_KEY"))
 
     def predict(market_info: dict) -> dict:
         system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
@@ -771,7 +892,7 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
     """
     import httpx
 
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    api_key = _instance_setting("GOOGLE_API_KEY") or _instance_setting("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY env var required for Gemini")
     base_url = "https://generativelanguage.googleapis.com/v1beta"
@@ -818,30 +939,44 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
 
 # ── Remote prediction (Cloud Run service) ─────────────────────────
 
-PREDICTOR_SERVICE_URL = os.getenv("PREDICTOR_SERVICE_URL", "").rstrip("/")
-PREDICTOR_API_KEY = os.getenv("PREDICTOR_API_KEY", "")
 
-
-def _remote_predict(model_spec: str, market_info: dict) -> dict:
+def _remote_predict(
+    model_spec: str,
+    market_info: dict,
+    *,
+    service_url: str,
+    api_key: str,
+) -> dict:
     """Call the remote predictor service for a single (model, market) pair."""
     import requests
 
     resp = requests.post(
-        f"{PREDICTOR_SERVICE_URL}/predict",
+        f"{service_url}/predict",
         json={"model_spec": model_spec, "market_info": market_info},
-        headers={"X-API-Key": PREDICTOR_API_KEY} if PREDICTOR_API_KEY else {},
+        headers={"X-API-Key": api_key} if api_key else {},
         timeout=130,
     )
     resp.raise_for_status()
     return resp.json()
 
 
-def _remote_predict_with_retry(model_spec: str, market_info: dict,
-                                max_retries: int = 2) -> dict:
+def _remote_predict_with_retry(
+    model_spec: str,
+    market_info: dict,
+    *,
+    service_url: str,
+    api_key: str,
+    max_retries: int = 2,
+) -> dict:
     """Call remote predictor with retries on failure."""
     for attempt in range(max_retries + 1):
         try:
-            return _remote_predict(model_spec, market_info)
+            return _remote_predict(
+                model_spec,
+                market_info,
+                service_url=service_url,
+                api_key=api_key,
+            )
         except Exception as e:
             if attempt < max_retries:
                 logger.warning(
@@ -860,7 +995,7 @@ def build_betting_engine(strategy_name: str = "default", dry_run_override: bool 
     from ai_prophet_core.betting import BettingEngine, LiveBettingSettings
     from ai_prophet_core.betting.db import create_db_engine
 
-    settings = LiveBettingSettings.from_env()
+    settings = LiveBettingSettings.from_env(_build_instance_env())
 
     if not settings.enabled:
         logger.warning("Betting engine DISABLED (LIVE_BETTING_ENABLED != true)")
@@ -883,10 +1018,11 @@ def build_betting_engine(strategy_name: str = "default", dry_run_override: bool 
         dry_run=dry_run,
         kalshi_config=settings.kalshi,
         enabled=settings.enabled,
+        instance_name=INSTANCE_NAME,
     )
     logger.info(
-        "BettingEngine ready: strategy=%s, dry_run=%s",
-        engine.strategy.name, dry_run,
+        "BettingEngine ready: instance=%s, strategy=%s, dry_run=%s",
+        INSTANCE_NAME, engine.strategy.name, dry_run,
     )
     return engine, db_engine
 
@@ -895,12 +1031,14 @@ def build_betting_engine(strategy_name: str = "default", dry_run_override: bool 
 
 def run_cycle(args) -> None:
     """Run one trading cycle: fetch markets → LLM predict → BettingEngine."""
-    strategy_name = os.getenv("WORKER_STRATEGY", "default")
+    strategy_name = _instance_setting("WORKER_STRATEGY", "default")
     dry_run_override = True if args.dry_run else None
-    max_markets = int(os.getenv("WORKER_MAX_MARKETS", "25"))
-    max_active = int(os.getenv("WORKER_MAX_ACTIVE_MARKETS", "40"))
-    models_str = os.getenv("WORKER_MODELS", "gemini:gemini-3.1-pro-preview")
+    max_markets = _instance_int_setting("WORKER_MAX_MARKETS", 25)
+    max_active = _instance_int_setting("WORKER_MAX_ACTIVE_MARKETS", 40)
+    models_str = _instance_setting("WORKER_MODELS", "gemini:gemini-3.1-pro-preview")
     model_specs = [m.strip() for m in models_str.split(",") if m.strip()]
+    predictor_service_url = _instance_setting("PREDICTOR_SERVICE_URL", "").rstrip("/")
+    predictor_api_key = _instance_setting("PREDICTOR_API_KEY", "")
 
     # Build engine
     betting_engine, db_engine = build_betting_engine(
@@ -909,7 +1047,7 @@ def run_cycle(args) -> None:
     )
 
     if db_engine is not None:
-        log_heartbeat(db_engine, message="cycle_start")
+        log_heartbeat(db_engine, message="cycle_start", instance_name=INSTANCE_NAME)
         from ai_prophet_core.betting.db_schema import Base as CoreBase
         CoreBase.metadata.create_all(db_engine, checkfirst=True)
 
@@ -921,12 +1059,15 @@ def run_cycle(args) -> None:
     adapter = betting_engine._get_adapter()
 
     logger.info(
-        "Starting cycle: models=%s, strategy=%s, max_markets=%d, max_active=%d",
-        model_specs, strategy_name, max_markets, max_active,
+        "Starting cycle: instance=%s, models=%s, strategy=%s, max_markets=%d, max_active=%d",
+        INSTANCE_NAME, model_specs, strategy_name, max_markets, max_active,
     )
 
     # 1. Gather sticky markets (already tracked in DB)
-    tracked_tickers = get_tracked_tickers(db_engine) | get_traded_tickers(db_engine)
+    tracked_tickers = (
+        get_tracked_tickers(db_engine, INSTANCE_NAME)
+        | get_traded_tickers(db_engine, INSTANCE_NAME)
+    )
     sticky_markets: list[dict] = []
 
     if tracked_tickers:
@@ -962,7 +1103,7 @@ def run_cycle(args) -> None:
     if not raw_markets:
         logger.warning("No markets fetched, skipping cycle")
         if db_engine:
-            log_system_event(db_engine, "WARNING", "No markets fetched from Kalshi")
+            log_system_event(db_engine, "WARNING", "No markets fetched from Kalshi", instance_name=INSTANCE_NAME)
         if betting_engine:
             betting_engine.close()
         return
@@ -1029,6 +1170,7 @@ def run_cycle(args) -> None:
                 expiration=expiration, ticker=ticker,
                 event_ticker=market.get("event_ticker", ""),
                 volume_24h=float(market.get("volume_24h", 0) or 0),
+                instance_name=INSTANCE_NAME,
             )
 
             # Skip if position held and prices unchanged
@@ -1036,11 +1178,17 @@ def run_cycle(args) -> None:
                 from db_models import TradingPosition as TP, MarketPriceSnapshot as MPS
                 from ai_prophet_core.betting.db import get_session as _gs
                 with _gs(db_engine) as _sess:
-                    _pos = _sess.query(TP).filter_by(market_id=market_id).first()
+                    _pos = _sess.query(TP).filter_by(
+                        instance_name=INSTANCE_NAME,
+                        market_id=market_id,
+                    ).first()
                     if _pos and _pos.quantity > 0:
                         _last = (
                             _sess.query(MPS)
-                            .filter(MPS.market_id == market_id)
+                            .filter(
+                                MPS.instance_name == INSTANCE_NAME,
+                                MPS.market_id == market_id,
+                            )
                             .order_by(MPS.timestamp.desc())
                             .first()
                         )
@@ -1061,6 +1209,7 @@ def run_cycle(args) -> None:
                 db_engine, market_id, ticker,
                 yes_ask=yes_ask, no_ask=no_ask,
                 volume_24h=float(market.get("volume_24h", 0) or 0),
+                instance_name=INSTANCE_NAME,
             )
 
         # Market passed all filters — queue for LLM analysis
@@ -1091,9 +1240,9 @@ def run_cycle(args) -> None:
     # predictions[(ticker, model_spec)] = {p_yes, confidence, reasoning, analysis}
     predictions: dict[tuple[str, str], dict] = {}
 
-    if PREDICTOR_SERVICE_URL:
+    if predictor_service_url:
         # ── Remote parallel prediction via Cloud Run service ──────
-        logger.info("Using remote predictor: %s (parallel fanout)", PREDICTOR_SERVICE_URL)
+        logger.info("Using remote predictor: %s (parallel fanout)", predictor_service_url)
 
         prediction_tasks = [
             (mkt, ms)
@@ -1109,7 +1258,11 @@ def run_cycle(args) -> None:
             future_to_key = {}
             for mkt, ms in prediction_tasks:
                 future = executor.submit(
-                    _remote_predict_with_retry, ms, mkt["market_info"],
+                    _remote_predict_with_retry,
+                    ms,
+                    mkt["market_info"],
+                    service_url=predictor_service_url,
+                    api_key=predictor_api_key,
                 )
                 future_to_key[future] = (mkt["ticker"], ms)
 
@@ -1139,7 +1292,12 @@ def run_cycle(args) -> None:
             except Exception as e:
                 logger.error("Failed to create predictor for %s: %s", model_spec, e)
                 if db_engine:
-                    log_system_event(db_engine, "ERROR", f"Predictor init failed for {model_spec}: {e}")
+                    log_system_event(
+                        db_engine,
+                        "ERROR",
+                        f"Predictor init failed for {model_spec}: {e}",
+                        instance_name=INSTANCE_NAME,
+                    )
 
         if not predictors:
             logger.error("No predictors available, skipping cycle")
@@ -1232,6 +1390,7 @@ def run_cycle(args) -> None:
                         metadata={"p_yes": p_yes, "reasoning": reasoning,
                                   "analysis": pred.get("analysis", {}),
                                   "yes_ask": yes_ask, "no_ask": no_ask},
+                        instance_name=INSTANCE_NAME,
                     )
 
         if not model_predictions:
@@ -1257,6 +1416,7 @@ def run_cycle(args) -> None:
                 volume_24h=float(mkt.get("volume_24h", 0) or 0),
                 model_p_yes=round(p_yes, 6),
                 model_name=model_spec,
+                instance_name=INSTANCE_NAME,
             )
 
         # Build per-market portfolio snapshot
@@ -1268,7 +1428,11 @@ def run_cycle(args) -> None:
                 from db_models import TradingPosition
 
                 with get_session(db_engine) as session:
-                    all_positions = session.query(TradingPosition).all()
+                    all_positions = (
+                        session.query(TradingPosition)
+                        .filter(TradingPosition.instance_name == INSTANCE_NAME)
+                        .all()
+                    )
                     capital_deployed = Decimal(str(
                         sum(p.avg_price * p.quantity for p in all_positions)
                     ))
@@ -1327,6 +1491,7 @@ def run_cycle(args) -> None:
                 db_engine, "INFO",
                 f"Cycle complete: models={model_specs}, placed={placed}, "
                 f"skipped={skipped}, total={len(total_results)}",
+                instance_name=INSTANCE_NAME,
             )
 
     # 3b. Check alert conditions and log to SystemLog
@@ -1342,17 +1507,23 @@ def run_cycle(args) -> None:
                         db_engine, "ALERT",
                         f"Large edge detected on {mid} (model={mname}): "
                         f"edge={edge:.3f}",
+                        instance_name=INSTANCE_NAME,
                     )
 
             # Alert if total capital deployed is high
             with get_session(db_engine) as session:
-                all_positions = session.query(TradingPosition).all()
+                all_positions = (
+                    session.query(TradingPosition)
+                    .filter(TradingPosition.instance_name == INSTANCE_NAME)
+                    .all()
+                )
                 total_capital = sum(p.quantity * p.avg_price for p in all_positions)
                 if total_capital > 50.0:  # threshold: $50 deployed
                     log_system_event(
                         db_engine, "ALERT",
                         f"High capital deployment: ${total_capital:.2f} across "
                         f"{len(all_positions)} positions",
+                        instance_name=INSTANCE_NAME,
                     )
         except Exception as e:
             logger.debug("Alert check failed: %s", e)
@@ -1361,7 +1532,7 @@ def run_cycle(args) -> None:
     #    Re-fetch current prices for ALL traded tickers so unrealized PnL
     #    reflects actual market movement, not just this cycle's markets.
     if db_engine:
-        traded = get_traded_tickers(db_engine)
+        traded = get_traded_tickers(db_engine, INSTANCE_NAME)
         for ticker in traded:
             market_id = f"kalshi:{ticker}"
             if market_id not in all_market_prices:
@@ -1376,19 +1547,21 @@ def run_cycle(args) -> None:
                 from db_models import TradingMarket
                 with get_session(db_engine) as session:
                     for tm in session.query(TradingMarket).all():
+                        if tm.instance_name != INSTANCE_NAME:
+                            continue
                         if tm.yes_ask is not None and tm.no_ask is not None:
                             all_market_prices[tm.market_id] = (tm.yes_ask, tm.no_ask)
             except Exception as e:
                 logger.debug("Failed to load cached market prices: %s", e)
 
         # Always update positions (even without prices — deployed capital still tracked)
-        update_positions(db_engine)
+        update_positions(db_engine, INSTANCE_NAME)
 
     # Cleanup
     if betting_engine is not None:
         betting_engine.close()
     if db_engine is not None:
-        log_heartbeat(db_engine, message="cycle_end")
+        log_heartbeat(db_engine, message="cycle_end", instance_name=INSTANCE_NAME)
 
     total_placed = sum(1 for r in total_results if r.order_placed)
     logger.info(
@@ -1397,7 +1570,65 @@ def run_cycle(args) -> None:
     )
 
 
+# ── Health server (Cloud Run requires HTTP) ───────────────────────
+
+def _start_health_server() -> None:
+    """Serve a minimal HTTP health endpoint so Cloud Run keeps the container alive."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):  # suppress access logs
+            pass
+
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), _Handler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logger.info("Health server listening on port %d", port)
+
+
 # ── Entry point ───────────────────────────────────────────────────
+
+def _get_max_peer_cycle_end(db_engine, all_instances: list[str]) -> datetime | None:
+    """Return the most recent cycle_end timestamp across all specified instances."""
+    if db_engine is None or not all_instances:
+        return None
+    try:
+        from ai_prophet_core.betting.db import get_session
+
+        with get_session(db_engine) as session:
+            rows = (
+                session.query(SystemLog)
+                .filter(
+                    SystemLog.level == "HEARTBEAT",
+                    SystemLog.component == "worker",
+                    SystemLog.message == "cycle_end",
+                    SystemLog.instance_name.in_(all_instances),
+                )
+                .order_by(SystemLog.created_at.desc())
+                .limit(len(all_instances) + 5)
+                .all()
+            )
+            # Most recent cycle_end per instance
+            seen: set[str] = set()
+            latest_per: dict[str, datetime] = {}
+            for row in rows:
+                if row.instance_name not in seen:
+                    seen.add(row.instance_name)
+                    latest_per[row.instance_name] = row.created_at
+            if not latest_per:
+                return None
+            return max(latest_per.values())
+    except Exception as e:
+        logger.warning("Failed to get peer cycle ends: %s", e)
+        return None
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Kalshi trading worker (standalone)")
@@ -1407,10 +1638,20 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging(args.verbose)
+    _start_health_server()
 
-    poll_interval = int(os.getenv("WORKER_POLL_INTERVAL_SEC", "900"))
+    poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", 900)
+    peer_instances_str = _instance_setting("WORKER_PEER_INSTANCES", "")
+    peer_instances = [p.strip() for p in peer_instances_str.split(",") if p.strip()] if peer_instances_str else []
+    all_sync_instances = list({INSTANCE_NAME} | set(peer_instances))
 
-    logger.info("Worker starting (poll_interval=%ds, dry_run=%s)", poll_interval, args.dry_run)
+    logger.info(
+        "Worker starting (instance=%s, poll_interval=%ds, dry_run=%s, peers=%s)",
+        INSTANCE_NAME,
+        poll_interval,
+        args.dry_run,
+        peer_instances or "none",
+    )
     logger.info("Mode: STANDALONE (direct Kalshi API + LLM predictions)")
 
     while not _shutdown_requested:
@@ -1425,8 +1666,36 @@ def main() -> None:
             logger.info("--once flag set, exiting after single cycle.")
             break
 
-        logger.info("Sleeping %ds until next cycle...", poll_interval)
-        for _ in range(poll_interval):
+        # Compute sleep time from the latest cycle_end across all synced instances.
+        # This ensures the next cycle starts together when all peers have finished.
+        db_engine_for_sync = None
+        try:
+            from ai_prophet_core.betting.db import create_db_engine
+            db_engine_for_sync = create_db_engine()
+        except Exception:
+            pass
+
+        max_cycle_end = _get_max_peer_cycle_end(db_engine_for_sync, all_sync_instances)
+        if db_engine_for_sync is not None:
+            try:
+                db_engine_for_sync.dispose()
+            except Exception:
+                pass
+
+        now = datetime.now(UTC)
+        if max_cycle_end is not None:
+            max_cycle_end_aware = max_cycle_end.replace(tzinfo=UTC) if max_cycle_end.tzinfo is None else max_cycle_end
+            elapsed = (now - max_cycle_end_aware).total_seconds()
+            sleep_seconds = max(0, poll_interval - elapsed)
+            logger.info(
+                "Sync: latest cycle_end across %s was %.0fs ago; sleeping %.0fs until next cycle",
+                all_sync_instances, elapsed, sleep_seconds,
+            )
+        else:
+            sleep_seconds = poll_interval
+            logger.info("Sleeping %ds until next cycle...", sleep_seconds)
+
+        for _ in range(int(sleep_seconds)):
             if _shutdown_requested:
                 break
             time.sleep(1)

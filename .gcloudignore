@@ -1,0 +1,10 @@
+.git
+.gitignore
+.venv
+.env
+logs
+services/dashboard/.next
+services/dashboard/node_modules
+services/dashboard/tsconfig.tsbuildinfo
+node_modules
+npm-debug.log

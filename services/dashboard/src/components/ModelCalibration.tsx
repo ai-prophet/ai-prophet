@@ -1,79 +1,96 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
-  LineChart,
-  Line,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
-  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  Cell,
   ReferenceLine,
-  Scatter,
-  ScatterChart,
-  ZAxis,
-  ComposedChart,
+  CartesianGrid,
 } from "recharts";
-import type { ModelCalibrationData } from "@/lib/api";
-import { TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
+import type { ResolvedMarketsData, ResolvedMarketRow } from "@/lib/api";
+import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE } from "@/lib/utils";
 
-type View = "calibration" | "brier";
+function StatCard({
+  label,
+  value,
+  sub,
+  valueClass,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1 p-3 rounded border border-t-border/60 bg-t-bg/30">
+      <span className="text-[9px] text-txt-muted uppercase tracking-wider">{label}</span>
+      <span className={`text-xl font-mono font-semibold ${valueClass ?? "text-txt-primary"}`}>
+        {value}
+      </span>
+      {sub && <span className="text-[9px] font-mono text-txt-muted">{sub}</span>}
+    </div>
+  );
+}
+
+const OUTCOME_COLOR: Record<string, string> = {
+  profit: "#22c55e",
+  loss: "#ef4444",
+  neutral: "#6b7280",
+};
 
 export function ModelCalibration({
-  calibration,
+  resolvedMarkets,
 }: {
-  calibration: ModelCalibrationData | null;
+  resolvedMarkets: ResolvedMarketsData | null;
 }) {
-  const [view, setView] = useState<View>("calibration");
-  const [selectedModel, setSelectedModel] = useState<string>("all");
+  const [view, setView] = useState<"table" | "chart">("table");
+  const [filter, setFilter] = useState<"all" | "positions">("positions");
+
+  const rows = useMemo(() => {
+    if (!resolvedMarkets) return [];
+    const base = filter === "positions"
+      ? resolvedMarkets.markets.filter((r) => r.position_side !== null)
+      : resolvedMarkets.markets;
+    return [...base].sort((a, b) => b.pnl - a.pnl);
+  }, [resolvedMarkets, filter]);
 
   const chartData = useMemo(() => {
-    if (!calibration) return [];
+    return rows
+      .filter((r) => r.position_side !== null)
+      .map((r) => ({
+        label: r.ticker || r.market_id,
+        title: r.title,
+        pnl: r.pnl,
+        outcome: r.outcome,
+        side: r.position_side,
+      }))
+      .slice(0, 30); // cap at 30 bars
+  }, [rows]);
 
-    const bins =
-      selectedModel === "all"
-        ? calibration.calibration
-        : calibration.by_model[selectedModel]?.calibration ?? [];
-
-    return bins.map((bin) => ({
-      predicted: parseFloat((bin.predicted_avg * 100).toFixed(1)),
-      observed: parseFloat((bin.observed_freq * 100).toFixed(1)),
-      count: bin.count,
-      perfect: parseFloat((bin.predicted_avg * 100).toFixed(1)),
-    }));
-  }, [calibration, selectedModel]);
-
-  // Diagonal line data for perfect calibration
-  const diagonalData = useMemo(() => {
-    return Array.from({ length: 11 }, (_, i) => ({
-      predicted: i * 10,
-      perfect: i * 10,
-    }));
-  }, []);
-
-  if (!calibration || (calibration.calibration.length === 0 && Object.keys(calibration.by_model).length === 0)) {
+  if (!resolvedMarkets || resolvedMarkets.summary.total_markets === 0) {
     return (
       <div className="bg-t-panel border border-t-border rounded p-8 text-center text-txt-muted text-xs">
-        No resolved markets yet — calibration requires expired markets with known outcomes
+        No resolved markets yet
       </div>
     );
   }
 
-  const currentBrier =
-    selectedModel === "all"
-      ? calibration.brier_score
-      : calibration.by_model[selectedModel]?.brier_score ?? null;
+  const { summary } = resolvedMarkets;
 
   return (
     <div className="bg-t-panel border border-t-border rounded">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-t-border">
         <h3 className="text-xs font-medium text-txt-secondary uppercase tracking-widest">
-          Model Calibration
+          Resolved Markets
         </h3>
         <div className="flex gap-1">
-          {(["calibration", "brier"] as const).map((v) => (
+          {(["table", "chart"] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -83,262 +100,228 @@ export function ModelCalibration({
                   : "text-txt-muted hover:text-txt-secondary"
               }`}
             >
-              {v === "calibration" ? "Calibration Plot" : "Brier Score"}
+              {v === "table" ? "Table" : "P&L Chart"}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Model selector */}
-      {calibration.models.length > 0 && (
-        <div className="px-3 py-2 border-b border-t-border/50 flex flex-wrap gap-1">
+      {/* Summary stat cards */}
+      <div className="grid grid-cols-4 gap-2 p-3 border-b border-t-border/50">
+        <StatCard
+          label="Realized P&L"
+          value={fmtDollar(summary.total_pnl)}
+          sub={`${summary.markets_with_position} traded markets`}
+          valueClass={summary.total_pnl > 0 ? "text-profit" : summary.total_pnl < 0 ? "text-loss" : "text-txt-primary"}
+        />
+        <StatCard
+          label="Win Rate"
+          value={summary.markets_with_position > 0 ? `${summary.win_rate.toFixed(1)}%` : "—"}
+          sub={`${summary.win_count}W · ${summary.loss_count}L`}
+          valueClass={summary.win_rate >= 50 ? "text-profit" : "text-loss"}
+        />
+        <StatCard
+          label="Capital Deployed"
+          value={fmtDollar(summary.total_capital)}
+          sub={`${summary.total_markets} total resolved`}
+        />
+        <StatCard
+          label="Return"
+          value={
+            summary.total_capital > 0
+              ? `${((summary.total_pnl / summary.total_capital) * 100).toFixed(1)}%`
+              : "—"
+          }
+          sub="on deployed capital"
+          valueClass={
+            summary.total_pnl > 0 ? "text-profit" : summary.total_pnl < 0 ? "text-loss" : "text-txt-primary"
+          }
+        />
+      </div>
+
+      {/* Filter bar */}
+      <div className="px-3 py-1.5 border-b border-t-border/40 flex items-center gap-2">
+        {(["positions", "all"] as const).map((f) => (
           <button
-            onClick={() => setSelectedModel("all")}
-            className={`px-2 py-0.5 text-[9px] rounded border transition-colors ${
-              selectedModel === "all"
-                ? "border-accent text-accent bg-accent/10"
-                : "border-t-border text-txt-muted hover:text-txt-secondary"
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-2 py-0.5 text-[9px] rounded transition-colors ${
+              filter === f
+                ? "bg-accent/20 text-accent"
+                : "text-txt-muted hover:text-txt-secondary"
             }`}
           >
-            All Models
+            {f === "positions" ? "With Positions" : "All Resolved"}
           </button>
-          {calibration.models.map((model) => (
-            <button
-              key={model}
-              onClick={() => setSelectedModel(model)}
-              className={`px-2 py-0.5 text-[9px] rounded border transition-colors ${
-                selectedModel === model
-                  ? "border-accent text-accent bg-accent/10"
-                  : "border-t-border text-txt-muted hover:text-txt-secondary"
-              }`}
-            >
-              {model}
-            </button>
-          ))}
-        </div>
-      )}
+        ))}
+        <span className="ml-auto text-[9px] font-mono text-txt-muted">{rows.length} markets</span>
+      </div>
 
-      <div className="p-3">
-        {view === "calibration" ? (
-          chartData.length === 0 ? (
+      {view === "table" ? (
+        <div className="overflow-x-auto">
+          {rows.length === 0 ? (
             <div className="text-center text-txt-muted text-[10px] py-8">
-              No calibration bins available for this model
+              No markets match this filter
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <ComposedChart
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
+                  <th className="px-3 py-2 text-left font-medium">Market</th>
+                  <th className="px-3 py-2 text-center font-medium">Outcome</th>
+                  <th className="px-3 py-2 text-center font-medium">Our Side</th>
+                  <th className="px-3 py-2 text-right font-medium">Qty</th>
+                  <th className="px-3 py-2 text-right font-medium">Avg Entry</th>
+                  <th className="px-3 py-2 text-right font-medium">Capital</th>
+                  <th className="px-3 py-2 text-right font-medium">P&L</th>
+                  <th className="px-3 py-2 text-right font-medium">Return</th>
+                  <th className="px-3 py-2 text-right font-medium">Resolved</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-t-border/40">
+                {rows.map((row) => (
+                  <ResolvedRow key={row.market_id} row={row} />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : (
+        <div className="p-3">
+          {chartData.length === 0 ? (
+            <div className="text-center text-txt-muted text-[10px] py-8">
+              No position data to chart
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
                 data={chartData}
-                margin={{ left: 5, right: 15, top: 10, bottom: 5 }}
+                margin={{ top: 8, right: 8, bottom: 40, left: 8 }}
+                barCategoryGap="30%"
               >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={CHART_COLORS.grid}
-                />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                 <XAxis
-                  dataKey="predicted"
+                  dataKey="label"
                   stroke="transparent"
-                  fontSize={9}
+                  tick={{ fill: "#6b7280", fontSize: 8 }}
                   tickLine={false}
-                  axisLine={false}
-                  tick={{ fill: CHART_COLORS.muted }}
-                  tickFormatter={(v) => `${v}%`}
-                  domain={[0, 100]}
-                  label={{
-                    value: "Predicted Probability",
-                    position: "insideBottom",
-                    offset: -2,
-                    style: { fill: CHART_COLORS.muted, fontSize: 9 },
-                  }}
+                  angle={-45}
+                  textAnchor="end"
+                  interval={0}
                 />
                 <YAxis
                   stroke="transparent"
-                  fontSize={9}
+                  tick={{ fill: "#6b7280", fontSize: 9 }}
                   tickLine={false}
                   axisLine={false}
-                  tick={{ fill: CHART_COLORS.muted }}
-                  tickFormatter={(v) => `${v}%`}
-                  domain={[0, 100]}
-                  width={40}
-                  label={{
-                    value: "Observed Frequency",
-                    angle: -90,
-                    position: "insideLeft",
-                    offset: 10,
-                    style: { fill: CHART_COLORS.muted, fontSize: 9 },
-                  }}
+                  tickFormatter={(v) => `$${v >= 0 ? "+" : ""}${v.toFixed(2)}`}
+                  width={52}
                 />
+                <ReferenceLine y={0} stroke="rgba(255,255,255,0.15)" />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
                   labelStyle={TOOLTIP_LABEL_STYLE}
-                  formatter={(value: number, name: string) => {
-                    if (name === "observed") return [`${value}%`, "Observed"];
-                    return [`${value}%`, "Perfect"];
-                  }}
-                  labelFormatter={(v) => `Predicted: ${v}%`}
-                />
-                {/* Perfect calibration diagonal */}
-                <ReferenceLine
-                  segment={[
-                    { x: 0, y: 0 },
-                    { x: 100, y: 100 },
-                  ]}
-                  stroke={CHART_COLORS.muted}
-                  strokeDasharray="6 3"
-                  strokeOpacity={0.5}
-                />
-                {/* Actual calibration line */}
-                <Line
-                  type="monotone"
-                  dataKey="observed"
-                  stroke={CHART_COLORS.accent}
-                  strokeWidth={2}
-                  dot={{
-                    r: 3,
-                    fill: CHART_COLORS.accent,
-                    stroke: "#0f1419",
-                    strokeWidth: 1.5,
-                  }}
-                  activeDot={{
-                    r: 4,
-                    fill: CHART_COLORS.accent,
-                    stroke: "#0f1419",
-                    strokeWidth: 2,
-                  }}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          )
-        ) : (
-          /* Brier Score view */
-          <div className="space-y-3">
-            {/* Model vs Market baseline comparison */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex items-center justify-between p-3 rounded border border-t-border/60 bg-t-bg/30">
-                <div>
-                  <div className="text-[9px] text-txt-muted uppercase tracking-wider">
-                    Model Brier Score
-                  </div>
-                  <div className="text-[10px] text-txt-muted mt-0.5">
-                    Lower is better (0 = perfect)
-                  </div>
-                </div>
-                <span
-                  className={`text-xl font-mono font-medium ${
-                    calibration.brier_score < 0.15
-                      ? "text-profit"
-                      : calibration.brier_score < 0.25
-                        ? "text-warn"
-                        : "text-loss"
-                  }`}
-                >
-                  {calibration.brier_score.toFixed(4)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded border border-t-border/60 bg-t-bg/30">
-                <div>
-                  <div className="text-[9px] text-txt-muted uppercase tracking-wider">
-                    Market Baseline
-                  </div>
-                  <div className="text-[10px] text-txt-muted mt-0.5">
-                    Using mkt price as prediction
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span className="text-xl font-mono font-medium text-txt-secondary">
-                    {(calibration.market_baseline_brier ?? 0.25).toFixed(4)}
-                  </span>
-                  {calibration.market_baseline_brier != null && (
-                    <div className={`text-[9px] font-mono mt-0.5 ${
-                      calibration.brier_score < calibration.market_baseline_brier
-                        ? "text-profit"
-                        : "text-loss"
-                    }`}>
-                      {calibration.brier_score < calibration.market_baseline_brier
-                        ? `▼ ${((calibration.market_baseline_brier - calibration.brier_score) * 100).toFixed(2)}pp better`
-                        : `▲ ${((calibration.brier_score - calibration.market_baseline_brier) * 100).toFixed(2)}pp worse`}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Per-model Brier scores */}
-            {Object.keys(calibration.by_model).length > 0 && (
-              <div className="space-y-1">
-                <div className="text-[9px] text-txt-muted uppercase tracking-wider px-1">
-                  By Model
-                </div>
-                {Object.entries(calibration.by_model)
-                  .sort(([, a], [, b]) => a.brier_score - b.brier_score)
-                  .map(([model, data]) => (
-                    <div
-                      key={model}
-                      className="flex items-center justify-between p-2 rounded border border-t-border/40 hover:border-t-border transition-colors"
-                    >
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-xs text-txt-primary">{model}</span>
-                        <span className="text-[9px] font-mono text-txt-muted">
-                          {data.total_predictions} predictions
-                        </span>
+                  cursor={{ fill: "rgba(255,255,255,0.04)" }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload as typeof chartData[0];
+                    return (
+                      <div style={TOOLTIP_STYLE} className="text-[10px] font-mono space-y-0.5 max-w-[200px]">
+                        <div className="text-txt-secondary truncate">{d.title}</div>
+                        <div>Outcome: <span className="text-txt-primary">{d.outcome}</span></div>
+                        <div>Side: <span className="text-txt-primary">{d.side}</span></div>
+                        <div>
+                          P&L:{" "}
+                          <span className={d.pnl >= 0 ? "text-profit" : "text-loss"}>
+                            {fmtDollar(d.pnl)}
+                          </span>
+                        </div>
                       </div>
-                      <span
-                        className={`text-sm font-mono font-medium ${
-                          data.brier_score < 0.15
-                            ? "text-profit"
-                            : data.brier_score < 0.25
-                              ? "text-warn"
-                              : "text-loss"
-                        }`}
-                      >
-                        {data.brier_score.toFixed(4)}
-                      </span>
-                    </div>
+                    );
+                  }}
+                />
+                <Bar dataKey="pnl" radius={[2, 2, 0, 0]}>
+                  {chartData.map((entry, i) => (
+                    <Cell
+                      key={i}
+                      fill={entry.pnl > 0 ? OUTCOME_COLOR.profit : entry.pnl < 0 ? OUTCOME_COLOR.loss : OUTCOME_COLOR.neutral}
+                      fillOpacity={0.85}
+                    />
                   ))}
-              </div>
-            )}
-
-            {/* Reference scale */}
-            <div className="flex items-center gap-2 text-[9px] text-txt-muted px-1">
-              <span className="text-profit">0.00 perfect</span>
-              <span className="text-t-border-light">|</span>
-              <span className="text-profit">{"<"}0.15 good</span>
-              <span className="text-t-border-light">|</span>
-              <span className="text-warn">0.15-0.25 fair</span>
-              <span className="text-t-border-light">|</span>
-              <span className="text-loss">{">"}0.25 poor</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Footer with current Brier score in calibration view */}
-      {view === "calibration" && currentBrier !== null && (
-        <div className="px-3 py-2 border-t border-t-border flex gap-4 text-[10px] font-mono text-txt-muted">
-          <span>
-            Brier Score:{" "}
-            <span
-              className={
-                currentBrier < 0.15
-                  ? "text-profit"
-                  : currentBrier < 0.25
-                    ? "text-warn"
-                    : "text-loss"
-              }
-            >
-              {currentBrier.toFixed(4)}
-            </span>
-          </span>
-          <span>
-            Bins: <span className="text-txt-primary">{chartData.length}</span>
-          </span>
-          <span>
-            Predictions:{" "}
-            <span className="text-txt-primary">
-              {chartData.reduce((s, d) => s + d.count, 0)}
-            </span>
-          </span>
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
+  const hasPos = row.position_side !== null;
+  const correct = row.correct;
+
+  return (
+    <tr className="hover:bg-t-panel-hover transition-colors">
+      <td className="px-3 py-2 max-w-[260px]">
+        <div className="truncate text-txt-primary text-[11px]">{row.title}</div>
+        <div className="text-[9px] font-mono text-txt-muted mt-0.5">
+          {row.ticker}
+          {row.category && (
+            <span className="ml-1 px-1 py-px rounded bg-t-panel-alt border border-t-border/60 uppercase tracking-wider text-[8px]">
+              {row.category}
+            </span>
+          )}
+        </div>
+      </td>
+      <td className="px-3 py-2 text-center">
+        <span
+          className={`px-1.5 py-0.5 rounded text-[9px] font-medium font-mono ${
+            row.outcome === "YES" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"
+          }`}
+        >
+          {row.outcome}
+        </span>
+      </td>
+      <td className="px-3 py-2 text-center">
+        {hasPos ? (
+          <span className="flex items-center justify-center gap-1">
+            <span
+              className={`px-1.5 py-0.5 rounded text-[9px] font-medium font-mono ${
+                row.position_side === "YES" ? "bg-blue-500/15 text-blue-400" : "bg-amber-500/15 text-amber-400"
+              }`}
+            >
+              {row.position_side}
+            </span>
+            {correct !== null && (
+              <span className={`text-[9px] ${correct ? "text-profit" : "text-loss"}`}>
+                {correct ? "✓" : "✗"}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="text-txt-muted text-[9px]">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right font-mono text-txt-secondary text-[11px]">
+        {hasPos ? row.quantity : "—"}
+      </td>
+      <td className="px-3 py-2 text-right font-mono text-txt-secondary text-[11px]">
+        {hasPos ? `${(row.avg_price * 100).toFixed(0)}¢` : "—"}
+      </td>
+      <td className="px-3 py-2 text-right font-mono text-txt-secondary text-[11px]">
+        {hasPos ? fmtDollar(row.capital) : "—"}
+      </td>
+      <td className={`px-3 py-2 text-right font-mono font-medium text-[11px] ${hasPos ? pnlCls(row.pnl) : "text-txt-muted"}`}>
+        {hasPos ? fmtDollar(row.pnl) : "—"}
+      </td>
+      <td className={`px-3 py-2 text-right font-mono text-[11px] ${hasPos ? pnlCls(row.return_pct) : "text-txt-muted"}`}>
+        {hasPos ? `${row.return_pct >= 0 ? "+" : ""}${row.return_pct.toFixed(1)}%` : "—"}
+      </td>
+      <td className="px-3 py-2 text-right font-mono text-txt-muted text-[10px]">
+        {row.resolved_at ? fmtTime(row.resolved_at) : "—"}
+      </td>
+    </tr>
   );
 }

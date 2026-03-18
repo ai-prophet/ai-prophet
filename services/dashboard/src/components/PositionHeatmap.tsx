@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Position, Market } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtPct } from "@/lib/utils";
 
@@ -21,6 +21,7 @@ interface CellData {
   pnl: number;
   returnPct: number;
   contract: string;
+  expiration: string | null;
 }
 
 function pnlBgColor(pnl: number, maxAbsPnl: number): string {
@@ -51,9 +52,9 @@ function pnlBgStyle(pnl: number, maxAbsPnl: number): React.CSSProperties {
   return { backgroundColor: "rgba(90, 101, 119, 0.1)" };
 }
 
-function sizeClass(capital: number, maxCapital: number): string {
-  if (maxCapital === 0) return "col-span-1 row-span-1";
-  const ratio = capital / maxCapital;
+function sizeClass(absPnl: number, maxAbsPnl: number): string {
+  if (maxAbsPnl === 0) return "col-span-1 row-span-1";
+  const ratio = absPnl / maxAbsPnl;
   if (ratio > 0.5) return "col-span-2 row-span-2";
   if (ratio > 0.25) return "col-span-2 row-span-1";
   return "col-span-1 row-span-1";
@@ -70,6 +71,8 @@ export function PositionHeatmap({
   pnlByMarket?: Map<string, number>;
   onCellClick?: (marketId: string) => void;
 }) {
+  const [sortBy, setSortBy] = useState<"pnl" | "capital" | "expiration">("pnl");
+
   const { byId, byTicker } = useMemo(() => {
     const byId = new Map(markets.map((m) => [m.market_id, m]));
     const byTicker = new Map(markets.map((m) => [m.ticker, m]));
@@ -79,10 +82,10 @@ export function PositionHeatmap({
   const cells: CellData[] = useMemo(() => {
     return positions
       .map((pos) => {
+        const mkt = getMarketForPosition(pos, byId, byTicker);
         const capital = pos.avg_price * pos.quantity;
         const pnl = pnlByMarket?.get(pos.market_id) ?? 0;
         const returnPct = capital > 0 ? (pnl / capital) * 100 : 0;
-
         return {
           id: pos.id,
           marketId: pos.market_id,
@@ -92,10 +95,19 @@ export function PositionHeatmap({
           pnl,
           returnPct,
           contract: pos.contract,
+          expiration: mkt?.expiration ?? null,
         };
       })
-      .sort((a, b) => b.capital - a.capital);
-  }, [positions]);
+      .sort((a, b) => {
+        if (sortBy === "pnl") return Math.abs(b.pnl) - Math.abs(a.pnl);
+        if (sortBy === "capital") return b.capital - a.capital;
+        // expiration: soonest first, nulls last
+        if (!a.expiration && !b.expiration) return 0;
+        if (!a.expiration) return 1;
+        if (!b.expiration) return -1;
+        return new Date(a.expiration).getTime() - new Date(b.expiration).getTime();
+      });
+  }, [positions, byId, byTicker, pnlByMarket, sortBy]);
 
   if (positions.length === 0) {
     return (
@@ -105,15 +117,26 @@ export function PositionHeatmap({
     );
   }
 
-  const maxCapital = Math.max(...cells.map((c) => c.capital), 0.01);
   const maxAbsPnl = Math.max(...cells.map((c) => Math.abs(c.pnl)), 0.01);
 
   return (
     <div className="bg-t-panel border border-t-border rounded">
-      <div className="px-3 py-2 border-b border-t-border">
+      <div className="px-3 py-2 border-b border-t-border flex items-center justify-between">
         <h3 className="text-xs font-medium text-txt-secondary uppercase tracking-widest">
           Position Heatmap
         </h3>
+        <div className="flex items-center gap-1">
+          <span className="text-[9px] text-txt-muted mr-1">Sort:</span>
+          {(["pnl", "capital", "expiration"] as const).map((opt) => (
+            <button
+              key={opt}
+              onClick={() => setSortBy(opt)}
+              className={`text-[9px] px-1.5 py-0.5 rounded font-mono transition-colors ${sortBy === opt ? "bg-accent text-black" : "text-txt-muted hover:text-txt-primary"}`}
+            >
+              {opt === "pnl" ? "P&L" : opt === "capital" ? "Capital" : "Close Time"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="p-3">
@@ -121,7 +144,7 @@ export function PositionHeatmap({
           {cells.map((cell) => (
             <div
               key={cell.id}
-              className={`${sizeClass(cell.capital, maxCapital)} rounded border border-t-border/60 p-2 flex flex-col justify-between min-h-[72px] transition-all hover:border-t-border ${onCellClick ? "cursor-pointer" : ""}`}
+              className={`${sizeClass(Math.abs(cell.pnl), maxAbsPnl)} rounded border border-t-border/60 p-2 flex flex-col justify-between min-h-[72px] transition-all hover:border-t-border ${onCellClick ? "cursor-pointer" : ""}`}
               style={pnlBgStyle(cell.pnl, maxAbsPnl)}
               onClick={() => onCellClick?.(cell.marketId)}
             >
@@ -172,7 +195,7 @@ export function PositionHeatmap({
             <span>Profit</span>
           </div>
           <span className="text-t-border-light">|</span>
-          <span>Size = capital deployed</span>
+          <span>Size = P&L magnitude</span>
         </div>
       </div>
     </div>

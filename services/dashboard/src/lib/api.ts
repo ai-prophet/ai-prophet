@@ -1,9 +1,68 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const INSTANCE_CONFIG_ENV = process.env.NEXT_PUBLIC_INSTANCE_CONFIG;
+const DEFAULT_INSTANCE_KEY_ENV = process.env.NEXT_PUBLIC_DEFAULT_INSTANCE;
 
-async function fetchJSON<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+async function fetchJSON<T>(baseUrl: string, path: string): Promise<T> {
+  const res = await fetch(`${baseUrl}${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
   return res.json();
+}
+
+export interface DashboardInstance {
+  key: string;
+  label: string;
+  apiUrl: string;
+  instanceName?: string;
+  description?: string;
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function parseDashboardInstances(): DashboardInstance[] {
+  if (!INSTANCE_CONFIG_ENV) {
+    return [
+      {
+        key: "default",
+        label: "Default",
+        apiUrl: normalizeBaseUrl(DEFAULT_API_URL),
+      },
+    ];
+  }
+
+  try {
+    const parsed = JSON.parse(INSTANCE_CONFIG_ENV);
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error("Instance config must be a non-empty array");
+    }
+
+    return parsed.map((item, index) => ({
+      key: String(item.key || `instance-${index + 1}`),
+      label: String(item.label || `Instance ${index + 1}`),
+      apiUrl: normalizeBaseUrl(String(item.apiUrl || item.api_url || DEFAULT_API_URL)),
+      instanceName: item.instanceName ? String(item.instanceName) : item.instance_name ? String(item.instance_name) : undefined,
+      description: item.description ? String(item.description) : undefined,
+    }));
+  } catch (error) {
+    console.warn("Failed to parse NEXT_PUBLIC_INSTANCE_CONFIG, falling back to default API URL.", error);
+    return [
+      {
+        key: "default",
+        label: "Default",
+        apiUrl: normalizeBaseUrl(DEFAULT_API_URL),
+      },
+    ];
+  }
+}
+
+export const dashboardInstances = parseDashboardInstances();
+
+export function getDefaultDashboardInstance(): DashboardInstance {
+  return (
+    dashboardInstances.find((instance) => instance.key === DEFAULT_INSTANCE_KEY_ENV) ||
+    dashboardInstances[0]
+  );
 }
 
 // ── Core types ──────────────────────────────────────────────
@@ -117,9 +176,12 @@ export interface HealthData {
   worker: string;
   last_heartbeat: string | null;
   last_cycle_end: string | null;
+  effective_last_cycle_end?: string | null;
   poll_interval_sec: number;
   mode: string;
   betting_enabled: boolean;
+  instance_name?: string;
+  worker_models?: string[];
   timestamp: string;
 }
 
@@ -215,6 +277,37 @@ export interface ModelCalibrationData {
   }>;
 }
 
+export interface ResolvedMarketRow {
+  market_id: string;
+  title: string;
+  ticker: string;
+  category: string | null;
+  resolved_at: string | null;
+  outcome: "YES" | "NO";
+  position_side: "YES" | "NO" | null;
+  quantity: number;
+  avg_price: number;
+  capital: number;
+  pnl: number;
+  return_pct: number;
+  correct: boolean | null;
+}
+
+export interface ResolvedMarketsSummary {
+  total_pnl: number;
+  total_markets: number;
+  markets_with_position: number;
+  win_count: number;
+  loss_count: number;
+  total_capital: number;
+  win_rate: number;
+}
+
+export interface ResolvedMarketsData {
+  markets: ResolvedMarketRow[];
+  summary: ResolvedMarketsSummary;
+}
+
 export interface Alert {
   type: string;
   severity: "info" | "warning" | "error";
@@ -291,7 +384,8 @@ export function liveNetPnl(row: UnifiedMarketRow): number | null {
   if (!row.position && row.trades.length === 0) return null;
   const cashFlow = row.trades.reduce((sum, t) => {
     const qty = t.filled_shares || t.count;
-    const price = t.price_cents / 100;
+    let price = t.price_cents / 100;
+    if (price > 1.0) price /= 100; // fix corrupted fill_price stored as cents-of-cents
     return sum + (t.action?.toUpperCase() === "SELL" ? qty * price : -(qty * price));
   }, 0);
   const pos = row.position;
@@ -550,81 +644,94 @@ export function groupByMarket(positions: Position[], trades: Trade[]) {
 
 // ── API client ──────────────────────────────────────────────
 
-export const api = {
-  // Existing endpoints (enhanced)
-  getTrades: (limit = 50, offset = 0) => {
-    // Support both old list format and new paginated format
-    return fetchJSON<Trade[] | TradesResponse>(`/trades?limit=${limit}&offset=${offset}`)
-      .then((data) => {
-        if (Array.isArray(data)) return data;
-        return data.trades;
-      });
-  },
-  getTradesPaginated: (limit = 50, offset = 0) =>
-    fetchJSON<TradesResponse>(`/trades?limit=${limit}&offset=${offset}`).catch(() =>
-      // Fallback for old API format
-      fetchJSON<Trade[]>(`/trades?limit=${limit}&offset=${offset}`).then((trades) => ({
-        trades,
-        total: trades.length,
-        has_more: trades.length === limit,
-      }))
-    ),
-  getMarkets: (limit = 50) => fetchJSON<Market[]>(`/markets?limit=${limit}`),
-  getPositions: (limit = 50, offset = 0, search?: string) => {
-    let url = `/positions?limit=${limit}&offset=${offset}`;
-    if (search) url += `&search=${encodeURIComponent(search)}`;
-    return fetchJSON<Position[] | { positions: Position[]; total: number; has_more: boolean }>(url)
-      .then((data) => {
-        if (Array.isArray(data)) return { positions: data, total: data.length, has_more: false };
-        return data;
-      });
-  },
-  getPnL: (days = 30, marketId?: string, model?: string) => {
-    let url = `/pnl?days=${days}`;
-    if (marketId) url += `&market_id=${encodeURIComponent(marketId)}`;
-    if (model) url += `&model=${encodeURIComponent(model)}`;
-    return fetchJSON<PnLData>(url);
-  },
-  getHealth: () => fetchJSON<HealthData>("/health"),
-  getModelRuns: (limit = 100) =>
-    fetchJSON<ModelRun[]>(`/model-runs?limit=${limit}`),
-  getSystemLogs: (limit = 50) =>
-    fetchJSON<SystemLogEntry[]>(`/system-logs?limit=${limit}`),
-  getKalshiBalance: () => fetchJSON<KalshiBalanceData>("/kalshi/balance"),
-  getKalshiPositions: () =>
-    fetchJSON<KalshiPositionsData>("/kalshi/positions"),
+export function createApiClient(baseUrl: string, instanceName?: string) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const buildPath = (path: string) => {
+    if (!instanceName) return path;
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}instance_name=${encodeURIComponent(instanceName)}`;
+  };
 
-  // New analytics endpoints
-  getAnalyticsSummary: () =>
-    fetchJSON<AnalyticsSummary>("/analytics/summary").catch((e) => {
-      console.warn("Failed to fetch analytics summary:", e);
-      return null;
-    }),
-  getModelCalibration: (modelName?: string) => {
-    let url = "/analytics/model-calibration";
-    if (modelName) url += `?model_name=${encodeURIComponent(modelName)}`;
-    return fetchJSON<ModelCalibrationData>(url).catch((e) => {
-      console.warn("Failed to fetch model calibration:", e);
-      return null;
-    });
-  },
-  getAlerts: () =>
-    fetchJSON<AlertsData>("/alerts").catch((e) => {
-      console.warn("Failed to fetch alerts:", e);
-      return { alerts: [] };
-    }),
-  getPredictions: (marketId: string) =>
-    fetchJSON<PredictionTimeSeries>(`/predictions/${encodeURIComponent(marketId)}`).catch(() => null),
-  getPriceHistory: (marketId: string) =>
-    fetchJSON<{ market_id: string; series: PriceHistoryPoint[]; count: number }>(
-      `/market-price-history/${encodeURIComponent(marketId)}`
-    )
-      .then((data) => data?.series ?? [])
-      .catch((e) => {
-        console.warn("Failed to fetch price history:", e);
-        return [];
+  return {
+    getTrades: (limit = 50, offset = 0) => {
+      return fetchJSON<Trade[] | TradesResponse>(normalizedBaseUrl, buildPath(`/trades?limit=${limit}&offset=${offset}`))
+        .then((data) => {
+          if (Array.isArray(data)) return data;
+          return data.trades;
+        });
+    },
+    getTradesPaginated: (limit = 50, offset = 0) =>
+      fetchJSON<TradesResponse>(normalizedBaseUrl, buildPath(`/trades?limit=${limit}&offset=${offset}`)).catch(() =>
+        fetchJSON<Trade[]>(normalizedBaseUrl, buildPath(`/trades?limit=${limit}&offset=${offset}`)).then((trades) => ({
+          trades,
+          total: trades.length,
+          has_more: trades.length === limit,
+        }))
+      ),
+    getMarkets: (limit = 50) => fetchJSON<Market[]>(normalizedBaseUrl, buildPath(`/markets?limit=${limit}`)),
+    getPositions: (limit = 50, offset = 0, search?: string) => {
+      let url = `/positions?limit=${limit}&offset=${offset}`;
+      if (search) url += `&search=${encodeURIComponent(search)}`;
+      return fetchJSON<Position[] | { positions: Position[]; total: number; has_more: boolean }>(normalizedBaseUrl, buildPath(url))
+        .then((data) => {
+          if (Array.isArray(data)) return { positions: data, total: data.length, has_more: false };
+          return data;
+        });
+    },
+    getPnL: (days = 30, marketId?: string, model?: string) => {
+      let url = `/pnl?days=${days}`;
+      if (marketId) url += `&market_id=${encodeURIComponent(marketId)}`;
+      if (model) url += `&model=${encodeURIComponent(model)}`;
+      return fetchJSON<PnLData>(normalizedBaseUrl, buildPath(url));
+    },
+    getHealth: () => fetchJSON<HealthData>(normalizedBaseUrl, buildPath("/health")),
+    getModelRuns: (limit = 100) =>
+      fetchJSON<ModelRun[]>(normalizedBaseUrl, buildPath(`/model-runs?limit=${limit}`)),
+    getSystemLogs: (limit = 50) =>
+      fetchJSON<SystemLogEntry[]>(normalizedBaseUrl, buildPath(`/system-logs?limit=${limit}`)),
+    getKalshiBalance: () => fetchJSON<KalshiBalanceData>(normalizedBaseUrl, buildPath("/kalshi/balance")),
+    getKalshiPositions: () =>
+      fetchJSON<KalshiPositionsData>(normalizedBaseUrl, buildPath("/kalshi/positions")),
+    getAnalyticsSummary: () =>
+      fetchJSON<AnalyticsSummary>(normalizedBaseUrl, buildPath("/analytics/summary")).catch((e) => {
+        console.warn("Failed to fetch analytics summary:", e);
+        return null;
       }),
+    getModelCalibration: (modelName?: string) => {
+      let url = "/analytics/model-calibration";
+      if (modelName) url += `?model_name=${encodeURIComponent(modelName)}`;
+      return fetchJSON<ModelCalibrationData>(normalizedBaseUrl, buildPath(url)).catch((e) => {
+        console.warn("Failed to fetch model calibration:", e);
+        return null;
+      });
+    },
+    getResolvedMarkets: () =>
+      fetchJSON<ResolvedMarketsData>(normalizedBaseUrl, buildPath("/analytics/resolved-markets")).catch((e) => {
+        console.warn("Failed to fetch resolved markets:", e);
+        return null;
+      }),
+    getAlerts: () =>
+      fetchJSON<AlertsData>(normalizedBaseUrl, buildPath("/alerts")).catch((e) => {
+        console.warn("Failed to fetch alerts:", e);
+        return { alerts: [] };
+      }),
+    getPredictions: (marketId: string) =>
+      fetchJSON<PredictionTimeSeries>(normalizedBaseUrl, buildPath(`/predictions/${encodeURIComponent(marketId)}`)).catch(() => null),
+    getPriceHistory: (marketId: string) =>
+      fetchJSON<{ market_id: string; series: PriceHistoryPoint[]; count: number }>(
+        normalizedBaseUrl,
+        buildPath(`/market-price-history/${encodeURIComponent(marketId)}`)
+      )
+        .then((data) => data?.series ?? [])
+        .catch((e) => {
+          console.warn("Failed to fetch price history:", e);
+          return [];
+        }),
+    clearAllData: () =>
+      fetch(`${normalizedBaseUrl}${buildPath("/data/clear")}`, { method: "DELETE" }).then((r) => r.json()),
+  };
+}
 
-  clearAllData: () =>
-    fetch(`${API_URL}/data/clear`, { method: "DELETE" }).then((r) => r.json()),
-};
+export type ApiClient = ReturnType<typeof createApiClient>;
+
+export const api = createApiClient(DEFAULT_API_URL);

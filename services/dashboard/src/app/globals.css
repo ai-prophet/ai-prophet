@@ -40,3 +40,18 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3a4a5e;
 }
+
+@keyframes progress-indeterminate {
+  0%   { left: -40%; width: 40%; }
+  50%  { left: 30%;  width: 50%; }
+  100% { left: 110%; width: 40%; }
+}
+
+.animate-progress-bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 9999px;
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
