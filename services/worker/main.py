@@ -1163,6 +1163,12 @@ def run_cycle(args) -> None:
             logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
             continue
 
+        # Never bet on MENTIONS markets — they track social media activity,
+        # not real-world events, and are not suitable for model prediction.
+        if market.get("category", "").upper() == "MENTIONS":
+            logger.debug("Skipping %s: MENTIONS category excluded from betting", ticker)
+            continue
+
         market_id = f"kalshi:{ticker}"
 
         # Save market snapshot for dashboard

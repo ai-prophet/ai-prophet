@@ -45,6 +45,23 @@ const MODEL_COLORS = [
   "text-cyan-400",
 ];
 
+const CATEGORY_COLORS: Record<string, string> = {
+  POLITICS:      "bg-blue-900/40 border-blue-700/50 text-blue-300",
+  ECONOMICS:     "bg-emerald-900/40 border-emerald-700/50 text-emerald-300",
+  FINANCIALS:    "bg-green-900/40 border-green-700/50 text-green-300",
+  SPORTS:        "bg-orange-900/40 border-orange-700/50 text-orange-300",
+  ENTERTAINMENT: "bg-purple-900/40 border-purple-700/50 text-purple-300",
+  TECHNOLOGY:    "bg-cyan-900/40 border-cyan-700/50 text-cyan-300",
+  SCIENCE:       "bg-teal-900/40 border-teal-700/50 text-teal-300",
+  WEATHER:       "bg-sky-900/40 border-sky-700/50 text-sky-300",
+  CRYPTO:        "bg-yellow-900/40 border-yellow-700/50 text-yellow-300",
+  MENTIONS:      "bg-red-900/50 border-red-600/60 text-red-300",
+};
+function categoryChipClass(cat: string | null) {
+  if (!cat) return "bg-t-panel-alt border-t-border/60 text-txt-muted";
+  return CATEGORY_COLORS[cat.toUpperCase()] ?? "bg-t-panel-alt border-t-border/60 text-txt-muted";
+}
+
 type SortKey =
   | "title"
   | "yes_ask"
@@ -105,7 +122,17 @@ export function UnifiedMarketTable({
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("markets");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
+  const [categoryFilter, setCategoryFilter] = useState<Set<string>>(new Set());
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  const toggleCategory = (cat: string) => {
+    setCategoryFilter((prev) => {
+      const next = new Set(prev);
+      next.has(cat) ? next.delete(cat) : next.add(cat);
+      return next;
+    });
+    setVisibleCount(PAGE_SIZE);
+  };
   const [expandedMarketId, setExpandedMarketId] = useState<string | null>(null);
   const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
@@ -114,6 +141,12 @@ export function UnifiedMarketTable({
     () => buildUnifiedMarketRows(markets, positions, trades),
     [markets, positions, trades]
   );
+
+  const allCategories = useMemo(() => {
+    const cats = new Set<string>();
+    rows.forEach((r) => { if (r.category) cats.add(r.category.toUpperCase()); });
+    return Array.from(cats).sort();
+  }, [rows]);
 
   // Scroll-to-market from heatmap click
   useEffect(() => {
@@ -229,8 +262,11 @@ export function UnifiedMarketTable({
         result = result.filter((r) => r.has_position);
         break;
     }
+    if (categoryFilter.size > 0) {
+      result = result.filter((r) => r.category && categoryFilter.has(r.category.toUpperCase()));
+    }
     return result;
-  }, [sorted, search, filterMode]);
+  }, [sorted, search, filterMode, categoryFilter]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -315,8 +351,11 @@ export function UnifiedMarketTable({
     if (filterMode === "has_position") {
       result = result.filter((group) => group.position_count > 0);
     }
+    if (categoryFilter.size > 0) {
+      result = result.filter((group) => group.category && categoryFilter.has(group.category.toUpperCase()));
+    }
     return result;
-  }, [sortedEventGroups, search, filterMode]);
+  }, [sortedEventGroups, search, filterMode, categoryFilter]);
 
   const visibleEventGroups = filteredEventGroups.slice(0, visibleCount);
   const hasMoreEventGroups = visibleCount < filteredEventGroups.length;
@@ -385,6 +424,34 @@ export function UnifiedMarketTable({
             );
           })}
         </div>
+        {/* Category filter chips */}
+        {allCategories.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {allCategories.map((cat) => {
+              const active = categoryFilter.has(cat);
+              return (
+                <button
+                  key={cat}
+                  onClick={() => toggleCategory(cat)}
+                  className={`px-1.5 py-px rounded border text-[8px] uppercase tracking-wider transition-opacity ${
+                    active ? categoryChipClass(cat) : "bg-t-panel-alt border-t-border/40 text-txt-muted opacity-50 hover:opacity-75"
+                  }`}
+                  title={cat === "MENTIONS" ? "MENTIONS markets are excluded from betting" : undefined}
+                >
+                  {cat}{cat === "MENTIONS" ? " ⊘" : ""}
+                </button>
+              );
+            })}
+            {categoryFilter.size > 0 && (
+              <button
+                onClick={() => { setCategoryFilter(new Set()); setVisibleCount(PAGE_SIZE); }}
+                className="text-[8px] text-txt-muted hover:text-txt-secondary px-1"
+              >
+                ✕ clear
+              </button>
+            )}
+          </div>
+        )}
         <span className="text-[9px] text-txt-muted ml-auto font-mono">
           {countLabel}
         </span>
@@ -400,6 +467,7 @@ export function UnifiedMarketTable({
             <thead>
               <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
                 <Th k="title" sortKeys={sortKeys} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
+                <th className="px-3 py-2 text-left font-medium">Category</th>
                 <Th k="yes_ask" sortKeys={sortKeys} onClick={handleSort} align="right" info="Current Yes / No ask prices on Kalshi">Mkt Price</Th>
                 <Th k="predicted" sortKeys={sortKeys} onClick={handleSort} align="right" info="Model probability (p_yes from the prediction model)">Model P</Th>
                 <Th k="edge" sortKeys={sortKeys} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
@@ -516,7 +584,7 @@ function EventGroupRowView({
             <div className="flex items-center gap-1.5 text-[9px] font-mono text-txt-muted">
               {group.event_ticker && <span>{group.event_ticker}</span>}
               {group.category && (
-                <span className="px-1 py-px rounded bg-t-panel-alt border border-t-border/60 text-[8px] text-txt-muted uppercase tracking-wider">
+                <span className={`px-1 py-px rounded border text-[8px] uppercase tracking-wider ${categoryChipClass(group.category)}`}>
                   {group.category}
                 </span>
               )}
@@ -687,13 +755,24 @@ function MarketRow({
                   </a>
                 </>
               )}
-              {row.category && (
-                <span className="px-1 py-px rounded bg-t-panel-alt border border-t-border/60 text-[8px] text-txt-muted uppercase tracking-wider">
-                  {row.category}
-                </span>
-              )}
             </div>
           </div>
+        </td>
+
+        {/* Category */}
+        <td className="px-3 py-2">
+          {row.category ? (
+            <div className="flex flex-col gap-0.5 items-start">
+              <span className={`px-1 py-px rounded border text-[8px] uppercase tracking-wider ${categoryChipClass(row.category)}`}>
+                {row.category}
+              </span>
+              {row.category.toUpperCase() === "MENTIONS" && (
+                <span className="text-[8px] text-red-400 italic">no betting</span>
+              )}
+            </div>
+          ) : (
+            <span className="text-txt-muted text-[9px]">—</span>
+          )}
         </td>
 
         {/* Mkt Price */}
@@ -865,12 +944,35 @@ function ExpandedPanel({
 
 // ── Tab 1: Activity Timeline ────────────────────────────────
 
+const SKIP_THRESHOLD_MS = 25 * 60 * 1000; // 25 min — 1.5× the ~15-min poll interval
+
 function TimelineTab({ row }: { row: UnifiedMarketRow }) {
   // Show trades in chronological order (oldest first)
   const chronTrades = useMemo(
     () => [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
     [row.trades]
   );
+
+  // Sorted prediction timestamps (oldest first, deduplicated by minute)
+  const predTimes = useMemo(() => {
+    return [...row.model_predictions]
+      .map((p) => new Date(p.timestamp).getTime())
+      .filter((t) => !isNaN(t))
+      .sort((a, b) => a - b);
+  }, [row.model_predictions]);
+
+  // Build skip gap markers between consecutive predictions and since the last one
+  const skipGaps = useMemo(() => {
+    const gaps: { afterMs: number; skippedMs: number }[] = [];
+    const checkpoints = [...predTimes, Date.now()];
+    for (let i = 0; i + 1 < checkpoints.length; i++) {
+      const gap = checkpoints[i + 1] - checkpoints[i];
+      if (gap > SKIP_THRESHOLD_MS) {
+        gaps.push({ afterMs: checkpoints[i], skippedMs: gap });
+      }
+    }
+    return gaps;
+  }, [predTimes]);
 
   if (chronTrades.length === 0) {
     return <div className="text-[10px] text-txt-muted">No activity for this market</div>;
@@ -969,6 +1071,22 @@ function TimelineTab({ row }: { row: UnifiedMarketRow }) {
               >
                 {trade.dry_run ? "DRY" : "LIVE"}
               </span>
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Skip gap markers */}
+      {skipGaps.map((gap, i) => {
+        const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+        const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
+        const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
+        return (
+          <div key={i} className="relative flex items-start gap-3 py-1">
+            <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
+            <div className="w-[100px] flex-shrink-0" />
+            <div className="text-[9px] text-txt-muted italic">
+              ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
             </div>
           </div>
         );
@@ -1258,10 +1376,23 @@ function PriceHistoryChart({ data }: { data: PriceHistoryPoint[] }) {
     }));
   }, [data]);
 
+  const priceUnchanged = useMemo(() => {
+    if (chartData.length < 2) return true;
+    const first = chartData[0].yesAsk;
+    return chartData.every((p) => p.yesAsk === first);
+  }, [chartData]);
+
   return (
     <div>
-      <div className="text-[9px] text-txt-muted uppercase tracking-widest mb-1 font-medium">
-        Market Price vs Model Probability
+      <div className="flex items-center gap-2 mb-1">
+        <div className="text-[9px] text-txt-muted uppercase tracking-widest font-medium">
+          Market Price vs Model Probability
+        </div>
+        {priceUnchanged && (
+          <span className="text-[9px] text-txt-muted italic">
+            — price unchanged, no new predictions generated
+          </span>
+        )}
       </div>
       <ResponsiveContainer width="100%" height={160}>
         <LineChart data={chartData}>
