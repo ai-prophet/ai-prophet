@@ -118,7 +118,7 @@ def retrieve(
 @click.option(
     "--server-url",
     default=None,
-    help="Core API URL (default: PROPHET_API_URL env var).",
+    help="Core API URL (default: PA_SERVER_URL env var).",
 )
 @click.option(
     "--api-key",
@@ -188,7 +188,7 @@ def events(
 @click.option(
     "--server-url",
     default=None,
-    help="Core API URL (default: PROPHET_API_URL env var).",
+    help="Core API URL (default: PA_SERVER_URL env var).",
 )
 @click.option(
     "--api-key",
@@ -320,14 +320,14 @@ def predict(
     now = datetime.now(timezone.utc)
 
     for event in events_data:
-        ticker = event.get("market_ticker", "unknown")
+        market_ticker = event.get("market_ticker", "unknown")
 
         close_str = event.get("close_time", "")
         if close_str:
             try:
                 close_time = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
                 if close_time <= now:
-                    click.echo(f"  {ticker}: SKIPPED (market closed at {close_str})")
+                    click.echo(f"  {market_ticker}: SKIPPED (market closed at {close_str})")
                     continue
             except (ValueError, TypeError):
                 pass
@@ -342,15 +342,15 @@ def predict(
 
             predictions.append(
                 Prediction(
-                    market_ticker=ticker,
+                    market_ticker=market_ticker,
                     p_yes=result["p_yes"],
                     rationale=result.get("rationale"),
                 )
             )
-            click.echo(f"  {ticker}: p_yes={result['p_yes']:.3f}")
+            click.echo(f"  {market_ticker}: p_yes={result['p_yes']:.3f}")
         except Exception as e:
-            logger.warning("Skipping %s: %s", ticker, e)
-            click.echo(f"  {ticker}: SKIPPED ({e})")
+            logger.warning("Skipping %s: %s", market_ticker, e)
+            click.echo(f"  {market_ticker}: SKIPPED ({e})")
 
     if not predictions:
         raise click.ClickException("No predictions collected — nothing to submit.")
@@ -397,11 +397,8 @@ def evaluate(submission: str, actuals: str, verbose: bool) -> None:
 
 def _resolve_server(server_url: str | None, api_key: str | None) -> tuple[str, str]:
     """Resolve server URL and API key from flags or env vars."""
-    url = server_url or os.environ.get("PROPHET_API_URL")
-    if not url:
-        raise click.ClickException(
-            "Server URL required: use --server-url or set PROPHET_API_URL"
-        )
+    DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
+    url = server_url or os.environ.get("PA_SERVER_URL", DEFAULT_API_URL)
     key = api_key or os.environ.get("PA_SERVER_API_KEY")
     if not key:
         raise click.ClickException(
@@ -420,7 +417,7 @@ def _resolve_server(server_url: str | None, api_key: str | None) -> tuple[str, s
 @click.option(
     "--server-url",
     default=None,
-    help="Core API URL (default: PROPHET_API_URL env var).",
+    help="Core API URL (default: PA_SERVER_URL env var).",
 )
 @click.option(
     "--api-key",
@@ -455,7 +452,7 @@ def submit(submission: str, server_url: str | None, api_key: str | None, verbose
 @click.option(
     "--server-url",
     default=None,
-    help="Core API URL (default: PROPHET_API_URL env var).",
+    help="Core API URL (default: PA_SERVER_URL env var).",
 )
 @click.option(
     "--api-key",

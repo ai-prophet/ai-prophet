@@ -14,12 +14,12 @@ Create a `.env` file in your working directory with the keys you need. The CLI a
 # Required for predict (if using the built-in example agent)
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Required for retrieve (Kalshi market data)
+# (Optional) Required to retrieve new events from Kalshi for your own testing. (Kalshi market data)
 KALSHI_API_KEY_ID=your-kalshi-key-id
 KALSHI_PRIVATE_KEY_B64=your-base64-encoded-private-key
 
 # Required for submit and leaderboard
-PROPHET_API_URL=https://core-api-7cm1.onrender.com
+PA_SERVER_URL=https://core-api-7cm1.onrender.com
 PA_SERVER_API_KEY=your-api-key
 ```
 
@@ -156,7 +156,7 @@ Use this as a starting point — replace the Claude call with your own forecasti
 
 | Variable | Description |
 |----------|-------------|
-| `PROPHET_API_URL` | Server URL (used by `submit` and `leaderboard`) |
+| `PA_SERVER_URL` | Server URL (used by `submit` and `leaderboard`) |
 | `PA_SERVER_API_KEY` | Prophet Arena API key (used by `submit` and `leaderboard`) |
 | `KALSHI_API_KEY_ID` | Kalshi API key (used by `retrieve`) |
 | `KALSHI_PRIVATE_KEY_B64` | Kalshi private key, base64-encoded |
