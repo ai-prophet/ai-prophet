@@ -331,7 +331,7 @@ export function buildUnifiedMarketRows(
       ?? [];
     // Sort trades by time descending
     const sortedTrades = [...mktTrades].sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
 
     const predicted = mkt.aggregated_p_yes ?? mkt.model_prediction?.p_yes ?? null;
@@ -386,7 +386,7 @@ export function buildUnifiedMarketRows(
     const totalPnl = pos.realized_pnl + pos.unrealized_pnl;
     const mktTrades = (pos.ticker ? tradesByTicker.get(pos.ticker) : null) ?? [];
     const sortedTrades = [...mktTrades].sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
     rows.push({
       market_id: pos.market_id,

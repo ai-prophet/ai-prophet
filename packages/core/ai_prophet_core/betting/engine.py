@@ -302,6 +302,7 @@ class BettingEngine:
         portfolio = self.strategy.portfolio
         action = "BUY"
         effective_side = signal.side.upper()
+        sell_price = signal.price  # fallback; overwritten if a SELL is needed
 
         if portfolio and portfolio.market_position_side and portfolio.market_position_shares > 0:
             held_side = portfolio.market_position_side.lower()
@@ -403,7 +404,7 @@ class BettingEngine:
             action=action,
             side=effective_side,
             shares=Decimal(str(count)),
-            limit_price=Decimal(str(signal.price)),
+            limit_price=Decimal(str(sell_price if action == "SELL" else signal.price)),
         )
 
         try:

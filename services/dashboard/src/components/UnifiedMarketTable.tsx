@@ -635,6 +635,30 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
     return <div className="text-[10px] text-txt-muted">No trades for this market</div>;
   }
 
+  // Cash flow per trade: BUY = negative (money out), SELL = positive (money back)
+  const tradeRows = row.trades.map((trade) => {
+    const qty = trade.filled_shares || trade.count;
+    const price = trade.price_cents / 100;
+    const isSell = trade.action?.toUpperCase() === "SELL";
+    // BUY: you spend -qty×price. SELL: you receive +qty×price.
+    const cashFlow = isSell ? qty * price : -(qty * price);
+    return { trade, qty, price, isSell, cashFlow };
+  });
+
+  const totalCashFlow = tradeRows.reduce((sum, r) => sum + r.cashFlow, 0);
+
+  // Current value of remaining open position
+  const pos = row.position;
+  const currentBid = pos
+    ? pos.contract.toLowerCase() === "yes"
+      ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
+      : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null))
+    : null;
+  const openValue = pos && currentBid != null ? pos.quantity * currentBid : null;
+
+  // Total realized + open value
+  const totalNet = openValue != null ? totalCashFlow + openValue : null;
+
   return (
     <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
       <table className="w-full text-[10px]">
@@ -644,69 +668,74 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
             <th className="px-2 py-1.5 text-center font-medium">Side</th>
             <th className="px-2 py-1.5 text-right font-medium">Qty</th>
             <th className="px-2 py-1.5 text-right font-medium">Price</th>
-            <th className="px-2 py-1.5 text-right font-medium">Cost</th>
-            <th className="px-2 py-1.5 text-right font-medium">P&L</th>
+            <th className="px-2 py-1.5 text-right font-medium">Cash</th>
             <th className="px-2 py-1.5 text-center font-medium">Status</th>
             <th className="px-2 py-1.5 text-center font-medium">Mode</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-t-border/20">
-          {row.trades.map((trade) => {
-            const cost = (trade.price_cents / 100) * trade.count;
-            const qty = trade.filled_shares || trade.count;
-            // Compute unrealized P&L for this trade
-            // Exit price = bid (what you receive selling): yes_bid = 1 - no_ask, no_bid = 1 - yes_ask
-            const currentPrice =
-              trade.side.toLowerCase() === "yes"
-                ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
-                : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
-            const pnl =
-              currentPrice != null
-                ? ((currentPrice * 100 - trade.price_cents) / 100) * qty
-                : null;
-            const isSell = trade.action?.toUpperCase() === "SELL";
-
-            return (
-              <tr key={trade.id} className="hover:bg-t-panel-hover/50">
-                <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
-                  {fmtTime(trade.created_at)}
-                </td>
-                <td className="px-2 py-1.5 text-center">
-                  <span className="flex items-center justify-center gap-1">
-                    {isSell && (
-                      <span className="text-[8px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
-                    )}
-                    <span
-                      className={`inline-block px-1 py-px rounded text-[8px] font-bold ${
-                        trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
-                      }`}
-                    >
-                      {trade.side.toUpperCase()}
-                    </span>
+          {tradeRows.map(({ trade, qty, price, isSell, cashFlow }) => (
+            <tr key={trade.id} className="hover:bg-t-panel-hover/50">
+              <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
+                {fmtTime(trade.created_at)}
+              </td>
+              <td className="px-2 py-1.5 text-center">
+                <span className="flex items-center justify-center gap-1">
+                  {isSell && (
+                    <span className="text-[8px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
+                  )}
+                  <span className={`inline-block px-1 py-px rounded text-[8px] font-bold ${
+                    trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
+                  }`}>
+                    {trade.side.toUpperCase()}
                   </span>
-                </td>
-                <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{qty}</td>
-                <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{trade.price_cents}c</td>
-                <td className="px-2 py-1.5 text-right font-mono text-txt-primary">${cost.toFixed(2)}</td>
-                <td className={`px-2 py-1.5 text-right font-mono font-medium ${pnl != null ? pnlCls(pnl) : "text-txt-muted"}`}>
-                  {pnl != null ? fmtDollar(pnl) : "--"}
-                </td>
-                <td className="px-2 py-1.5 text-center">
-                  <StatusBadge status={trade.status} />
-                </td>
-                <td className="px-2 py-1.5 text-center">
-                  <span
-                    className={`text-[8px] font-bold px-1 py-px rounded ${
-                      trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
-                    }`}
-                  >
-                    {trade.dry_run ? "DRY" : "LIVE"}
-                  </span>
-                </td>
-              </tr>
-            );
-          })}
+                </span>
+              </td>
+              <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{qty}</td>
+              <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{Math.round(price * 100)}c</td>
+              <td className={`px-2 py-1.5 text-right font-mono font-medium ${pnlCls(cashFlow)}`}>
+                {cashFlow >= 0 ? "+" : ""}{fmtDollar(cashFlow)}
+              </td>
+              <td className="px-2 py-1.5 text-center">
+                <StatusBadge status={trade.status} />
+              </td>
+              <td className="px-2 py-1.5 text-center">
+                <span className={`text-[8px] font-bold px-1 py-px rounded ${
+                  trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
+                }`}>
+                  {trade.dry_run ? "DRY" : "LIVE"}
+                </span>
+              </td>
+            </tr>
+          ))}
         </tbody>
+        <tfoot>
+          <tr className="border-t border-t-border/60 text-[9px] text-txt-muted">
+            <td colSpan={4} className="px-2 py-1.5 font-medium">
+              {pos && currentBid != null
+                ? `Open: ${pos.quantity} ${pos.contract.toUpperCase()} @ ${Math.round(currentBid * 100)}c bid`
+                : "No open position"}
+            </td>
+            <td className="px-2 py-1.5 text-right font-mono">
+              <div className="flex flex-col items-end gap-0.5">
+                <span className="text-txt-muted">
+                  cash: <span className={pnlCls(totalCashFlow)}>{totalCashFlow >= 0 ? "+" : ""}{fmtDollar(totalCashFlow)}</span>
+                </span>
+                {openValue != null && (
+                  <span className="text-txt-muted">
+                    open: <span className="text-txt-secondary">{fmtDollar(openValue)}</span>
+                  </span>
+                )}
+                {totalNet != null && (
+                  <span className={`font-bold ${pnlCls(totalNet)}`}>
+                    net: {totalNet >= 0 ? "+" : ""}{fmtDollar(totalNet)}
+                  </span>
+                )}
+              </div>
+            </td>
+            <td colSpan={2} />
+          </tr>
+        </tfoot>
       </table>
     </div>
   );
