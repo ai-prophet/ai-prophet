@@ -176,8 +176,8 @@ def events(
 )
 @click.option(
     "--endpoint-url",
-    required=True,
-    help="Prediction endpoint URL (receives POST with event JSON, returns {p_yes, rationale}).",
+    default=None,
+    help="Prediction endpoint URL (optional — registers team name only if omitted).",
 )
 @click.option(
     "--deactivate",
@@ -198,20 +198,20 @@ def events(
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def register(
     team_name: str,
-    endpoint_url: str,
+    endpoint_url: str | None,
     deactivate: bool,
     server_url: str | None,
     api_key: str | None,
     verbose: bool,
 ) -> None:
-    """Register a prediction endpoint for daily auto-forecasting."""
+    """Register your team. Optionally include an endpoint URL for daily auto-forecasting."""
     _setup_logging(verbose)
 
     url, key = _resolve_server(server_url, api_key)
 
     client = ServerAPIClient(base_url=url, api_key=key)
     try:
-        result = client.register_forecast_endpoint(
+        result = client.register_forecast_team(
             team_name=team_name,
             endpoint_url=endpoint_url,
             is_active=not deactivate,
@@ -219,11 +219,37 @@ def register(
     finally:
         client.close()
 
-    status = "active" if result.is_active else "inactive"
-    click.echo(f"Endpoint registered for team '{result.team_name}' ({status})")
-    click.echo(f"URL: {result.endpoint_url}")
-    if result.last_run_at:
-        click.echo(f"Last run: {result.last_run_at.strftime('%Y-%m-%d %H:%M')} ({result.last_run_status}, {result.last_run_n_predictions} predictions)")
+    click.echo(f"Team '{result.team_name}' registered.")
+    if result.endpoint_url:
+        status = "active" if result.is_active else "inactive"
+        click.echo(f"Endpoint: {result.endpoint_url} ({status})")
+
+    # Save PA_TEAM_NAME to .env
+    _save_team_name_to_env(team_name)
+
+
+def _save_team_name_to_env(team_name: str) -> None:
+    """Append or update PA_TEAM_NAME in the local .env file."""
+    env_path = Path(".env")
+    key_line = f"PA_TEAM_NAME={team_name}\n"
+
+    if env_path.exists():
+        lines = env_path.read_text().splitlines(keepends=True)
+        for i, line in enumerate(lines):
+            if line.startswith("PA_TEAM_NAME="):
+                lines[i] = key_line
+                env_path.write_text("".join(lines))
+                click.echo(f"Updated PA_TEAM_NAME={team_name} in .env")
+                return
+        # Not found — append
+        text = env_path.read_text()
+        if text and not text.endswith("\n"):
+            text += "\n"
+        env_path.write_text(text + key_line)
+    else:
+        env_path.write_text(key_line)
+
+    click.echo(f"Saved PA_TEAM_NAME={team_name} to .env")
 
 
 @cli.command(name="predict")

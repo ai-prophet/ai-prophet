@@ -296,6 +296,21 @@ class ForecastSubmitResponse(BaseModel):
     submitted_at: datetime
 
 
+class ForecastRegisterTeamRequest(BaseModel):
+    """Request body for registering a team (with optional endpoint)."""
+    team_name: str
+    endpoint_url: str | None = None
+    is_active: bool = True
+
+
+class ForecastRegisterTeamResponse(BaseModel):
+    """Response after registering a team."""
+    team_name: str
+    created_at: datetime
+    endpoint_url: str | None = None
+    is_active: bool | None = None
+
+
 class ForecastRegisterEndpointRequest(BaseModel):
     """Request body for registering a prediction endpoint."""
     team_name: str

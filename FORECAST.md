@@ -21,23 +21,31 @@ KALSHI_PRIVATE_KEY_B64=your-base64-encoded-private-key
 # Required for submit and leaderboard
 PA_SERVER_URL=https://core-api-7cm1.onrender.com
 PA_SERVER_API_KEY=your-api-key
+
+# Set automatically by `prophet forecast register`
+PA_TEAM_NAME=your-team-name
 ```
 
 ## Quick Start
 
 ```bash
-# 1. Get the current events from the server
+# 1. Register your team (required before submitting)
+prophet forecast register --team-name my-team
+
+# 2. Get the current events from the server
 prophet forecast events -o events.json
 
-# 2. Run predictions with the built-in example agent (no server needed)
+# 3. Run predictions with the built-in example agent (no server needed)
 prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team
 
-# 3. Submit to the server
+# 4. Submit to the server
 prophet forecast submit --submission submission.json
 
-# 4. Check the leaderboard
+# 5. Check the leaderboard
 prophet forecast leaderboard
 ```
+
+Registration saves `PA_TEAM_NAME` to your `.env` file automatically. You only need to register once.
 
 ## How Retrieval Works
 
@@ -149,7 +157,7 @@ Use this as a starting point — replace the Claude call with your own forecasti
 | `prophet forecast predict` | Send events to your agent and collect predictions |
 | `prophet forecast evaluate` | Score a submission locally against an actuals file |
 | `prophet forecast submit` | Submit predictions to the server |
-| `prophet forecast register` | Register a prediction endpoint for daily auto-forecasting |
+| `prophet forecast register` | Register your team (optionally with a prediction endpoint for auto-forecasting) |
 | `prophet forecast leaderboard` | View the leaderboard |
 
 ## Environment Variables
@@ -158,6 +166,7 @@ Use this as a starting point — replace the Claude call with your own forecasti
 |----------|-------------|
 | `PA_SERVER_URL` | Server URL (used by `submit` and `leaderboard`) |
 | `PA_SERVER_API_KEY` | Prophet Arena API key (used by `submit` and `leaderboard`) |
+| `PA_TEAM_NAME` | Your registered team name (saved automatically by `prophet forecast register`) |
 | `KALSHI_API_KEY_ID` | Kalshi API key (used by `retrieve`) |
 | `KALSHI_PRIVATE_KEY_B64` | Kalshi private key, base64-encoded |
 | `ANTHROPIC_API_KEY` | Anthropic API key (used by example agent) |
@@ -165,9 +174,20 @@ Use this as a starting point — replace the Claude call with your own forecasti
 
 All server-facing commands (`events`, `submit`, `register`, `leaderboard`) require an API key. Set `PA_SERVER_API_KEY` in your environment, or pass `--api-key` on the command line.
 
+## Team Registration
+
+You must register your team before submitting predictions:
+
+```bash
+# Register team name only
+prophet forecast register --team-name my-team
+```
+
+This saves `PA_TEAM_NAME=my-team` to your `.env` file so other commands can pick it up.
+
 ## Auto-Forecasting (Endpoint Registration)
 
-Instead of manually running `predict` + `submit` each day, you can register a prediction endpoint and we'll call it daily for all open events:
+Instead of manually running `predict` + `submit` each day, you can register a prediction endpoint and we'll call it daily for all open events. Pass `--endpoint-url` when registering:
 
 ```bash
 prophet forecast register --team-name my-team --endpoint-url https://my-agent.example.com/predict

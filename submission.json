@@ -1,0 +1,96 @@
+{
+  "team_name": "my-team",
+  "timestamp": "2026-03-18T22:24:40.977537Z",
+  "predictions": [
+    {
+      "market_ticker": "KXCBDECISIONCHINA-26MAR19-C10",
+      "p_yes": 0.35,
+      "rationale": "Small rate cuts of 1-10 bps are relatively common central bank tools for fine-tuning monetary policy, and China's PBOC has historically used gradual adjustments. However, predicting specific monetary policy actions 15+ months in advance is highly uncertain, as it depends on economic conditions, inflation trends, and growth targets that are difficult to forecast accurately."
+    },
+    {
+      "market_ticker": "KXSPOTIFYW-26MAR19-BAB",
+      "p_yes": 0.15,
+      "rationale": "This requires a specific song by Dominic Fike to reach #1 on a specific date over a year in the future. While Fike has had moderate success, predicting chart toppers this far ahead involves enormous uncertainty given the volatile nature of music trends, competition from major artists, and changing listener preferences. The specificity of both artist and date makes this relatively unlikely despite Fike's growing popularity."
+    },
+    {
+      "market_ticker": "KXSPOTIFYW-26MAR19-STA",
+      "p_yes": 0.05,
+      "rationale": "This question asks about a very specific song ('Stateside' by PinkPantheress + Zara Larsson) reaching #1 on a specific date over a year in the future. While both artists have had chart success, predicting a #1 hit for a specific collaboration on an exact date involves enormous uncertainty about music release timing, competition, and market dynamics. The base rate for any single song reaching #1 is extremely low given hundreds of weekly releases."
+    },
+    {
+      "market_ticker": "KXSPOTIFYW-26MAR19-RIS",
+      "p_yes": 0.15,
+      "rationale": "This event requires a specific Bruno Mars song ('Risk It All') to reach #1 on a specific chart date over a year in the future. While Bruno Mars is a successful artist capable of chart-topping hits, predicting exact chart positions so far in advance involves enormous uncertainty about song release timing, competition, and market dynamics. The specificity of both the song title and exact chart date significantly reduces the probability compared to a more general prediction about Bruno Mars having a hit song."
+    },
+    {
+      "market_ticker": "KXHIGHLAX-26MAR19-T90",
+      "p_yes": 0.15,
+      "rationale": "March is typically a mild spring month in Los Angeles with average highs around 70-75°F. Temperatures above 90°F in March are uncommon but possible during Santa Ana wind events or unusual heat waves. Historical data suggests such extreme temperatures occur in March roughly 10-20% of years, making this a low probability but not impossible event."
+    },
+    {
+      "market_ticker": "KXHIGHLAX-26MAR19-T83",
+      "p_yes": 0.65,
+      "rationale": "March 19th falls in late winter/early spring for Los Angeles, when temperatures are typically moderate. Historical data shows LA's average high in mid-to-late March is around 70-75°F, with occasional warmer days reaching the low 80s. A high temperature below 83°F is reasonably likely for this date, though spring weather can be variable."
+    },
+    {
+      "market_ticker": "KXHIGHTPHX-26MAR19-T101",
+      "p_yes": 0.82,
+      "rationale": "Phoenix's historical March temperatures show daily highs typically ranging from the mid-70s to mid-80s°F, with occasional warmer days reaching the 90s. A maximum temperature exceeding 101°F on March 19th would be exceptionally rare for Phoenix in mid-March, as this would be more typical of late spring or summer temperatures."
+    },
+    {
+      "market_ticker": "KXDHSFUNDING-26MAR20",
+      "p_yes": 0.92,
+      "rationale": "Federal appropriations for DHS are essential government functions that historically get funded, even if delayed. While Congress often passes continuing resolutions or experiences funding delays, a complete failure to fund DHS for an entire fiscal year would be unprecedented and create severe national security risks. The March 2026 deadline provides substantial time beyond the typical October 1 fiscal year start for resolution of any political disputes."
+    },
+    {
+      "market_ticker": "KXAPRPOTUS-26MAR20-42.5",
+      "p_yes": 0.35,
+      "rationale": "Presidential approval ratings typically fluctuate between 35-60% during a term, with various factors like economic conditions, major events, and political cycles influencing them. Without knowing the current president, current rating, or specific context, I'm drawing on historical patterns where presidents have spent roughly 30-40% of their time below 42.5% approval. The specific threshold of 42.4% suggests this is near a typical approval floor, making it plausible but not highly likely given the timeframe extends to March 2026."
+    },
+    {
+      "market_ticker": "KXAPRPOTUS-26MAR20-42.6",
+      "p_yes": 0.08,
+      "rationale": "This question asks for a very narrow approval rating range of just 0.2 percentage points, which represents an extremely precise prediction over 15 months in advance. Presidential approval ratings are highly volatile and influenced by unpredictable events, making such specific forecasting nearly impossible. The probability of hitting any specific 0.2-point window by chance alone would be very low, even without considering the inherent uncertainty in polling aggregation methodologies."
+    },
+    {
+      "market_ticker": "KXNASDAQ100-26MAR20H1600-B23250",
+      "p_yes": 0.02,
+      "rationale": "The Nasdaq-100 currently trades around 20,000-21,000 levels, making the 23,200-23,300 range roughly 10-15% higher than current levels by March 2026. While this growth is plausible over ~15 months, predicting any index will fall within a specific 100-point range (less than 0.5% width) on an exact date is extremely unlikely due to market volatility and the precision required."
+    },
+    {
+      "market_ticker": "KXNASDAQ100-26MAR20H1600-B24050",
+      "p_yes": 0.02,
+      "rationale": "The Nasdaq-100 currently trades around 16,000-17,000 levels, so reaching 24,000+ would require roughly 40-50% growth over approximately 1.5 years. While possible, predicting the index will land in such a narrow 100-point band (representing only ~0.4% of the target level) at a specific future date is extremely unlikely due to the continuous and volatile nature of market movements."
+    },
+    {
+      "market_ticker": "KXAIJOBLOSS-26MAR20-T87000",
+      "p_yes": 0.25,
+      "rationale": "This question involves a very specific website (jobloss.ai) and metric that may not exist or be reliably tracked. Even if AI-related job displacement accelerates, reaching over 87,000 cumulative losses by March 2026 would require significant economic disruption. Without historical data on this specific tracker or clear baseline rates for AI job displacement, the probability remains low due to the specificity of both the source and threshold."
+    },
+    {
+      "market_ticker": "KXAIJOBLOSS-26MAR20-T84000",
+      "p_yes": 0.25,
+      "rationale": "This question depends on a specific website (jobloss.ai) that may not exist or may not track AI-linked job losses in a standardized way. Without knowing the current baseline of AI-linked job losses or the methodology used by this site, there's significant uncertainty. The threshold of 84,000 seems moderately high, suggesting this may be calibrated as a challenging target to reach by March 2026."
+    },
+    {
+      "market_ticker": "KXSILVERW-26MAR2017-T76.49",
+      "p_yes": 0.65,
+      "rationale": "Silver prices have shown significant volatility and upward trends in recent years, trading in the $20-30 range as of 2024. A price of $76.49 by March 2026 represents roughly a 2.5-3x increase, which while substantial, is not unprecedented for precious metals during periods of inflation, economic uncertainty, or monetary policy shifts. Given the ~1.5 year timeframe and historical silver volatility patterns, there's a meaningful but not overwhelming probability of reaching this level."
+    },
+    {
+      "market_ticker": "KXMLBSTGAME-26MAR181805MIAWSH-MIA",
+      "p_yes": 0.52,
+      "rationale": "This appears to be a Miami Marlins vs Washington Nationals MLB game. Without access to current team rosters, recent performance, or 2026 season context, I must rely on base rates for MLB games between roughly comparable teams. Home field advantage typically provides a small edge (around 52-54% win rate), and assuming Miami is the home team based on the question phrasing, this suggests a slight favorite status."
+    },
+    {
+      "market_ticker": "KXMLBSTGAME-26MAR181805MIAWSH-WSH",
+      "p_yes": 0.5,
+      "rationale": "Without access to current team rosters, recent performance data, or other relevant factors for the 2026 season, this appears to be a straightforward head-to-head baseball matchup between two MLB teams. In the absence of specific information suggesting one team has a significant advantage, the probability should reflect the inherent uncertainty of any single baseball game outcome, which typically hovers around even odds."
+    },
+    {
+      "market_ticker": "KXMLBSTGAME-26MAR181805DETPIT-PIT",
+      "p_yes": 0.52,
+      "rationale": "Without specific information about the teams' current rosters, injuries, or form leading up to March 2026, I must rely on base rates for MLB matchups between these teams. Historical data suggests relatively even competition between Detroit and Pittsburgh, with slight variations based on home field advantage and seasonal performance. Given the uncertainty around team composition nearly two years in the future, I estimate a slightly above even probability for Pittsburgh winning this specific game."
+    }
+  ]
+}

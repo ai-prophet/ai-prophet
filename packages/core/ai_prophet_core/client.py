@@ -26,6 +26,8 @@ from .client_models import (
     ForecastEndpointResponse,
     ForecastEventResponse,
     ForecastRegisterEndpointRequest,
+    ForecastRegisterTeamRequest,
+    ForecastRegisterTeamResponse,
     ForecastScoreEntry,
     ForecastSubmitRequest,
     ForecastSubmitResponse,
@@ -404,6 +406,19 @@ class ServerAPIClient:
         req = ForecastSubmitRequest(team_name=team_name, predictions=predictions)
         response = self._post("/forecast/submit", json=req.model_dump(mode="json"))
         return self._parse_response(response, ForecastSubmitResponse)
+
+    def register_forecast_team(
+        self,
+        team_name: str,
+        endpoint_url: str | None = None,
+        is_active: bool = True,
+    ) -> ForecastRegisterTeamResponse:
+        """Register a team, optionally with a prediction endpoint."""
+        req = ForecastRegisterTeamRequest(
+            team_name=team_name, endpoint_url=endpoint_url, is_active=is_active,
+        )
+        response = self._post("/forecast/teams/register", json=req.model_dump(mode="json"))
+        return self._parse_response(response, ForecastRegisterTeamResponse)
 
     def register_forecast_endpoint(
         self,
