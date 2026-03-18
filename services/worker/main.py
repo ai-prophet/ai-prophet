@@ -1234,7 +1234,7 @@ def run_cycle(args) -> None:
                     decision = "HOLD_MATCH"
                 else:
                     # p_yes is inside [1-no_ask, yes_ask] band — spread absorbs edge
-                    decision = "HOLD_BAND"
+                    decision = "HOLD_SPREAD"
 
                 if db_engine:
                     save_model_run(
