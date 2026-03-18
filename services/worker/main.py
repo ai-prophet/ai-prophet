@@ -141,12 +141,18 @@ def save_price_snapshot(db_engine, market_id: str, ticker: str,
 
 def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                          yes_ask: float, no_ask: float | None = None,
+                         yes_bid: float | None = None, no_bid: float | None = None,
                          expiration=None, ticker: str = "",
                          event_ticker: str = "", volume_24h: float = 0) -> None:
     """Upsert a market snapshot into trading_markets."""
     try:
         from ai_prophet_core.betting.db import get_session
         from db_models import TradingMarket
+
+        # Fall back to complement math if real bid prices not provided
+        _no_ask = no_ask if no_ask is not None else (1.0 - yes_ask)
+        yes_bid = yes_bid if yes_bid is not None else round(1.0 - _no_ask, 6)
+        no_bid = no_bid if no_bid is not None else round(1.0 - yes_ask, 6)
 
         now = datetime.now(UTC)
         with get_session(db_engine) as session:
@@ -155,7 +161,9 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                 existing.title = title
                 existing.category = category
                 existing.last_price = yes_ask
+                existing.yes_bid = yes_bid
                 existing.yes_ask = yes_ask
+                existing.no_bid = no_bid
                 existing.no_ask = no_ask
                 existing.ticker = ticker
                 existing.event_ticker = event_ticker
@@ -170,7 +178,9 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                     title=title,
                     category=category or "unknown",
                     last_price=yes_ask,
+                    yes_bid=yes_bid,
                     yes_ask=yes_ask,
+                    no_bid=no_bid,
                     no_ask=no_ask,
                     volume_24h=volume_24h,
                     expiration=expiration,
@@ -312,7 +322,9 @@ def update_positions(db_engine, market_prices: dict[str, tuple[float, float]]) -
                 unrealized = 0.0
                 if market_id in market_prices:
                     yes_ask, no_ask = market_prices[market_id]
-                    current = yes_ask if side == "yes" else no_ask
+                    # Exit price = bid (what you receive when selling)
+                    # yes_bid = 1 - no_ask, no_bid = 1 - yes_ask
+                    current = (1.0 - no_ask) if side == "yes" else (1.0 - yes_ask)
                     unrealized = (current - avg_price) * qty
 
                 existing = session.query(TradingPosition).filter_by(
@@ -406,7 +418,9 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
         if status not in ("open", "active"):
             return None
 
+        yes_bid = mkt.get("yes_bid_dollars")
         yes_ask = mkt.get("yes_ask_dollars")
+        no_bid = mkt.get("no_bid_dollars")
         no_ask = mkt.get("no_ask_dollars")
         last_price = mkt.get("last_price_dollars")
         if yes_ask is None and last_price is None:
@@ -444,7 +458,9 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
             "title": title,
             "subtitle": mkt.get("rules_primary", ""),
             "category": category,
+            "yes_bid": yes_bid,
             "yes_ask": yes_ask,
+            "no_bid": no_bid,
             "no_ask": no_ask,
             "last_price": last_price,
             "close_time": mkt.get("close_time"),
@@ -521,7 +537,9 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                         pass
 
                 ticker = mkt.get("ticker", "")
+                yes_bid = mkt.get("yes_bid_dollars")
                 yes_ask = mkt.get("yes_ask_dollars")
+                no_bid = mkt.get("no_bid_dollars")
                 no_ask = mkt.get("no_ask_dollars")
                 last_price = mkt.get("last_price_dollars")
 
@@ -560,7 +578,9 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     "title": market_title,
                     "subtitle": mkt.get("rules_primary", ""),
                     "category": category,
+                    "yes_bid": yes_bid,
                     "yes_ask": yes_ask,
+                    "no_bid": no_bid,
                     "no_ask": no_ask,
                     "last_price": last_price,
                     "close_time": close_time_str,
@@ -1035,7 +1055,8 @@ def run_cycle(args) -> None:
                     pass
             save_market_snapshot(
                 db_engine, market_id, title, category,
-                yes_ask=yes_ask, no_ask=no_ask,
+                yes_bid=market.get("yes_bid"), yes_ask=yes_ask,
+                no_bid=market.get("no_bid"), no_ask=no_ask,
                 expiration=expiration, ticker=ticker,
                 event_ticker=market.get("event_ticker", ""),
                 volume_24h=float(market.get("volume_24h", 0) or 0),

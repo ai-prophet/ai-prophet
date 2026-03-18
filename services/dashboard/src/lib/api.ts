@@ -262,7 +262,9 @@ export interface UnifiedMarketRow {
   title: string;
   category: string | null;
   expiration: string | null;
+  yes_bid: number | null;
   yes_ask: number | null;
+  no_bid: number | null;
   no_ask: number | null;
   volume_24h: number | null;
 
@@ -358,7 +360,9 @@ export function buildUnifiedMarketRows(
       title: mkt.title,
       category: mkt.category,
       expiration: mkt.expiration,
+      yes_bid: mkt.yes_bid ?? (mkt.no_ask != null ? 1.0 - mkt.no_ask : null),
       yes_ask: mkt.yes_ask,
+      no_bid: mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null),
       no_ask: mkt.no_ask,
       volume_24h: mkt.volume_24h,
       aggregated_p_yes: predicted,

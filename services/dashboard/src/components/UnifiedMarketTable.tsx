@@ -50,7 +50,7 @@ type SortKey =
   | "last_trade"
   | "return";
 
-type FilterMode = "all" | "has_position" | "large_edge";
+type FilterMode = "all" | "has_position";
 
 const PAGE_SIZE = 25;
 
@@ -156,9 +156,6 @@ export function UnifiedMarketTable({
       case "has_position":
         result = result.filter((r) => r.has_position);
         break;
-      case "large_edge":
-        result = result.filter((r) => r.edge != null && Math.abs(r.edge) >= 0.05);
-        break;
     }
     return result;
   }, [sorted, search, filterMode]);
@@ -189,11 +186,10 @@ export function UnifiedMarketTable({
           className="bg-t-bg border border-t-border rounded px-2 py-1 text-xs text-txt-primary placeholder-txt-muted focus:outline-none focus:border-accent w-48 font-mono"
         />
         <div className="flex items-center gap-1">
-          {(["all", "has_position", "large_edge"] as FilterMode[]).map((mode) => {
+          {(["all", "has_position"] as FilterMode[]).map((mode) => {
             const labels: Record<FilterMode, string> = {
               all: "All",
               has_position: "Positions",
-              large_edge: "Edge \u22655pp",
             };
             return (
               <button
@@ -222,7 +218,7 @@ export function UnifiedMarketTable({
             <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
               <Th k="title" cur={sortKey} asc={sortAsc} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
               <Th k="yes_ask" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Current Yes / No ask prices on Kalshi">Mkt Price</Th>
-              <Th k="predicted" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Aggregated model probability (signed-sum of per-model edges + yes_ask)">Agg P</Th>
+              <Th k="predicted" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Model probability (p_yes from the prediction model)">Model P</Th>
               <Th k="edge" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
               <Th k="position" cur={sortKey} asc={sortAsc} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
               <Th k="avg_price" cur={sortKey} asc={sortAsc} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
@@ -659,8 +655,11 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
             const cost = (trade.price_cents / 100) * trade.count;
             const qty = trade.filled_shares || trade.count;
             // Compute unrealized P&L for this trade
+            // Exit price = bid (what you receive selling): yes_bid = 1 - no_ask, no_bid = 1 - yes_ask
             const currentPrice =
-              trade.side.toLowerCase() === "yes" ? row.yes_ask : row.no_ask;
+              trade.side.toLowerCase() === "yes"
+                ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
+                : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
             const pnl =
               currentPrice != null
                 ? ((currentPrice * 100 - trade.price_cents) / 100) * qty
@@ -792,18 +791,6 @@ function ModelsTab({ row }: { row: UnifiedMarketRow }) {
                 </div>
               );
             })}
-          </div>
-          {/* Aggregated summary */}
-          <div className="flex items-center gap-3 text-[10px] font-mono pt-1 mt-1 border-t border-t-border/30">
-            <span className="w-28 font-medium text-accent">agg (sum)</span>
-            <span className="text-accent w-14 text-right">
-              p: {row.aggregated_p_yes != null ? `${(row.aggregated_p_yes * 100).toFixed(1)}%` : "--"}
-            </span>
-            <span className={`w-20 text-right font-medium ${row.edge != null ? pnlCls(row.edge) : "text-txt-muted"}`}>
-              {row.edge != null
-                ? `edge: ${row.edge >= 0 ? "+" : ""}${(row.edge * 100).toFixed(1)}pp`
-                : "--"}
-            </span>
           </div>
         </div>
       ) : (
