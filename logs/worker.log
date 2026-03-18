@@ -4172,3 +4172,86 @@ sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) could not translate
 2026-03-18 15:17:44,043 INFO worker: Updated 38 positions from order history
 2026-03-18 15:17:44,326 INFO worker: Cycle complete: 13 total results, 4 orders placed across 1 models
 2026-03-18 15:17:44,328 INFO worker: Sleeping 1200s until next cycle...
+2026-03-18 15:37:49,910 INFO ai_prophet_core.betting.engine: BettingEngine initialized: strategy=default, mode=DRY RUN, enabled=True, db=yes
+2026-03-18 15:37:49,912 INFO worker: BettingEngine ready: strategy=default, dry_run=True
+2026-03-18 15:37:50,842 INFO worker: Starting cycle: models=['gemini:gemini-3.1-pro-preview'], strategy=default, max_markets=25, max_active=80
+2026-03-18 15:37:51,352 INFO worker: Re-fetching 50 sticky markets: {'KXVOTESAVEAMERICA-26MAR-MAR24', 'KXIPODEEL-26APR01', 'KXMEDIARELEASEICEMAN-26-APR01', 'KXDHSFUND-26MAR20', 'KXTVSEASONRELEASETHELASTOFUS-26-APR', 'KXIPHONERELEASE-IPHONE18-26APR01', 'KXIPOBEASTINDUSTRIES-26APR01', 'KXMULLINCONF-26APR01', 'KXBONDIOUT-26APR01', 'KXIPOSTARLINK-26APR01', 'KXIPOSPACEX-26APR01', 'KXVOTESAVEAMERICA-26MAR-APR01', 'KXMEDIARELEASEADDTRAILER-26-APR01', 'KXVOTESAVEAMERICA-26MAR-APR15', 'KXLUTNICKOUT-26APR01', 'KXUSAIRANAGREEMENT-27-26APR', 'KXMEDIARELEASESPIDERMAN-APR26', 'KXIPOANDURIL-26APR01', 'KXNETANYAHUPARDON-26-APR01', 'KXTRUMPUFC-UFC327', 'KXVOTESAVEAMERICA-26MAR-MAR27', 'KXMNDAYCARECHARGE-26APR01', 'KXMULLINCONF-26APR15', 'KXDHSFUND-26APR01', 'KXALBUMRELEASEDATETRIPPIE-APR01-26', 'KXIPOFANNIE-26APR01', 'KXIPOOPENAI-26APR01', 'KXCABLEAVE-26MAR-26APR', 'KXIPOOLIPOP-26APR01', 'KXGABBARDOUT-26-APR01', 'KXIPOCLUELY-26APR01', 'KXSTRIPEIPO-26APR01', 'TEST-CALIB-YES', 'KXTARIFFBILL-26APR01', 'KXFREDDIE-26APR01', 'KXAMBMALAY-26JAN06-APR01', 'KXVOTESAVEAMERICA-26MAR-MAR20', 'KXGROK-GROK5-26APR01', 'KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01', 'KXIPOBREX-26APR01', 'KXIPODISCORD-26APR01', 'KXIPOGLEAN-26APR01', 'KXGREENTERRITORY-29-26APR', 'KXDIAZOUT-MDC-26APR01', 'KXIPORIPPLING-26APR01', 'KXLEAVESTARMER-26APR01', 'KXELECTVENEZUELA-26APR01', 'KXIPOOURA-26APR01', 'KXTRUMPOUT27-27-26APR01', 'KXUSHOMEVAL-26MAR19-T360000'}
+2026-03-18 15:37:53,845 WARNING worker: Failed to fetch market TEST-CALIB-YES: 404 Client Error: Not Found for url: https://api.elections.kalshi.com/trade-api/v2/markets/TEST-CALIB-YES
+2026-03-18 15:37:53,845 INFO worker:   Sticky market TEST-CALIB-YES no longer active, skipping
+2026-03-18 15:37:55,924 INFO worker: Selected 36 markets (from 40 candidates, 2000 events, 10 pages)
+2026-03-18 15:37:55,927 INFO worker: Fetched 0 new markets (36 candidates, 36 excluded as already tracked)
+2026-03-18 15:37:55,927 INFO worker: Total markets this cycle: 49 sticky + 0 new = 49
+2026-03-18 15:37:56,500 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR24 — market prices unchanged (yes=0.14, no=0.88)
+2026-03-18 15:37:57,116 INFO worker:   Skipping KXIPODEEL-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 15:37:57,737 INFO worker:   Skipping KXDHSFUND-26MAR20 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:37:59,959 INFO worker:   Skipping KXIPOBEASTINDUSTRIES-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 15:38:00,579 INFO worker:   Skipping KXMULLINCONF-26APR01 — market prices unchanged (yes=0.91, no=0.12)
+2026-03-18 15:38:01,191 INFO worker:   Skipping KXBONDIOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 15:38:01,814 INFO worker:   Skipping KXIPOSTARLINK-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:02,501 INFO worker:   Skipping KXIPOSPACEX-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:03,118 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-APR01 — market prices unchanged (yes=0.80, no=0.22)
+2026-03-18 15:38:03,744 INFO worker:   Skipping KXLUTNICKOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 15:38:04,373 INFO worker:   Skipping KXUSAIRANAGREEMENT-27-26APR — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 15:38:05,008 INFO worker:   Skipping KXMEDIARELEASESPIDERMAN-APR26 — market prices unchanged (yes=0.05, no=0.96)
+2026-03-18 15:38:05,636 INFO worker:   Skipping KXIPOANDURIL-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:08,001 INFO worker:   Skipping KXIPOFANNIE-26APR01 — market prices unchanged (yes=0.02, no=0.99)
+2026-03-18 15:38:08,620 INFO worker:   Skipping KXIPOOPENAI-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:09,239 INFO worker:   Skipping KXCABLEAVE-26MAR-26APR — market prices unchanged (yes=0.05, no=0.97)
+2026-03-18 15:38:09,862 INFO worker:   Skipping KXIPOOLIPOP-26APR01 — market prices unchanged (yes=0.04, no=0.99)
+2026-03-18 15:38:12,986 INFO worker:   Skipping KXTARIFFBILL-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 15:38:13,605 INFO worker:   Skipping KXFREDDIE-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 15:38:15,029 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR20 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 15:38:15,650 INFO worker:   Skipping KXGROK-GROK5-26APR01 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 15:38:16,272 INFO worker:   Skipping KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01 — market prices unchanged (yes=0.09, no=0.94)
+2026-03-18 15:38:17,696 INFO worker:   Skipping KXIPODISCORD-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:19,120 INFO worker:   Skipping KXGREENTERRITORY-29-26APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:19,742 INFO worker:   Skipping KXDIAZOUT-MDC-26APR01 — market prices unchanged (yes=0.18, no=0.83)
+2026-03-18 15:38:21,157 INFO worker:   Skipping KXLEAVESTARMER-26APR01 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 15:38:21,770 INFO worker:   Skipping KXELECTVENEZUELA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:22,382 INFO worker:   Skipping KXIPOOURA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:23,003 INFO worker:   Skipping KXTRUMPOUT27-27-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 15:38:23,064 INFO worker: Phase A complete: 11 markets to analyze (from 49 raw)
+2026-03-18 15:38:23,064 INFO worker: Using remote predictor: https://predictor-441548451945.us-west1.run.app (parallel fanout)
+2026-03-18 15:38:23,064 INFO worker: Fanning out 11 prediction tasks (11 markets × 1 models) with max_workers=20
+2026-03-18 15:38:40,469 INFO worker:   [gemini-3.1-pro-preview] KXTVSEASONRELEASETHELASTOFUS-26-APR → p_yes=0.000
+2026-03-18 15:38:40,765 INFO worker:   [gemini-3.1-pro-preview] KXIPOBREX-26APR01 → p_yes=0.010
+2026-03-18 15:38:40,923 INFO worker:   [gemini-3.1-pro-preview] KXAMBMALAY-26JAN06-APR01 → p_yes=0.010
+2026-03-18 15:38:44,589 INFO worker:   [gemini-3.1-pro-preview] KXMULLINCONF-26APR15 → p_yes=0.920
+2026-03-18 15:38:51,266 INFO worker:   [gemini-3.1-pro-preview] KXIPHONERELEASE-IPHONE18-26APR01 → p_yes=0.010
+2026-03-18 15:38:56,056 INFO worker:   [gemini-3.1-pro-preview] KXIPOCLUELY-26APR01 → p_yes=0.001
+2026-03-18 15:39:07,343 INFO worker:   [gemini-3.1-pro-preview] KXIPORIPPLING-26APR01 → p_yes=0.010
+2026-03-18 15:39:09,286 INFO worker:   [gemini-3.1-pro-preview] KXDHSFUND-26APR01 → p_yes=0.220
+2026-03-18 15:39:24,648 INFO worker:   [gemini-3.1-pro-preview] KXIPOGLEAN-26APR01 → p_yes=0.010
+2026-03-18 15:40:20,627 INFO worker:   [gemini-3.1-pro-preview] KXSTRIPEIPO-26APR01 → p_yes=0.010
+2026-03-18 15:40:24,143 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 15:42:29,303 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 15:44:34,441 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXGABBARDOUT-26-APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 15:44:34,445 INFO worker: Phase B complete: 10/11 predictions in 371.4s
+2026-03-18 15:44:34,706 INFO worker:   [gemini-3.1-pro-preview] edge=-0.010 (p_yes=0.000 vs yes_ask=0.010)
+2026-03-18 15:44:35,561 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXTVSEASONRELEASETHELASTOFUS-26-APR: p_yes=0.000 → SKIP
+2026-03-18 15:44:35,807 INFO worker:   [gemini-3.1-pro-preview] edge=0.000 (p_yes=0.010 vs yes_ask=0.010)
+2026-03-18 15:44:36,604 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXIPHONERELEASE-IPHONE18-26APR01: p_yes=0.010 → SKIP
+2026-03-18 15:44:36,851 INFO worker:   [gemini-3.1-pro-preview] edge=-0.010 (p_yes=0.920 vs yes_ask=0.930)
+2026-03-18 15:44:37,714 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXMULLINCONF-26APR15: p_yes=0.920 → SKIP
+2026-03-18 15:44:37,957 INFO worker:   [gemini-3.1-pro-preview] edge=-0.100 (p_yes=0.220 vs yes_ask=0.320)
+2026-03-18 15:44:39,003 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXDHSFUND-26APR01: p_yes=0.220 → NO 0.1000 @ 0.700
+2026-03-18 15:44:39,003 INFO ai_prophet_core.betting.engine: [BETTING] NET: selling 10 YES instead of buying 10 NO on KXDHSFUND-26APR01
+2026-03-18 15:44:39,003 INFO ai_prophet_core.betting.adapters.kalshi: KalshiAdapter [DRY RUN]: 10x KXDHSFUND-26APR01 YES @ 0.7
+2026-03-18 15:44:39,003 INFO ai_prophet_core.betting.engine: [BETTING] Order 4ca41d4e: SELL YES 10×KXDHSFUND-26APR01 @ 32c → DRY_RUN (filled=10.0 @ 0.7)
+2026-03-18 15:44:39,249 WARNING worker:   No model predictions for KXGABBARDOUT-26-APR01, skipping
+2026-03-18 15:44:39,500 INFO worker:   [gemini-3.1-pro-preview] edge=-0.029 (p_yes=0.001 vs yes_ask=0.030)
+2026-03-18 15:44:40,295 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXIPOCLUELY-26APR01: p_yes=0.001 → SKIP
+2026-03-18 15:44:40,540 INFO worker:   [gemini-3.1-pro-preview] edge=-0.010 (p_yes=0.010 vs yes_ask=0.020)
+2026-03-18 15:44:41,354 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXSTRIPEIPO-26APR01: p_yes=0.010 → SKIP
+2026-03-18 15:44:41,601 INFO worker:   [gemini-3.1-pro-preview] edge=-0.020 (p_yes=0.010 vs yes_ask=0.030)
+2026-03-18 15:44:42,382 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXAMBMALAY-26JAN06-APR01: p_yes=0.010 → SKIP
+2026-03-18 15:44:42,627 INFO worker:   [gemini-3.1-pro-preview] edge=-0.010 (p_yes=0.010 vs yes_ask=0.020)
+2026-03-18 15:44:43,401 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXIPOBREX-26APR01: p_yes=0.010 → SKIP
+2026-03-18 15:44:43,645 INFO worker:   [gemini-3.1-pro-preview] edge=0.000 (p_yes=0.010 vs yes_ask=0.010)
+2026-03-18 15:44:44,450 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXIPOGLEAN-26APR01: p_yes=0.010 → SKIP
+2026-03-18 15:44:44,694 INFO worker:   [gemini-3.1-pro-preview] edge=-0.020 (p_yes=0.010 vs yes_ask=0.030)
+2026-03-18 15:44:45,469 INFO ai_prophet_core.betting.engine: [BETTING] gemini:gemini-3.1-pro-preview on kalshi:KXIPORIPPLING-26APR01: p_yes=0.010 → SKIP
+2026-03-18 15:44:45,470 INFO worker: Cycle results: 1 orders placed, 9 skipped, 10 total across 49 markets
+2026-03-18 15:44:52,721 INFO worker: Updated 40 positions from order history
+2026-03-18 15:44:53,007 INFO worker: Cycle complete: 10 total results, 1 orders placed across 1 models
+2026-03-18 15:44:53,007 INFO worker: Sleeping 1200s until next cycle...

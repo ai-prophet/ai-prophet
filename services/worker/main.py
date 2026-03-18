@@ -733,15 +733,15 @@ def create_llm_predictor(model_spec: str):
         model_name = parts[1]
         include_market = False
     else:
-        provider, model_name = "openai", parts[0]
-        include_market = False
+        raise ValueError(f"model_spec must include a provider prefix, e.g. 'gemini:{parts[0]}'")
 
-    if provider == "openai":
-        return _openai_predictor(model_name, include_market)
-    elif provider in ("anthropic", "claude"):
-        return _anthropic_predictor(model_name, include_market)
-    elif provider in ("gemini", "google"):
+    if provider in ("gemini", "google"):
         return _gemini_predictor(model_name, include_market)
+    elif provider in ("openai", "anthropic", "claude"):
+        raise NotImplementedError(
+            f"Provider '{provider}' is not currently active. "
+            "Uncomment _openai_predictor/_anthropic_predictor in worker/main.py to re-enable."
+        )
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -750,24 +750,37 @@ def _build_prompts(market_info: dict, include_market_prices: bool = False) -> tu
     """Build system and user prompts matching the ProphetArena AgentPrompts format.
 
     Args:
-        market_info: Market data dict with title, yes_ask, no_ask, etc.
+        market_info: Market data dict with title, yes_ask, no_ask, subtitle (rules), etc.
         include_market_prices: If True, include YES/NO ask prices in the prompt.
+            When False, the model is also instructed not to search for prediction
+            market data so that its prediction is independent of market consensus.
 
     Returns:
         (system_prompt, user_prompt)
     """
     title = market_info.get("title", "")
+    rules = market_info.get("subtitle", "")
+    rules_block = f"\n  Resolution rules: {rules}\n" if rules else ""
+
+    avoid_market_block = ""
+    if not include_market_prices:
+        avoid_market_block = """
+CRITICAL RESTRICTION:
+- Do NOT search for or use any prediction market data, betting odds, or market prices
+- Do NOT reference Polymarket, Kalshi, PredictIt, Metaculus, or any other prediction/betting platforms
+- Base your predictions ONLY on factual news, expert analysis, and primary sources
+- Your prediction should be independent of any existing market consensus
+"""
 
     system = f"""You are an AI assistant specialized in analyzing and predicting real-world events.
-You have deep expertise in predicting the outcome of the event: "{title}"
-
-Note that this event occurs in the future. Your goal is to provide well-reasoned predictions.
-You will be predicting the probability (as a float value from 0 to 1) of ONLY the following possible outcome:
-- {title}
-
+You are predicting whether the following binary outcome resolves YES: "{title}"
+{rules_block}
+This is a binary prediction market contract. Your task is to estimate the probability (0 to 1) that this specific outcome resolves YES.
+Use web search to find relevant recent news, expert analysis, and primary sources to inform your prediction.
+{avoid_market_block}
 IMPORTANT CONSTRAINTS:
-1. You MUST ONLY provide a probability for the exact outcome listed above
-2. Ensure your probability is between 0 and 1
+1. Output a single probability between 0 and 1 for this outcome resolving YES
+2. Do not speculate about other related outcomes or contracts
 
 Your response MUST be in JSON format with the following structure:
 ```json
@@ -796,9 +809,7 @@ Note: Market data can provide insights into the current consensus influenced by 
 
 Please analyze the event and provide your prediction following the specified format."""
     else:
-        user = f"""Please analyze the event "{title}" and provide your prediction following the specified format.
-
-Use your knowledge and any available information to form an independent probability estimate."""
+        user = "Please analyze the event described in the system prompt and provide your prediction following the specified format."
 
     return system, user
 
@@ -837,52 +848,52 @@ def _parse_prediction(content: str) -> dict:
     }
 
 
-def _openai_predictor(model_name: str, include_market: bool = False):
-    """Return a predictor function using OpenAI."""
-    import openai
-    client = openai.OpenAI(api_key=_instance_setting("OPENAI_API_KEY"))
+# def _openai_predictor(model_name: str, include_market: bool = False):
+#     """Return a predictor function using OpenAI."""
+#     import openai
+#     client = openai.OpenAI(api_key=_instance_setting("OPENAI_API_KEY"))
 
-    def predict(market_info: dict) -> dict:
-        system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-                max_tokens=800,
-                response_format={"type": "json_object"},
-            )
-            return _parse_prediction(response.choices[0].message.content)
-        except Exception as e:
-            logger.error("OpenAI prediction failed: %s", e)
-            return {"p_yes": 0.5, "confidence": 0.0, "reasoning": f"Error: {e}"}
+#     def predict(market_info: dict) -> dict:
+#         system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
+#         try:
+#             response = client.chat.completions.create(
+#                 model=model_name,
+#                 messages=[
+#                     {"role": "system", "content": system_prompt},
+#                     {"role": "user", "content": user_prompt},
+#                 ],
+#                 temperature=0.2,
+#                 max_tokens=800,
+#                 response_format={"type": "json_object"},
+#             )
+#             return _parse_prediction(response.choices[0].message.content)
+#         except Exception as e:
+#             logger.error("OpenAI prediction failed: %s", e)
+#             return {"p_yes": 0.5, "confidence": 0.0, "reasoning": f"Error: {e}"}
 
-    return predict
+#     return predict
 
 
-def _anthropic_predictor(model_name: str, include_market: bool = False):
-    """Return a predictor function using Anthropic."""
-    import anthropic
-    client = anthropic.Anthropic(api_key=_instance_setting("ANTHROPIC_API_KEY"))
+# def _anthropic_predictor(model_name: str, include_market: bool = False):
+#     """Return a predictor function using Anthropic."""
+#     import anthropic
+#     client = anthropic.Anthropic(api_key=_instance_setting("ANTHROPIC_API_KEY"))
 
-    def predict(market_info: dict) -> dict:
-        system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
-        try:
-            response = client.messages.create(
-                model=model_name,
-                max_tokens=800,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-            )
-            return _parse_prediction(response.content[0].text)
-        except Exception as e:
-            logger.error("Anthropic prediction failed: %s", e)
-            return {"p_yes": 0.5, "confidence": 0.0, "reasoning": f"Error: {e}"}
+#     def predict(market_info: dict) -> dict:
+#         system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
+#         try:
+#             response = client.messages.create(
+#                 model=model_name,
+#                 max_tokens=800,
+#                 system=system_prompt,
+#                 messages=[{"role": "user", "content": user_prompt}],
+#             )
+#             return _parse_prediction(response.content[0].text)
+#         except Exception as e:
+#             logger.error("Anthropic prediction failed: %s", e)
+#             return {"p_yes": 0.5, "confidence": 0.0, "reasoning": f"Error: {e}"}
 
-    return predict
+#     return predict
 
 
 def _gemini_predictor(model_name: str, include_market: bool = False):
