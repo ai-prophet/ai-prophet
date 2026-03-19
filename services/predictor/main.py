@@ -275,7 +275,11 @@ def _predict_gemini(
         raise ValueError(f"Gemini returned no candidates: {data}")
 
     parts = candidates[0].get("content", {}).get("parts", [])
-    text = "".join(p.get("text", "") for p in parts)
+    # Exclude thought parts (thinking-mode internal reasoning) — response is in non-thought parts
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought", False))
+    if not text.strip():
+        finish_reason = candidates[0].get("finishReason", "unknown")
+        raise ValueError(f"Gemini returned empty response text (finishReason={finish_reason})")
 
     sources: list[dict] = []
     try:
