@@ -173,6 +173,10 @@ export function PnLChart({
         </div>
 
         <div className="flex items-center gap-2 ml-auto">
+          {/* Current terminal value */}
+          <span className={`text-[10px] font-mono font-semibold ${isUp ? "text-profit" : "text-loss"}`}>
+            {lastVal >= 0 ? "+" : ""}${lastVal.toFixed(2)}
+          </span>
           <label className="flex items-center gap-1 text-[9px] text-txt-muted cursor-pointer">
             <input
               type="checkbox"
