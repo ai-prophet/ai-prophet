@@ -73,6 +73,7 @@ export default function Dashboard() {
   const [resolvedMarkets, setResolvedMarkets] = useState<ResolvedMarketsData | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [clearingAlertKey, setClearingAlertKey] = useState<string | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
@@ -215,6 +216,29 @@ export default function Dashboard() {
       setClearingAlertKey((current) => (current === alertKey ? null : current));
     }
   }, [instanceApi, selectedInstance.key, selectedInstance.label]);
+
+  const clearAllAlerts = useCallback(async () => {
+    setClearingAll(true);
+    const previousAlerts = alerts;
+    try {
+      setAlerts([]);
+      const current = dataCacheRef.current[selectedInstance.key];
+      if (current) {
+        dataCacheRef.current[selectedInstance.key] = { ...current, alerts: [] };
+      }
+      await instanceApi.clearAllAlerts();
+    } catch (e) {
+      setAlerts(previousAlerts);
+      const current = dataCacheRef.current[selectedInstance.key];
+      if (current) {
+        dataCacheRef.current[selectedInstance.key] = { ...current, alerts: previousAlerts };
+      }
+      const message = e instanceof Error ? e.message : "Failed to clear all alerts";
+      setError(`${selectedInstance.label}: ${message}`);
+    } finally {
+      setClearingAll(false);
+    }
+  }, [alerts, instanceApi, selectedInstance.key, selectedInstance.label]);
 
   const fetchAll = useCallback(async () => {
     const requestId = activeRequestRef.current + 1;
@@ -695,7 +719,9 @@ export default function Dashboard() {
                 alerts={alerts}
                 onAlertClick={focusMarket}
                 onAlertClear={clearAlert}
+                onClearAll={clearAllAlerts}
                 clearingAlertKey={clearingAlertKey}
+                clearingAll={clearingAll}
               />
             )}
             {supportTab === "activity" && <LiveActivity logs={logs} />}

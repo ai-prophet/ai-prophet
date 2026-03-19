@@ -1454,6 +1454,40 @@ def clear_alert(req: AlertClearRequest) -> dict[str, Any]:
     return {"ok": True, "alert_key": req.alert_key, "instance_name": resolved_instance}
 
 
+class AlertClearAllRequest(BaseModel):
+    instance_name: str | None = None
+
+
+@app.post("/alerts/clear-all")
+def clear_all_alerts(req: AlertClearAllRequest) -> dict[str, Any]:
+    """Dismiss all currently active alerts for the instance."""
+    resolved_instance = _instance_name(req.instance_name)
+    # Reuse get_alerts to find active alert keys
+    active_alerts = get_alerts(resolved_instance)["alerts"]
+    if not active_alerts:
+        return {"ok": True, "cleared": 0, "instance_name": resolved_instance}
+
+    engine = get_db()
+    cleared = 0
+    with get_session(engine) as session:
+        existing_keys = {
+            row.alert_key
+            for row in _instance_query(session, AlertDismissal, resolved_instance).all()
+        }
+        for alert in active_alerts:
+            if alert["key"] not in existing_keys:
+                session.add(
+                    AlertDismissal(
+                        instance_name=resolved_instance,
+                        alert_key=alert["key"],
+                        created_at=datetime.now(UTC),
+                    )
+                )
+                cleared += 1
+
+    return {"ok": True, "cleared": cleared, "instance_name": resolved_instance}
+
+
 # ── GET /predictions/{market_id} ─────────────────────────────────
 
 
