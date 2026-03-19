@@ -9,7 +9,7 @@ Usage:
     python -m ai_prophet.forecast.example_agent
 
     # In another terminal:
-    prophet forecast predict --events events.json --agent-url http://localhost:8000/predict --team-name my-team
+    prophet forecast predict --events events.json --agent-url http://localhost:8000/predict
 """
 
 from __future__ import annotations

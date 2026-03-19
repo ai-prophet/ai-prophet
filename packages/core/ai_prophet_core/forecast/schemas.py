@@ -29,8 +29,7 @@ class Prediction(BaseModel):
 
 
 class Submission(BaseModel):
-    """A team's full set of predictions for a day."""
+    """A set of predictions for a day."""
 
-    team_name: str
     timestamp: datetime
     predictions: list[Prediction] = Field(min_length=1)

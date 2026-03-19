@@ -30,14 +30,13 @@ PA_TEAM_NAME=your-team-name
 
 ```bash
 # 1. Register your team (required before submitting)
-prophet forecast register --team-name my-team
+prophet forecast register --team-name TEAM_NAME
 
 # 2. Get the current events from the server
 prophet forecast events -o events.json
 
 # 3. Run predictions with the built-in example agent (no server needed)
-prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team
-
+prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent
 # 4. Submit to the server
 prophet forecast submit --submission submission.json
 
@@ -105,16 +104,13 @@ Use `--local` or `--agent-url`, not both.
 
 ```bash
 # Run with the built-in example agent (simplest)
-prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team
-
+prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent
 # Run with your own agent module
-prophet forecast predict --events events.json --local my_team.agent --team-name my-team
-
+prophet forecast predict --events events.json --local my_team.agent
 # Run against a remote agent URL
-prophet forecast predict --events events.json --agent-url http://localhost:8000/predict --team-name my-team
-
+prophet forecast predict --events events.json --agent-url http://localhost:8000/predict
 # Predict a specific ticker only
-prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team -t KXCABOUT-26MAR-YES
+prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent -t KXCABOUT-26MAR-YES
 ```
 
 ### Local Agent Contract
@@ -137,14 +133,12 @@ There are two ways to use it:
 
 **1. Local mode (recommended for getting started):**
 ```bash
-prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent --team-name my-team
-```
+prophet forecast predict --events events.json --local ai_prophet.forecast.example_agent```
 
 **2. As a standalone server (for custom deployments):**
 ```bash
 python -m ai_prophet.forecast.example_agent  # starts on port 8000
-prophet forecast predict --events events.json --agent-url http://localhost:8000/predict --team-name my-team
-```
+prophet forecast predict --events events.json --agent-url http://localhost:8000/predict```
 
 Use this as a starting point — replace the Claude call with your own forecasting logic.
 
@@ -180,8 +174,7 @@ You must register your team before submitting predictions:
 
 ```bash
 # Register team name only
-prophet forecast register --team-name my-team
-```
+prophet forecast register```
 
 This saves `PA_TEAM_NAME=my-team` to your `.env` file so other commands can pick it up.
 

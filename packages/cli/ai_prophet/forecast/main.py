@@ -2,7 +2,7 @@
 
 Usage:
     prophet forecast retrieve --deadline "2026-03-15T23:59:59Z" --output events.json
-    prophet forecast predict --events events.json --agent-url http://localhost:8000/predict --team-name alpha
+    prophet forecast predict --events events.json --agent-url http://localhost:8000/predict
     prophet forecast evaluate --submission submission.json --actuals actuals.json
     prophet forecast submit --submission submission.json --server-url http://localhost:8000
     prophet forecast leaderboard --server-url http://localhost:8000
@@ -271,11 +271,6 @@ def _save_team_name_to_env(team_name: str) -> None:
     "Example: ai_prophet.forecast.example_agent",
 )
 @click.option(
-    "--team-name",
-    required=True,
-    help="Team name for the submission.",
-)
-@click.option(
     "--output",
     "-o",
     default="submission.json",
@@ -301,7 +296,6 @@ def predict(
     events: str,
     agent_url: str | None,
     local: str | None,
-    team_name: str,
     output: str,
     timeout: int,
     ticker: tuple[str, ...],
@@ -382,7 +376,6 @@ def predict(
         raise click.ClickException("No predictions collected — nothing to submit.")
 
     submission = Submission(
-        team_name=team_name,
         timestamp=datetime.now(timezone.utc),
         predictions=predictions,
     )
@@ -414,7 +407,6 @@ def evaluate(submission: str, actuals: str, verbose: bool) -> None:
     act = load_actuals(actuals)
     result = score(sub.predictions, act)
 
-    click.echo(f"Team: {sub.team_name}")
     click.echo(f"Predictions: {result['n_predictions']}")
     click.echo(f"Matched: {result['n_matched']}")
     brier = result["brier_score"]
