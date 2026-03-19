@@ -21,7 +21,19 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from instance_config import env_suffix, normalize_instance_name
+try:
+    from instance_config import env_suffix, normalize_instance_name
+except ModuleNotFoundError:
+    # Keep Cloud Run source deploys self-contained when sibling modules are
+    # outside the uploaded build context.
+    def normalize_instance_name(instance_name: str | None) -> str:
+        value = (instance_name or "").strip()
+        return value or "Haifeng"
+
+
+    def env_suffix(instance_name: str | None) -> str:
+        normalized = normalize_instance_name(instance_name)
+        return "".join(ch if ch.isalnum() else "_" for ch in normalized.upper())
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
