@@ -176,8 +176,10 @@ export default function Dashboard() {
 
   const clearAlert = useCallback(async (alertKey: string) => {
     setClearingAlertKey(alertKey);
+    let removedAlert: Alert | undefined;
     try {
       setAlerts((currentAlerts) => {
+        removedAlert = currentAlerts.find((alert) => alert.key === alertKey);
         const nextAlerts = currentAlerts.filter((alert) => alert.key !== alertKey);
         const current = dataCacheRef.current[selectedInstance.key];
         if (current) {
@@ -188,13 +190,31 @@ export default function Dashboard() {
         }
         return nextAlerts;
       });
+      await instanceApi.clearAlert(alertKey);
     } catch (e) {
+      if (removedAlert) {
+        const restoredAlert = removedAlert;
+        setAlerts((currentAlerts) => {
+          if (currentAlerts.some((alert) => alert.key === restoredAlert.key)) {
+            return currentAlerts;
+          }
+          const nextAlerts = [restoredAlert, ...currentAlerts];
+          const current = dataCacheRef.current[selectedInstance.key];
+          if (current) {
+            dataCacheRef.current[selectedInstance.key] = {
+              ...current,
+              alerts: nextAlerts,
+            };
+          }
+          return nextAlerts;
+        });
+      }
       const message = e instanceof Error ? e.message : "Failed to clear alert";
       setError(`${selectedInstance.label}: ${message}`);
     } finally {
       setClearingAlertKey((current) => (current === alertKey ? null : current));
     }
-  }, [selectedInstance.key, selectedInstance.label]);
+  }, [instanceApi, selectedInstance.key, selectedInstance.label]);
 
   const fetchAll = useCallback(async () => {
     const requestId = activeRequestRef.current + 1;
