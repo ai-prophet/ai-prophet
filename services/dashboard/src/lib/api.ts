@@ -731,13 +731,13 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
       fetch(`${normalizedBaseUrl}${buildPath("/alerts/clear")}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alert_key: alertKey }),
+        body: JSON.stringify({ alert_key: alertKey, instance_name: instanceName || undefined }),
       }).then((r) => r.json()),
     clearAllAlerts: () =>
       fetch(`${normalizedBaseUrl}${buildPath("/alerts/clear-all")}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ instance_name: instanceName || undefined }),
       }).then((r) => r.json()),
     getPredictions: (marketId: string) =>
       fetchJSON<PredictionTimeSeries>(normalizedBaseUrl, buildPath(`/predictions/${encodeURIComponent(marketId)}`)).catch(() => null),
