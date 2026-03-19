@@ -48,11 +48,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from instance_config import env_suffix, get_current_instance_name, get_instance_env
+from position_replay import replay_orders_by_ticker, summarize_replayed_positions
 
 load_dotenv()
 
 logger = logging.getLogger("worker")
 INSTANCE_NAME = get_current_instance_name()
+PREDICTOR_TIMEOUT_SEC = float(os.getenv("PREDICTOR_TIMEOUT_SEC", "180"))
+REMOTE_PREDICT_TIMEOUT_SEC = float(
+    os.getenv("REMOTE_PREDICT_TIMEOUT_SEC", str(PREDICTOR_TIMEOUT_SEC + 10))
+)
 
 
 def _instance_setting(key: str, default: str = "") -> str:
@@ -112,6 +117,68 @@ def _build_instance_env() -> dict[str, str]:
         if value is not None:
             env_map[key] = value
     return env_map
+
+
+def _validate_instance_profile_or_raise() -> None:
+    expected_profiles = {
+        "Haifeng": {
+            "models": ["gemini:gemini-3.1-pro-preview"],
+            "market_fetcher": True,
+            "peers": ["Jibang"],
+            "strategy": "rebalancing",
+            "max_markets": 50,
+            "max_active": 50,
+        },
+        "Jibang": {
+            "models": ["gemini:gemini-3.1-pro-preview:market"],
+            "market_fetcher": False,
+            "peers": ["Haifeng"],
+            "strategy": "rebalancing",
+            "max_markets": 50,
+            "max_active": 50,
+        },
+    }
+    expected = expected_profiles.get(INSTANCE_NAME)
+    if not expected:
+        return
+
+    model_specs = [m.strip() for m in _instance_setting("WORKER_MODELS", "").split(",") if m.strip()]
+    market_fetcher = _instance_bool_setting("MARKET_FETCHER", True)
+    peer_instances = [p.strip() for p in _instance_setting("WORKER_PEER_INSTANCES", "").split(",") if p.strip()]
+    strategy_name = _instance_setting("WORKER_STRATEGY", "rebalancing").strip().lower()
+    max_markets = _instance_int_setting("WORKER_MAX_MARKETS", 50)
+    max_active = _instance_int_setting("WORKER_MAX_ACTIVE_MARKETS", 50)
+
+    issues: list[str] = []
+    if model_specs != expected["models"]:
+        issues.append(f"models={model_specs} expected={expected['models']}")
+    if market_fetcher != expected["market_fetcher"]:
+        issues.append(f"market_fetcher={market_fetcher} expected={expected['market_fetcher']}")
+    if sorted(peer_instances) != sorted(expected["peers"]):
+        issues.append(f"peers={peer_instances} expected={expected['peers']}")
+    if strategy_name != expected["strategy"]:
+        issues.append(f"strategy={strategy_name} expected={expected['strategy']}")
+    if max_markets != expected["max_markets"]:
+        issues.append(f"max_markets={max_markets} expected={expected['max_markets']}")
+    if max_active != expected["max_active"]:
+        issues.append(f"max_active={max_active} expected={expected['max_active']}")
+
+    if not issues:
+        return
+
+    message = (
+        f"Refusing to start misconfigured worker for instance={INSTANCE_NAME}: "
+        + "; ".join(issues)
+    )
+    logger.error(message)
+    try:
+        from ai_prophet_core.betting.db import create_db_engine
+        db_engine = create_db_engine()
+        log_system_event(db_engine, "ERROR", message, instance_name=INSTANCE_NAME)
+        db_engine.dispose()
+    except Exception:
+        pass
+    raise SystemExit(2)
 
 # ── Shutdown handling ──────────────────────────────────────────────
 
@@ -298,8 +365,9 @@ def save_model_run(db_engine, model_name: str, market_id: str,
 def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
     """Aggregate betting_orders into trading_positions for the dashboard.
 
-    For each ticker with filled/dry-run orders, computes net position
-    (side, quantity, avg_price) and realized P&L.
+    For each ticker with filled/dry-run orders, computes the literal held
+    contract side (YES or NO), open quantity, average entry price, and
+    realized P&L.
     """
     if db_engine is None:
         return
@@ -329,85 +397,31 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
                 .all()
             )
 
-            # Aggregate by ticker: track buys, sells, and realized PnL
-            positions: dict[str, dict] = {}
-            for order in orders:
-                ticker = order.ticker
-                if ticker not in positions:
-                    positions[ticker] = {
-                        "yes_shares": 0.0,
-                        "total_cost": 0.0,
-                        "realized_pnl": 0.0,
-                        "max_position": 0.0,
-                        "realized_trades": 0,
-                    }
+            positions = replay_orders_by_ticker(orders)
+            for ticker, pos in positions.items():
+                for warning in pos.warnings:
+                    logger.warning("Position replay warning for %s (%s): %s", ticker, instance_name, warning)
 
-                shares = order.filled_shares if order.filled_shares > 0 else float(order.count)
-                price = order.fill_price if order.fill_price > 0 else order.price_cents / 100.0
-                # Fix corrupted fill_price stored as cents (e.g. 17.0 instead of 0.17)
-                if price > 1.0:
-                    price = price / 100.0
+            active_market_ids = {
+                f"kalshi:{ticker}"
+                for ticker, pos in positions.items()
+                if pos.current_position()[0] is not None and pos.current_position()[1] >= 0.001
+            }
 
-                # Determine if this is a SELL order (action column may not
-                # exist on old rows, so handle gracefully)
-                try:
-                    action = getattr(order, "action", "BUY") or "BUY"
-                except AttributeError:
-                    action = "BUY"
-
-                pos = positions[ticker]
-
-                if action.upper() == "SELL":
-                    # Compute realized PnL from the sell
-                    current_qty = abs(pos["yes_shares"])
-                    if current_qty > 0:
-                        avg_entry = abs(pos["total_cost"] / pos["yes_shares"]) if pos["yes_shares"] != 0 else 0
-                        realized = (price - avg_entry) * shares
-                        pos["realized_pnl"] += realized
-                        pos["realized_trades"] += 1
-
-                        # Reduce cost basis by avg_entry (not sell price)
-                        # to keep avg_price accurate for remaining shares
-                        if order.side.lower() == "yes":
-                            pos["yes_shares"] -= shares
-                            pos["total_cost"] -= avg_entry * shares
-                        else:
-                            pos["yes_shares"] += shares
-                            pos["total_cost"] += avg_entry * shares
-                    else:
-                        # No position to sell — ignore to prevent negative shares
-                        pass
-                else:
-                    # BUY order
-                    if order.side.lower() == "yes":
-                        pos["yes_shares"] += shares
-                        pos["total_cost"] += shares * price
-                    else:  # no
-                        pos["yes_shares"] -= shares
-                        pos["total_cost"] -= shares * price
-
-                # When position is flat, reset cost basis to prevent
-                # residuals from leaking across side flips
-                if abs(pos["yes_shares"]) < 0.001:
-                    pos["total_cost"] = 0.0
-                    pos["yes_shares"] = 0.0
-                else:
-                    pos["max_position"] = max(pos["max_position"], abs(pos["yes_shares"]))
+            # Drop orphaned snapshot rows so the dashboard mirrors the cleaned
+            # order ledger exactly after repairs or manual data cleanup.
+            (
+                session.query(TradingPosition)
+                .filter(TradingPosition.instance_name == instance_name)
+                .filter(~TradingPosition.market_id.in_(active_market_ids) if active_market_ids else True)
+                .delete(synchronize_session=False)
+            )
 
             # Upsert into trading_positions
             for ticker, pos in positions.items():
-                net_shares = pos["yes_shares"]
-                if abs(net_shares) < 0.001:
-                    # No position — remove if exists
-                    session.query(TradingPosition).filter_by(
-                        instance_name=instance_name,
-                        market_id=f"kalshi:{ticker}"
-                    ).delete()
+                side, qty, avg_price = pos.current_position()
+                if side is None or qty < 0.001:
                     continue
-
-                side = "yes" if net_shares > 0 else "no"
-                qty = abs(net_shares)
-                avg_price = abs(pos["total_cost"] / net_shares) if net_shares != 0 else 0
 
                 market_id = f"kalshi:{ticker}"
                 market = markets_by_ticker.get(ticker)
@@ -433,10 +447,10 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
                     existing.contract = side
                     existing.quantity = qty
                     existing.avg_price = round(avg_price, 4)
-                    existing.realized_pnl = round(pos["realized_pnl"], 4)
+                    existing.realized_pnl = round(pos.realized_pnl, 4)
                     existing.unrealized_pnl = round(unrealized, 4)
-                    existing.max_position = max(existing.max_position or 0.0, pos["max_position"], qty)
-                    existing.realized_trades = pos["realized_trades"]
+                    existing.max_position = max(existing.max_position or 0.0, pos.max_position, qty)
+                    existing.realized_trades = pos.realized_trades
                     existing.updated_at = now
                 else:
                     session.add(TradingPosition(
@@ -445,16 +459,61 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
                         contract=side,
                         quantity=qty,
                         avg_price=round(avg_price, 4),
-                        realized_pnl=round(pos["realized_pnl"], 4),
+                        realized_pnl=round(pos.realized_pnl, 4),
                         unrealized_pnl=round(unrealized, 4),
-                        max_position=max(pos["max_position"], qty),
-                        realized_trades=pos["realized_trades"],
+                        max_position=max(pos.max_position, qty),
+                        realized_trades=pos.realized_trades,
                         updated_at=now,
                     ))
 
         logger.info("Updated %d positions from order history", len(positions))
     except Exception as e:
         logger.warning("Failed to update positions: %s", e)
+
+
+def _load_order_ledger_state(
+    db_engine,
+    adapter,
+    instance_name: str,
+):
+    """Build authoritative position state directly from the order ledger.
+
+    This avoids relying on trading_positions rows that may lag behind the
+    actual betting_orders history during the active cycle.
+    """
+    if db_engine is None:
+        return None
+
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from ai_prophet_core.betting.db_schema import BettingOrder
+
+        with get_session(db_engine) as session:
+            orders = (
+                session.query(BettingOrder)
+                .filter(BettingOrder.instance_name == instance_name)
+                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
+                .all()
+            )
+
+        positions = replay_orders_by_ticker(orders)
+        capital_deployed, total_realized, open_position_count = summarize_replayed_positions(positions)
+
+        try:
+            real_balance = adapter.get_balance()
+        except Exception:
+            real_balance = Decimal("0")
+
+        return {
+            "positions": positions,
+            "cash": real_balance - Decimal(str(capital_deployed)) + Decimal(str(total_realized)),
+            "total_pnl": Decimal(str(total_realized)),
+            "position_count": open_position_count,
+        }
+    except Exception as e:
+        logger.debug("Could not build order ledger state: %s", e)
+        return None
 
 
 # ── Sticky market tracking ────────────────────────────────────────
@@ -940,7 +999,7 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
             f"GEMINI_API_KEY_{env_suffix(INSTANCE_NAME)} env var required for Gemini"
         )
     base_url = "https://generativelanguage.googleapis.com/v1beta"
-    http_client = httpx.Client(timeout=120.0)
+    http_client = httpx.Client(timeout=PREDICTOR_TIMEOUT_SEC)
 
     def predict(market_info: dict) -> dict:
         system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
@@ -1017,7 +1076,7 @@ def _remote_predict(
             "instance_name": INSTANCE_NAME,
         },
         headers={"X-API-Key": api_key} if api_key else {},
-        timeout=130,
+        timeout=REMOTE_PREDICT_TIMEOUT_SEC,
     )
     resp.raise_for_status()
     return resp.json()
@@ -1487,6 +1546,7 @@ def run_cycle(args) -> None:
 
     # ── Phase C: Aggregate & bet (sequential) ─────────────────────
     # BettingEngine is NOT thread-safe — process all markets sequentially.
+    order_ledger_state = _load_order_ledger_state(db_engine, adapter, INSTANCE_NAME)
     for mkt in markets_to_analyze:
         if _shutdown_requested:
             logger.info("Shutdown requested, stopping betting")
@@ -1551,49 +1611,30 @@ def run_cycle(args) -> None:
                 instance_name=INSTANCE_NAME,
             )
 
-        # Build per-market portfolio snapshot
+        # Build per-market portfolio snapshot directly from the order ledger so
+        # rebalancing uses authoritative holdings instead of potentially stale
+        # trading_positions snapshots.
         portfolio = None
-        if db_engine:
+        if order_ledger_state is not None:
             try:
-                from ai_prophet_core.betting.db import get_session
                 from ai_prophet_core.betting.strategy import PortfolioSnapshot
-                from db_models import TradingPosition
 
-                with get_session(db_engine) as session:
-                    all_positions = (
-                        session.query(TradingPosition)
-                        .filter(TradingPosition.instance_name == INSTANCE_NAME)
-                        .all()
-                    )
-                    capital_deployed = Decimal(str(
-                        sum(p.avg_price * p.quantity for p in all_positions)
-                    ))
-                    total_realized = Decimal(str(
-                        sum(p.realized_pnl for p in all_positions)
-                    ))
+                ticker_key = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
+                market_position = order_ledger_state["positions"].get(ticker_key)
+                market_side = None
+                market_qty = 0.0
+                if market_position is not None:
+                    market_side, market_qty, _avg_price = market_position.current_position()
 
-                    try:
-                        real_balance = adapter.get_balance()
-                    except Exception:
-                        real_balance = Decimal("0")
-                    available_cash = real_balance - capital_deployed + total_realized
-
-                    mkt_pos_shares = Decimal("0")
-                    mkt_pos_side = None
-                    for p in all_positions:
-                        if p.market_id == market_id:
-                            mkt_pos_shares = Decimal(str(p.quantity))
-                            mkt_pos_side = p.contract
-                            break
-
-                    portfolio = PortfolioSnapshot(
-                        cash=available_cash,
-                        market_position_shares=mkt_pos_shares,
-                        market_position_side=mkt_pos_side,
-                    )
-
+                portfolio = PortfolioSnapshot(
+                    cash=order_ledger_state["cash"],
+                    total_pnl=order_ledger_state["total_pnl"],
+                    position_count=order_ledger_state["position_count"],
+                    market_position_shares=Decimal(str(market_qty)),
+                    market_position_side=market_side,
+                )
             except Exception as e:
-                logger.debug("Could not load position for portfolio: %s", e)
+                logger.debug("Could not materialize ledger-based portfolio snapshot: %s", e)
 
         if db_engine and betting_engine is not None:
             for ms, pred in model_predictions.items():
@@ -1806,6 +1847,7 @@ def main() -> None:
 
     setup_logging(args.verbose)
     _start_health_server()
+    _validate_instance_profile_or_raise()
 
     poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", 3600)
     peer_instances_str = _instance_setting("WORKER_PEER_INSTANCES", "")

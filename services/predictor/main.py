@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="AI Prophet Predictor", version="1.0.0")
 
 PREDICTOR_API_KEY = os.getenv("PREDICTOR_API_KEY", "")
+PREDICTOR_TIMEOUT_SEC = float(os.getenv("PREDICTOR_TIMEOUT_SEC", "180"))
 
 
 # ── Request / Response schemas ────────────────────────────────────
@@ -190,7 +191,7 @@ def _get_anthropic_client():
 def _get_gemini_http_client():
     global _gemini_http_client
     if _gemini_http_client is None:
-        _gemini_http_client = httpx.Client(timeout=120.0)
+        _gemini_http_client = httpx.Client(timeout=PREDICTOR_TIMEOUT_SEC)
     return _gemini_http_client
 
 

@@ -40,6 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func, text
 from instance_config import DEFAULT_INSTANCE_NAME, get_instance_env, normalize_instance_name
+from position_replay import InventoryPosition, normalize_order
 
 logger = logging.getLogger(__name__)
 
@@ -693,7 +694,7 @@ def get_pnl(
         for mkt in _instance_query(session, TradingMarket, resolved_instance).all():
             market_titles[mkt.ticker] = mkt.title or ""
 
-        ticker_positions: dict[str, dict[str, Any]] = {}
+        ticker_positions: dict[str, InventoryPosition] = {}
         pnl_series: list[dict[str, Any]] = []
         trade_markers: list[dict[str, Any]] = []
         total_trades = 0
@@ -703,37 +704,16 @@ def get_pnl(
         historical_prices: dict[str, dict[str, float | None]] = {}
 
         for row in rows:
-            cost = (row.price_cents / 100.0) * row.count
+            action, side, shares, price = normalize_order(row)
+            cost = price * shares
             total_trades += 1
             total_volume += cost
 
             ticker = row.ticker
-            side = row.side.lower()
-            action = getattr(row, "action", "BUY") or "BUY"
+            pos = ticker_positions.setdefault(ticker, InventoryPosition())
 
-            if ticker not in ticker_positions:
-                ticker_positions[ticker] = {
-                    "side": side,
-                    "qty": 0,
-                    "total_cost": 0.0,
-                }
-
-            pos = ticker_positions[ticker]
-
-            # Track realized P&L for SELL orders
-            pnl_impact = 0.0
-            if action.upper() == "SELL" and pos["qty"] > 0:
-                avg_cost_per_share = _safe_div(pos["total_cost"], pos["qty"])
-                sell_proceeds = (row.price_cents / 100.0) * row.count
-                cost_basis = avg_cost_per_share * row.count
-                pnl_impact = sell_proceeds - cost_basis
-                cumulative_realized += pnl_impact
-                pos["qty"] -= row.count
-                pos["total_cost"] -= cost_basis
-            else:
-                pos["qty"] += row.count
-                pos["total_cost"] += cost
-                pos["side"] = side
+            pnl_impact = pos.apply_order(row, ticker=ticker)
+            cumulative_realized += pnl_impact
 
             # Update price snapshot from this trade's prediction
             pred = pred_by_signal.get(row.signal_id)
@@ -749,19 +729,19 @@ def get_pnl(
             # Compute portfolio unrealized P&L using prices known at this point
             cumulative_unrealized = 0.0
             for t, p in ticker_positions.items():
-                if p["qty"] <= 0:
+                pos_side, pos_qty, avg_price = p.current_position()
+                if pos_side is None or pos_qty <= 0:
                     continue
                 # Use current market prices (most accurate), fall back to historical
                 prices = current_prices.get(t) or historical_prices.get(t)
                 if prices:
-                    if p["side"] == "yes":
+                    if pos_side == "yes":
                         bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
                     else:
                         bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
                     if bid is None:
                         continue
-                    avg_price = _safe_div(p["total_cost"], p["qty"])
-                    cumulative_unrealized += (bid - avg_price) * p["qty"]
+                    cumulative_unrealized += (bid - avg_price) * pos_qty
 
             cumulative_pnl = cumulative_realized + cumulative_unrealized
 
@@ -782,10 +762,10 @@ def get_pnl(
             trade_markers.append({
                 "timestamp": ts,
                 "ticker": row.ticker,
-                "side": row.side,
+                "side": side,
                 "action": action,
-                "count": row.count,
-                "price_cents": row.price_cents,
+                "count": shares,
+                "price_cents": round(price * 100),
                 "pnl_impact": round(pnl_impact, 4),
             })
 

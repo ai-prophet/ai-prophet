@@ -34,7 +34,7 @@ function shortModelName(name: string): string {
     .replace(/^gpt-/, "")
     .replace(/^claude-/, "c-")
     .slice(0, 14);
-  return hasMarket ? short : `${short}*`;
+  return hasMarket ? `${short}*` : short;
 }
 
 const MODEL_COLORS = [
@@ -1043,7 +1043,7 @@ function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: M
       .map((item) => item.matchedRun?.id)
       .filter((id): id is number => id != null)
   );
-  return chronRuns.filter((run) => !matchedIds.has(run.id));
+  return chronRuns.filter((run) => !matchedIds.has(run.id) && run.decision === "HOLD");
 }
 
 function TimelineTab({
@@ -1242,35 +1242,45 @@ function TimelineTab({
         const hasDetail = !!(detailReasoning || detailSources.length > 0);
         const isExpanded = expandedEntryId === event.key;
 
-        // Cumulative position + sell P&L tracking
-        let cumYes = 0, cumNo = 0, cumCost = 0;
-        let avgEntry = 0; // running weighted avg entry price
-        let totalQty = 0;
-        let sellPnl = 0; // P&L for current sell trade
+        // Replay trades up to this row using the same signed-share logic as the server.
+        let netShares = 0;
+        let totalCost = 0;
+        let sellPnl = 0;
         for (let i = 0; i <= idx; i++) {
           const t = chronTrades[i];
           const tQty = t.filled_shares || t.count;
-          const tSell = t.action?.toUpperCase() === "SELL";
-          const tPrice = t.price_cents / 100;
-          const tCost = tPrice * tQty;
-          if (t.side.toLowerCase() === "yes") cumYes += tSell ? -tQty : tQty;
-          else cumNo += tSell ? -tQty : tQty;
-          cumCost += tSell ? -tCost : tCost;
+          const tSell = (t.action ?? "BUY").toUpperCase() === "SELL";
+          let tPrice = t.price_cents / 100;
+          if (tPrice > 1.0) tPrice /= 100;
+          const isYes = t.side.toLowerCase() === "yes";
 
           if (tSell) {
-            // P&L on this sell = proceeds - cost basis
-            sellPnl = (tPrice - avgEntry) * tQty;
-            totalQty -= tQty;
+            const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
+            sellPnl = (tPrice - avgAtSell) * tQty;
+            if (isYes) {
+              netShares -= tQty;
+              totalCost -= avgAtSell * tQty;
+            } else {
+              netShares += tQty;
+              totalCost += avgAtSell * tQty;
+            }
+            if (Math.abs(netShares) < 0.001) {
+              netShares = 0;
+              totalCost = 0;
+            }
           } else {
-            // Update weighted avg entry
-            avgEntry = totalQty + tQty > 0
-              ? (avgEntry * totalQty + tPrice * tQty) / (totalQty + tQty)
-              : tPrice;
-            totalQty += tQty;
+            if (isYes) {
+              netShares += tQty;
+              totalCost += tQty * tPrice;
+            } else {
+              netShares -= tQty;
+              totalCost -= tQty * tPrice;
+            }
             sellPnl = 0;
           }
         }
-        const cumulativeQty = Math.max(cumYes, cumNo, 0);
+        const cumulativeQty = Math.abs(netShares);
+        const cumulativeSide = netShares > 0 ? "YES" : netShares < 0 ? "NO" : null;
         const currentSellPnl = isSell ? sellPnl : 0;
 
         return (
@@ -1316,7 +1326,7 @@ function TimelineTab({
                       </span>
                     )}
                     <span className="text-txt-muted">
-                      total: {cumulativeQty} · ${Math.max(0, cumCost).toFixed(2)}
+                      total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}
                     </span>
                     {pred && (
                       <>
@@ -1383,7 +1393,12 @@ function TimelineTab({
         </div>
         <div className="flex items-center gap-3 text-[10px] font-mono">
           {row.position && row.position.quantity > 0 ? (
-            <>
+            (() => {
+              const heldBid = row.position.contract.toLowerCase() === "yes"
+                ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
+                : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
+              return (
+                <>
               <span className="text-txt-primary">
                 Holding {row.position.quantity}{" "}
                 <span className={row.position.contract.toLowerCase() === "yes" ? "text-profit" : "text-loss"}>
@@ -1393,15 +1408,17 @@ function TimelineTab({
               <span className="text-txt-muted">
                 avg: {(row.position.avg_price * 100).toFixed(0)}c
               </span>
-              {row.yes_ask != null && (
+              {heldBid != null && (
                 <span className="text-txt-muted">
-                  mkt: {(row.yes_ask * 100).toFixed(0)}c
+                  mkt: {(heldBid * 100).toFixed(0)}c
                 </span>
               )}
               <span className={`font-medium ${pnlCls(liveNetPnl(row) ?? 0)}`}>
                 P&L: {liveNetPnl(row) != null ? fmtDollar(liveNetPnl(row)!) : "--"}
               </span>
-            </>
+                </>
+              );
+            })()
           ) : (
             <span className="text-txt-muted">No open position</span>
           )}
