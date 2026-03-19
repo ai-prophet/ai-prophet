@@ -174,30 +174,27 @@ export default function Dashboard() {
     setLastUpdate("");
   }, []);
 
-  const refreshAlerts = useCallback(async () => {
-    const next = await instanceApi.getAlerts();
-    setAlerts(next.alerts);
-    const current = dataCacheRef.current[selectedInstance.key];
-    if (current) {
-      dataCacheRef.current[selectedInstance.key] = {
-        ...current,
-        alerts: next.alerts,
-      };
-    }
-  }, [instanceApi, selectedInstance.key]);
-
   const clearAlert = useCallback(async (alertKey: string) => {
     setClearingAlertKey(alertKey);
     try {
-      await instanceApi.clearAlert(alertKey);
-      await refreshAlerts();
+      setAlerts((currentAlerts) => {
+        const nextAlerts = currentAlerts.filter((alert) => alert.key !== alertKey);
+        const current = dataCacheRef.current[selectedInstance.key];
+        if (current) {
+          dataCacheRef.current[selectedInstance.key] = {
+            ...current,
+            alerts: nextAlerts,
+          };
+        }
+        return nextAlerts;
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to clear alert";
       setError(`${selectedInstance.label}: ${message}`);
     } finally {
       setClearingAlertKey((current) => (current === alertKey ? null : current));
     }
-  }, [instanceApi, refreshAlerts, selectedInstance.label]);
+  }, [selectedInstance.key, selectedInstance.label]);
 
   const fetchAll = useCallback(async () => {
     const requestId = activeRequestRef.current + 1;
