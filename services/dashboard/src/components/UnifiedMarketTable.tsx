@@ -1001,6 +1001,7 @@ function ExpandedPanel({
 // ── Tab 1: Activity Timeline ────────────────────────────────
 
 const SKIP_THRESHOLD_MS = 25 * 60 * 1000; // 25 min — 1.5× the ~15-min poll interval
+const SAME_ACTION_WINDOW_MS = 2 * 60 * 1000; // 2 min — trades within same cycle
 
 type TimelineTradeItem = {
   trade: Trade;
@@ -1086,6 +1087,33 @@ function TimelineTab({
     return [...tradeEvents, ...predictionEvents].sort((a, b) => a.sortTs - b.sortTs);
   }, [tradesWithRuns, unmatchedRuns]);
 
+  type TradeEvent = { type: "trade"; key: string; sortTs: number; item: TimelineTradeItem };
+  type PredEvent = { type: "prediction"; key: string; sortTs: number; run: ModelRun };
+  type TradeGroupEvent = { type: "trade-group"; key: string; sortTs: number; items: TradeEvent[] };
+  type GroupedTimelineEvent = TradeEvent | PredEvent | TradeGroupEvent;
+
+  const groupedEvents = useMemo((): GroupedTimelineEvent[] => {
+    const result: GroupedTimelineEvent[] = [];
+    let i = 0;
+    while (i < events.length) {
+      const ev = events[i];
+      if (ev.type !== "trade") { result.push(ev as PredEvent); i++; continue; }
+      const group: TradeEvent[] = [ev as TradeEvent];
+      let j = i + 1;
+      while (j < events.length && events[j].type === "trade" && events[j].sortTs - ev.sortTs <= SAME_ACTION_WINDOW_MS) {
+        group.push(events[j] as TradeEvent);
+        j++;
+      }
+      if (group.length > 1) {
+        result.push({ type: "trade-group", key: `group-${ev.key}`, sortTs: ev.sortTs, items: group });
+      } else {
+        result.push(ev as TradeEvent);
+      }
+      i = j;
+    }
+    return result;
+  }, [events]);
+
   // Sorted prediction timestamps (oldest first, deduplicated by exact timestamp)
   const predTimes = useMemo(() => {
     const unique = new Set<number>();
@@ -1134,20 +1162,123 @@ function TimelineTab({
         <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
       )}
 
-      {events.map((event, eventIdx) => {
+      {groupedEvents.map((event, eventIdx) => {
         const currentRunTs = event.type === "prediction"
           ? new Date(event.run.timestamp).getTime()
-          : event.item.matchedRun
-            ? new Date(event.item.matchedRun.timestamp).getTime()
-            : null;
+          : event.type === "trade-group"
+            ? event.items[event.items.length - 1].sortTs
+            : event.item.matchedRun
+              ? new Date(event.item.matchedRun.timestamp).getTime()
+              : null;
         const nextRunTs = (() => {
-          for (const nextEvent of events.slice(eventIdx + 1)) {
+          for (const nextEvent of groupedEvents.slice(eventIdx + 1)) {
             if (nextEvent.type === "prediction") return new Date(nextEvent.run.timestamp).getTime();
-            if (nextEvent.item.matchedRun) return new Date(nextEvent.item.matchedRun.timestamp).getTime();
+            if (nextEvent.type === "trade-group") return nextEvent.items[nextEvent.items.length - 1].sortTs;
+            if (nextEvent.type === "trade" && nextEvent.item.matchedRun) return new Date(nextEvent.item.matchedRun.timestamp).getTime();
           }
           return null;
         })();
         const showGapAfterEvent = currentRunTs != null && currentRunTs !== nextRunTs;
+
+        if (event.type === "trade-group") {
+          return (
+            <div key={event.key}>
+              <div className="relative py-1.5">
+                <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
+                {event.items.map((subEvent, subIdx) => {
+                  const { trade, idx, matchedRun } = subEvent.item;
+                  const qty = trade.filled_shares || trade.count;
+                  const isSell = trade.action?.toUpperCase() === "SELL";
+                  const cost = (trade.price_cents / 100) * qty;
+                  const pred = trade.prediction;
+                  const detailReasoning = pred?.reasoning ?? matchedRun?.reasoning ?? null;
+                  const detailSources = pred?.sources ?? matchedRun?.sources ?? [];
+                  const hasDetail = !!(detailReasoning || detailSources.length > 0);
+                  const isExpanded = expandedEntryId === subEvent.key;
+                  let netShares = 0, totalCost = 0, sellPnl = 0;
+                  for (let i = 0; i <= idx; i++) {
+                    const t = chronTrades[i];
+                    const tQty = t.filled_shares || t.count;
+                    const tSell = (t.action ?? "BUY").toUpperCase() === "SELL";
+                    let tPrice = t.price_cents / 100;
+                    if (tPrice > 1.0) tPrice /= 100;
+                    const isYes = t.side.toLowerCase() === "yes";
+                    if (tSell) {
+                      const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
+                      sellPnl = (tPrice - avgAtSell) * tQty;
+                      if (isYes) { netShares -= tQty; totalCost -= avgAtSell * tQty; }
+                      else { netShares += tQty; totalCost += avgAtSell * tQty; }
+                      if (Math.abs(netShares) < 0.001) { netShares = 0; totalCost = 0; }
+                    } else {
+                      if (isYes) { netShares += tQty; totalCost += tQty * tPrice; }
+                      else { netShares -= tQty; totalCost -= tQty * tPrice; }
+                      sellPnl = 0;
+                    }
+                  }
+                  const cumulativeQty = Math.abs(netShares);
+                  const cumulativeSide = netShares > 0 ? "YES" : netShares < 0 ? "NO" : null;
+                  const currentSellPnl = isSell ? sellPnl : 0;
+                  return (
+                    <div key={subEvent.key} className={subIdx > 0 ? "mt-0.5" : ""}>
+                      <div className="flex items-start gap-3">
+                        <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0 text-right pr-1">
+                          {subIdx === 0 ? fmtTime(trade.created_at) : "↳"}
+                        </div>
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <button
+                            type="button"
+                            className={`w-full flex flex-wrap items-center gap-2.5 rounded px-1 -mx-1 text-[10px] font-mono text-left transition-colors ${hasDetail ? "hover:bg-t-panel-hover/40" : ""}`}
+                            onClick={() => { if (!hasDetail) return; setExpandedEntryId(isExpanded ? null : subEvent.key); }}
+                          >
+                            {isSell && <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>}
+                            <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                              {trade.side.toUpperCase()}
+                            </span>
+                            <span className="text-txt-primary">{isSell ? "-" : "+"}{qty} @ {trade.price_cents}c</span>
+                            <span className="text-txt-muted">{isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}</span>
+                            {isSell && <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>{currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}</span>}
+                            <span className="text-txt-muted">total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}</span>
+                            {pred && (
+                              <>
+                                <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
+                                <span className="text-accent">model: {(pred.p_yes * 100).toFixed(0)}%</span>
+                                <span className={pnlCls(pred.p_yes - pred.yes_ask)}>edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}{((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp</span>
+                              </>
+                            )}
+                            <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
+                              {trade.dry_run ? "DRY" : "LIVE"}
+                            </span>
+                            {detailSources.length > 0 && <span className="text-[9px] text-txt-muted">{detailSources.length} source{detailSources.length !== 1 ? "s" : ""}</span>}
+                            {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
+                          </button>
+                          {isExpanded && hasDetail && (
+                            <div className="pt-1">
+                              <RationalePanel reasoning={detailReasoning} sources={detailSources} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
+                const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+                const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
+                const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
+                return (
+                  <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
+                    <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
+                    <div className="w-[100px] flex-shrink-0" />
+                    <div className="text-[9px] text-txt-muted italic">
+                      ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
 
         if (event.type === "prediction") {
           const { run } = event;

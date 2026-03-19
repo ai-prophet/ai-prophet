@@ -254,7 +254,7 @@ def _predict_gemini(
     body: dict = {
         "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig": {"responseMimeType": "application/json"},
+        "generationConfig": {},
         "tools": [{"googleSearch": {}}],
     }
 
