@@ -5277,3 +5277,175 @@ sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) could not translate
 2026-03-18 20:54:04,906 INFO worker: Updated 42 positions from order history
 2026-03-18 20:54:05,190 INFO worker: Cycle complete: 0 total results, 0 orders placed across 1 models
 2026-03-18 20:54:05,190 INFO worker: Sleeping 1200s until next cycle...
+2026-03-18 21:14:11,546 INFO ai_prophet_core.betting.engine: BettingEngine initialized: strategy=default, mode=DRY RUN, enabled=True, db=yes
+2026-03-18 21:14:11,547 INFO worker: BettingEngine ready: strategy=default, dry_run=True
+2026-03-18 21:14:12,605 INFO worker: Starting cycle: models=['gemini:gemini-3.1-pro-preview'], strategy=default, max_markets=25, max_active=80
+2026-03-18 21:14:13,169 INFO worker: Re-fetching 42 sticky markets: {'KXVOTESAVEAMERICA-26MAR-MAR24', 'KXIPODEEL-26APR01', 'KXMEDIARELEASEICEMAN-26-APR01', 'KXDHSFUND-26MAR20', 'KXTVSEASONRELEASETHELASTOFUS-26-APR', 'KXIPOBEASTINDUSTRIES-26APR01', 'KXIPHONERELEASE-IPHONE18-26APR01', 'KXMULLINCONF-26APR01', 'KXBONDIOUT-26APR01', 'KXIPOSTARLINK-26APR01', 'KXIPOSPACEX-26APR01', 'KXVOTESAVEAMERICA-26MAR-APR01', 'KXLUTNICKOUT-26APR01', 'KXUSAIRANAGREEMENT-27-26APR', 'KXMEDIARELEASESPIDERMAN-APR26', 'KXIPOANDURIL-26APR01', 'KXTRUMPUFC-UFC327', 'KXMNDAYCARECHARGE-26APR01', 'KXMULLINCONF-26APR15', 'KXDHSFUND-26APR01', 'KXIPOFANNIE-26APR01', 'KXIPOOPENAI-26APR01', 'KXCABLEAVE-26MAR-26APR', 'KXIPOOLIPOP-26APR01', 'KXIPOCLUELY-26APR01', 'KXSTRIPEIPO-26APR01', 'KXTARIFFBILL-26APR01', 'KXFREDDIE-26APR01', 'KXAMBMALAY-26JAN06-APR01', 'KXVOTESAVEAMERICA-26MAR-MAR20', 'KXGROK-GROK5-26APR01', 'KXIPOBREX-26APR01', 'KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01', 'KXIPODISCORD-26APR01', 'KXIPOGLEAN-26APR01', 'KXGREENTERRITORY-29-26APR', 'KXIPORIPPLING-26APR01', 'KXDIAZOUT-MDC-26APR01', 'KXLEAVESTARMER-26APR01', 'KXELECTVENEZUELA-26APR01', 'KXIPOOURA-26APR01', 'KXTRUMPOUT27-27-26APR01'}
+2026-03-18 21:14:21,416 INFO worker: Selected 33 markets (from 37 candidates, 2000 events, 10 pages)
+2026-03-18 21:14:21,418 INFO worker: Fetched 0 new markets (33 candidates, 33 excluded as already tracked)
+2026-03-18 21:14:21,418 INFO worker: Total markets this cycle: 42 sticky + 0 new = 42
+2026-03-18 21:14:22,055 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR24 — market prices unchanged (yes=0.14, no=0.87)
+2026-03-18 21:14:22,758 INFO worker:   Skipping KXDHSFUND-26MAR20 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:23,464 INFO worker:   Skipping KXTVSEASONRELEASETHELASTOFUS-26-APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:24,173 INFO worker:   Skipping KXIPOBEASTINDUSTRIES-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:14:24,885 INFO worker:   Skipping KXIPHONERELEASE-IPHONE18-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:25,587 INFO worker:   Skipping KXMULLINCONF-26APR01 — market prices unchanged (yes=0.96, no=0.06)
+2026-03-18 21:14:26,292 INFO worker:   Skipping KXBONDIOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 21:14:27,007 INFO worker:   Skipping KXIPOSTARLINK-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:14:27,710 INFO worker:   Skipping KXIPOSPACEX-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:29,402 INFO worker:   Skipping KXLUTNICKOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 21:14:30,097 INFO worker:   Skipping KXUSAIRANAGREEMENT-27-26APR — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:14:30,797 INFO worker:   Skipping KXMEDIARELEASESPIDERMAN-APR26 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:14:31,503 INFO worker:   Skipping KXIPOANDURIL-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:33,200 INFO worker:   Skipping KXMULLINCONF-26APR15 — market prices unchanged (yes=0.97, no=0.04)
+2026-03-18 21:14:34,888 INFO worker:   Skipping KXIPOFANNIE-26APR01 — market prices unchanged (yes=0.03, no=0.99)
+2026-03-18 21:14:35,606 INFO worker:   Skipping KXIPOOPENAI-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:36,310 INFO worker:   Skipping KXCABLEAVE-26MAR-26APR — market prices unchanged (yes=0.05, no=0.97)
+2026-03-18 21:14:37,003 INFO worker:   Skipping KXIPOOLIPOP-26APR01 — market prices unchanged (yes=0.04, no=0.99)
+2026-03-18 21:14:37,700 INFO worker:   Skipping KXIPOCLUELY-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:14:38,402 INFO worker:   Skipping KXSTRIPEIPO-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:14:39,114 INFO worker:   Skipping KXTARIFFBILL-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:14:39,813 INFO worker:   Skipping KXFREDDIE-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:14:40,507 INFO worker:   Skipping KXAMBMALAY-26JAN06-APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:14:41,215 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR20 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:14:41,937 INFO worker:   Skipping KXGROK-GROK5-26APR01 — market prices unchanged (yes=0.05, no=0.98)
+2026-03-18 21:14:42,641 INFO worker:   Skipping KXIPOBREX-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:14:43,340 INFO worker:   Skipping KXIPODISCORD-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:44,041 INFO worker:   Skipping KXIPOGLEAN-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:44,734 INFO worker:   Skipping KXGREENTERRITORY-29-26APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:45,436 INFO worker:   Skipping KXDIAZOUT-MDC-26APR01 — market prices unchanged (yes=0.14, no=0.87)
+2026-03-18 21:14:46,135 INFO worker:   Skipping KXLEAVESTARMER-26APR01 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:14:46,847 INFO worker:   Skipping KXELECTVENEZUELA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:47,548 INFO worker:   Skipping KXIPOOURA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:48,247 INFO worker:   Skipping KXTRUMPOUT27-27-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:14:48,316 INFO worker: Phase A complete: 3 markets to analyze (from 42 raw)
+2026-03-18 21:14:48,316 INFO worker: Using remote predictor: https://predictor-441548451945.us-west1.run.app (parallel fanout)
+2026-03-18 21:14:48,317 INFO worker: Fanning out 3 prediction tasks (3 markets × 1 models) with max_workers=20
+2026-03-18 21:14:48,692 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:48,696 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:48,701 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:53,952 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:53,965 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:53,990 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:59,175 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXVOTESAVEAMERICA-26MAR-APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:59,187 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXTRUMPUFC-UFC327 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:59,189 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXDHSFUND-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:14:59,189 INFO worker: Phase B complete: 0/3 predictions in 10.9s
+2026-03-18 21:14:59,190 WARNING worker:   No model predictions for KXVOTESAVEAMERICA-26MAR-APR01, skipping
+2026-03-18 21:14:59,190 WARNING worker:   No model predictions for KXTRUMPUFC-UFC327, skipping
+2026-03-18 21:14:59,190 WARNING worker:   No model predictions for KXDHSFUND-26APR01, skipping
+2026-03-18 21:15:07,426 INFO worker: Updated 42 positions from order history
+2026-03-18 21:15:07,708 INFO worker: Cycle complete: 0 total results, 0 orders placed across 1 models
+2026-03-18 21:15:07,708 INFO worker: Sleeping 1200s until next cycle...
+2026-03-18 21:35:13,317 INFO ai_prophet_core.betting.engine: BettingEngine initialized: strategy=default, mode=DRY RUN, enabled=True, db=yes
+2026-03-18 21:35:13,319 INFO worker: BettingEngine ready: strategy=default, dry_run=True
+2026-03-18 21:35:14,378 INFO worker: Starting cycle: models=['gemini:gemini-3.1-pro-preview'], strategy=default, max_markets=25, max_active=80
+2026-03-18 21:35:14,946 INFO worker: Re-fetching 43 sticky markets: {'KXVOTESAVEAMERICA-26MAR-MAR24', 'KXIPODEEL-26APR01', 'KXMEDIARELEASEICEMAN-26-APR01', 'KXDHSFUND-26MAR20', 'KXTVSEASONRELEASETHELASTOFUS-26-APR', 'KXIPOBEASTINDUSTRIES-26APR01', 'KXIPHONERELEASE-IPHONE18-26APR01', 'KXMULLINCONF-26APR01', 'KXBONDIOUT-26APR01', 'KXIPOSTARLINK-26APR01', 'KXIPOSPACEX-26APR01', 'KXVOTESAVEAMERICA-26MAR-APR01', 'KXLUTNICKOUT-26APR01', 'KXUSAIRANAGREEMENT-27-26APR', 'KXMEDIARELEASESPIDERMAN-APR26', 'KXIPOANDURIL-26APR01', 'KXTRUMPUFC-UFC327', 'KXMNDAYCARECHARGE-26APR01', 'KXMULLINCONF-26APR15', 'KXDHSFUND-26APR01', 'KXALBUMRELEASEDATETRIPPIE-APR01-26', 'KXIPOFANNIE-26APR01', 'KXIPOOPENAI-26APR01', 'KXCABLEAVE-26MAR-26APR', 'KXIPOOLIPOP-26APR01', 'KXIPOCLUELY-26APR01', 'KXSTRIPEIPO-26APR01', 'KXTARIFFBILL-26APR01', 'KXFREDDIE-26APR01', 'KXAMBMALAY-26JAN06-APR01', 'KXVOTESAVEAMERICA-26MAR-MAR20', 'KXGROK-GROK5-26APR01', 'KXIPOBREX-26APR01', 'KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01', 'KXIPODISCORD-26APR01', 'KXIPOGLEAN-26APR01', 'KXGREENTERRITORY-29-26APR', 'KXIPORIPPLING-26APR01', 'KXDIAZOUT-MDC-26APR01', 'KXLEAVESTARMER-26APR01', 'KXELECTVENEZUELA-26APR01', 'KXIPOOURA-26APR01', 'KXTRUMPOUT27-27-26APR01'}
+2026-03-18 21:35:21,341 INFO worker: Selected 34 markets (from 38 candidates, 2000 events, 10 pages)
+2026-03-18 21:35:21,343 INFO worker: Fetched 0 new markets (34 candidates, 34 excluded as already tracked)
+2026-03-18 21:35:21,343 INFO worker: Total markets this cycle: 43 sticky + 0 new = 43
+2026-03-18 21:35:21,998 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR24 — market prices unchanged (yes=0.14, no=0.87)
+2026-03-18 21:35:22,695 INFO worker:   Skipping KXDHSFUND-26MAR20 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:23,419 INFO worker:   Skipping KXTVSEASONRELEASETHELASTOFUS-26-APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:24,126 INFO worker:   Skipping KXIPOBEASTINDUSTRIES-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:35:24,828 INFO worker:   Skipping KXIPHONERELEASE-IPHONE18-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:26,511 INFO worker:   Skipping KXBONDIOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 21:35:27,208 INFO worker:   Skipping KXIPOSTARLINK-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:35:27,912 INFO worker:   Skipping KXIPOSPACEX-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:29,612 INFO worker:   Skipping KXLUTNICKOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 21:35:30,312 INFO worker:   Skipping KXUSAIRANAGREEMENT-27-26APR — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:35:31,015 INFO worker:   Skipping KXMEDIARELEASESPIDERMAN-APR26 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:35:31,722 INFO worker:   Skipping KXIPOANDURIL-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:32,425 INFO worker:   Skipping KXTRUMPUFC-UFC327 — market prices unchanged (yes=0.26, no=0.75)
+2026-03-18 21:35:33,139 INFO worker:   Skipping KXMULLINCONF-26APR15 — market prices unchanged (yes=0.97, no=0.04)
+2026-03-18 21:35:34,854 INFO worker:   Skipping KXALBUMRELEASEDATETRIPPIE-APR01-26 — market prices unchanged (yes=0.15, no=0.86)
+2026-03-18 21:35:35,578 INFO worker:   Skipping KXIPOFANNIE-26APR01 — market prices unchanged (yes=0.03, no=0.99)
+2026-03-18 21:35:36,282 INFO worker:   Skipping KXIPOOPENAI-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:36,985 INFO worker:   Skipping KXCABLEAVE-26MAR-26APR — market prices unchanged (yes=0.05, no=0.97)
+2026-03-18 21:35:37,696 INFO worker:   Skipping KXIPOOLIPOP-26APR01 — market prices unchanged (yes=0.04, no=0.99)
+2026-03-18 21:35:38,394 INFO worker:   Skipping KXIPOCLUELY-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:35:39,089 INFO worker:   Skipping KXSTRIPEIPO-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:35:39,788 INFO worker:   Skipping KXTARIFFBILL-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:35:40,482 INFO worker:   Skipping KXFREDDIE-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:35:41,198 INFO worker:   Skipping KXAMBMALAY-26JAN06-APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:35:41,907 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR20 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:42,604 INFO worker:   Skipping KXGROK-GROK5-26APR01 — market prices unchanged (yes=0.05, no=0.98)
+2026-03-18 21:35:43,289 INFO worker:   Skipping KXIPOBREX-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:35:43,989 INFO worker:   Skipping KXIPODISCORD-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:44,692 INFO worker:   Skipping KXIPOGLEAN-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:45,393 INFO worker:   Skipping KXGREENTERRITORY-29-26APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:46,101 INFO worker:   Skipping KXDIAZOUT-MDC-26APR01 — market prices unchanged (yes=0.13, no=0.88)
+2026-03-18 21:35:46,805 INFO worker:   Skipping KXLEAVESTARMER-26APR01 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:35:47,504 INFO worker:   Skipping KXELECTVENEZUELA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:48,207 INFO worker:   Skipping KXIPOOURA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:48,920 INFO worker:   Skipping KXTRUMPOUT27-27-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:35:48,989 INFO worker: Phase A complete: 3 markets to analyze (from 43 raw)
+2026-03-18 21:35:48,989 INFO worker: Using remote predictor: https://predictor-441548451945.us-west1.run.app (parallel fanout)
+2026-03-18 21:35:48,989 INFO worker: Fanning out 3 prediction tasks (3 markets × 1 models) with max_workers=20
+2026-03-18 21:35:49,348 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:49,349 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:49,351 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:54,618 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:54,619 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:54,632 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:59,881 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXVOTESAVEAMERICA-26MAR-APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:59,883 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXDHSFUND-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:59,897 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXMULLINCONF-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 21:35:59,898 INFO worker: Phase B complete: 0/3 predictions in 10.9s
+2026-03-18 21:35:59,898 WARNING worker:   No model predictions for KXMULLINCONF-26APR01, skipping
+2026-03-18 21:35:59,898 WARNING worker:   No model predictions for KXVOTESAVEAMERICA-26MAR-APR01, skipping
+2026-03-18 21:35:59,899 WARNING worker:   No model predictions for KXDHSFUND-26APR01, skipping
+2026-03-18 21:36:08,287 INFO worker: Updated 43 positions from order history
+2026-03-18 21:36:08,567 INFO worker: Cycle complete: 0 total results, 0 orders placed across 1 models
+2026-03-18 21:36:08,567 INFO worker: Sleeping 1200s until next cycle...
+2026-03-18 21:56:14,270 INFO ai_prophet_core.betting.engine: BettingEngine initialized: strategy=default, mode=DRY RUN, enabled=True, db=yes
+2026-03-18 21:56:14,271 INFO worker: BettingEngine ready: strategy=default, dry_run=True
+2026-03-18 21:56:15,316 INFO worker: Starting cycle: models=['gemini:gemini-3.1-pro-preview'], strategy=default, max_markets=25, max_active=80
+2026-03-18 21:56:15,882 INFO worker: Re-fetching 43 sticky markets: {'KXVOTESAVEAMERICA-26MAR-MAR24', 'KXIPODEEL-26APR01', 'KXMEDIARELEASEICEMAN-26-APR01', 'KXDHSFUND-26MAR20', 'KXTVSEASONRELEASETHELASTOFUS-26-APR', 'KXIPOBEASTINDUSTRIES-26APR01', 'KXIPHONERELEASE-IPHONE18-26APR01', 'KXMULLINCONF-26APR01', 'KXBONDIOUT-26APR01', 'KXIPOSTARLINK-26APR01', 'KXIPOSPACEX-26APR01', 'KXVOTESAVEAMERICA-26MAR-APR01', 'KXLUTNICKOUT-26APR01', 'KXUSAIRANAGREEMENT-27-26APR', 'KXMEDIARELEASESPIDERMAN-APR26', 'KXIPOANDURIL-26APR01', 'KXTRUMPUFC-UFC327', 'KXMNDAYCARECHARGE-26APR01', 'KXMULLINCONF-26APR15', 'KXDHSFUND-26APR01', 'KXALBUMRELEASEDATETRIPPIE-APR01-26', 'KXIPOFANNIE-26APR01', 'KXIPOOPENAI-26APR01', 'KXCABLEAVE-26MAR-26APR', 'KXIPOOLIPOP-26APR01', 'KXIPOCLUELY-26APR01', 'KXSTRIPEIPO-26APR01', 'KXTARIFFBILL-26APR01', 'KXFREDDIE-26APR01', 'KXAMBMALAY-26JAN06-APR01', 'KXVOTESAVEAMERICA-26MAR-MAR20', 'KXIPOBREX-26APR01', 'KXGROK-GROK5-26APR01', 'KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01', 'KXIPODISCORD-26APR01', 'KXIPOGLEAN-26APR01', 'KXGREENTERRITORY-29-26APR', 'KXIPORIPPLING-26APR01', 'KXDIAZOUT-MDC-26APR01', 'KXLEAVESTARMER-26APR01', 'KXELECTVENEZUELA-26APR01', 'KXIPOOURA-26APR01', 'KXTRUMPOUT27-27-26APR01'}
+2026-03-18 21:56:22,744 INFO worker: Selected 37 markets (from 41 candidates, 2000 events, 10 pages)
+2026-03-18 21:56:22,745 INFO worker: Fetched 0 new markets (37 candidates, 37 excluded as already tracked)
+2026-03-18 21:56:22,745 INFO worker: Total markets this cycle: 43 sticky + 0 new = 43
+2026-03-18 21:56:23,380 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR24 — market prices unchanged (yes=0.14, no=0.87)
+2026-03-18 21:56:24,081 INFO worker:   Skipping KXIPODEEL-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:56:24,771 INFO worker:   Skipping KXDHSFUND-26MAR20 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:25,480 INFO worker:   Skipping KXTVSEASONRELEASETHELASTOFUS-26-APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:26,182 INFO worker:   Skipping KXIPOBEASTINDUSTRIES-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:56:26,881 INFO worker:   Skipping KXIPHONERELEASE-IPHONE18-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:27,575 INFO worker:   Skipping KXMULLINCONF-26APR01 — market prices unchanged (yes=0.95, no=0.08)
+2026-03-18 21:56:28,271 INFO worker:   Skipping KXBONDIOUT-26APR01 — market prices unchanged (yes=0.04, no=0.97)
+2026-03-18 21:56:28,972 INFO worker:   Skipping KXIPOSTARLINK-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:29,665 INFO worker:   Skipping KXIPOSPACEX-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:30,365 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-APR01 — market prices unchanged (yes=0.80, no=0.21)
+2026-03-18 21:56:31,065 INFO worker:   Skipping KXLUTNICKOUT-26APR01 — market prices unchanged (yes=0.05, no=0.97)
+2026-03-18 21:56:31,767 INFO worker:   Skipping KXUSAIRANAGREEMENT-27-26APR — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:56:32,466 INFO worker:   Skipping KXMEDIARELEASESPIDERMAN-APR26 — market prices unchanged (yes=0.05, no=0.98)
+2026-03-18 21:56:33,170 INFO worker:   Skipping KXIPOANDURIL-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:33,873 INFO worker:   Skipping KXTRUMPUFC-UFC327 — market prices unchanged (yes=0.26, no=0.75)
+2026-03-18 21:56:34,572 INFO worker:   Skipping KXMULLINCONF-26APR15 — market prices unchanged (yes=0.97, no=0.05)
+2026-03-18 21:56:35,270 INFO worker:   Skipping KXDHSFUND-26APR01 — market prices unchanged (yes=0.30, no=0.72)
+2026-03-18 21:56:35,973 INFO worker:   Skipping KXALBUMRELEASEDATETRIPPIE-APR01-26 — market prices unchanged (yes=0.15, no=0.86)
+2026-03-18 21:56:36,670 INFO worker:   Skipping KXIPOFANNIE-26APR01 — market prices unchanged (yes=0.02, no=0.99)
+2026-03-18 21:56:37,372 INFO worker:   Skipping KXIPOOPENAI-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:38,065 INFO worker:   Skipping KXCABLEAVE-26MAR-26APR — market prices unchanged (yes=0.05, no=0.97)
+2026-03-18 21:56:38,787 INFO worker:   Skipping KXIPOOLIPOP-26APR01 — market prices unchanged (yes=0.04, no=0.99)
+2026-03-18 21:56:39,485 INFO worker:   Skipping KXIPOCLUELY-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:56:40,187 INFO worker:   Skipping KXSTRIPEIPO-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:56:40,914 INFO worker:   Skipping KXTARIFFBILL-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:56:41,620 INFO worker:   Skipping KXFREDDIE-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:56:42,330 INFO worker:   Skipping KXAMBMALAY-26JAN06-APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:56:43,035 INFO worker:   Skipping KXVOTESAVEAMERICA-26MAR-MAR20 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:43,735 INFO worker:   Skipping KXIPOBREX-26APR01 — market prices unchanged (yes=0.02, no=1.00)
+2026-03-18 21:56:44,432 INFO worker:   Skipping KXGROK-GROK5-26APR01 — market prices unchanged (yes=0.05, no=0.98)
+2026-03-18 21:56:45,131 INFO worker:   Skipping KXSPOTIFYALBUMRELEASEDATEDRAKE-26-APR01 — market prices unchanged (yes=0.15, no=0.88)
+2026-03-18 21:56:45,833 INFO worker:   Skipping KXIPODISCORD-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:46,526 INFO worker:   Skipping KXIPOGLEAN-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:47,223 INFO worker:   Skipping KXGREENTERRITORY-29-26APR — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:47,924 INFO worker:   Skipping KXIPORIPPLING-26APR01 — market prices unchanged (yes=0.03, no=1.00)
+2026-03-18 21:56:48,627 INFO worker:   Skipping KXDIAZOUT-MDC-26APR01 — market prices unchanged (yes=0.13, no=0.88)
+2026-03-18 21:56:49,331 INFO worker:   Skipping KXLEAVESTARMER-26APR01 — market prices unchanged (yes=0.03, no=0.98)
+2026-03-18 21:56:50,033 INFO worker:   Skipping KXELECTVENEZUELA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:50,728 INFO worker:   Skipping KXIPOOURA-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:51,427 INFO worker:   Skipping KXTRUMPOUT27-27-26APR01 — market prices unchanged (yes=0.01, no=1.00)
+2026-03-18 21:56:51,494 INFO worker: Phase A complete: 0 markets to analyze (from 43 raw)
+2026-03-18 21:56:51,494 INFO worker: No markets to analyze, skipping prediction phase
+2026-03-18 21:56:51,496 INFO worker: Sleeping 1200s until next cycle...
