@@ -1183,18 +1183,19 @@ function TimelineTab({
         if (event.type === "trade-group") {
           return (
             <div key={event.key}>
-              <div className="relative py-1.5">
-                <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
-                {event.items.map((subEvent, subIdx) => {
-                  const { trade, idx, matchedRun } = subEvent.item;
+              {(() => {
+                // Shared rationale: first trade in group that has reasoning/sources
+                const groupReasoning = event.items.map(s => s.item.trade.prediction?.reasoning ?? s.item.matchedRun?.reasoning ?? null).find(r => r) ?? null;
+                const groupSources = event.items.map(s => s.item.trade.prediction?.sources ?? s.item.matchedRun?.sources ?? []).find(s => s.length > 0) ?? [];
+                const hasGroupDetail = !!(groupReasoning || groupSources.length > 0);
+                const isGroupExpanded = expandedEntryId === event.key;
+
+                // Pre-compute display values for each sub-trade
+                const subRows = event.items.map((subEvent) => {
+                  const { trade, idx } = subEvent.item;
                   const qty = trade.filled_shares || trade.count;
                   const isSell = trade.action?.toUpperCase() === "SELL";
                   const cost = (trade.price_cents / 100) * qty;
-                  const pred = trade.prediction;
-                  const detailReasoning = pred?.reasoning ?? matchedRun?.reasoning ?? null;
-                  const detailSources = pred?.sources ?? matchedRun?.sources ?? [];
-                  const hasDetail = !!(detailReasoning || detailSources.length > 0);
-                  const isExpanded = expandedEntryId === subEvent.key;
                   let netShares = 0, totalCost = 0, sellPnl = 0;
                   for (let i = 0; i <= idx; i++) {
                     const t = chronTrades[i];
@@ -1215,53 +1216,61 @@ function TimelineTab({
                       sellPnl = 0;
                     }
                   }
-                  const cumulativeQty = Math.abs(netShares);
-                  const cumulativeSide = netShares > 0 ? "YES" : netShares < 0 ? "NO" : null;
-                  const currentSellPnl = isSell ? sellPnl : 0;
-                  return (
-                    <div key={subEvent.key} className={subIdx > 0 ? "mt-0.5" : ""}>
-                      <div className="flex items-start gap-3">
-                        <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0 text-right pr-1">
-                          {subIdx === 0 ? fmtTime(trade.created_at) : "↳"}
-                        </div>
-                        <div className="flex-1 min-w-0 overflow-hidden">
-                          <button
-                            type="button"
-                            className={`w-full flex flex-wrap items-center gap-2.5 rounded px-1 -mx-1 text-[10px] font-mono text-left transition-colors ${hasDetail ? "hover:bg-t-panel-hover/40" : ""}`}
-                            onClick={() => { if (!hasDetail) return; setExpandedEntryId(isExpanded ? null : subEvent.key); }}
-                          >
-                            {isSell && <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>}
-                            <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
-                              {trade.side.toUpperCase()}
-                            </span>
-                            <span className="text-txt-primary">{isSell ? "-" : "+"}{qty} @ {trade.price_cents}c</span>
-                            <span className="text-txt-muted">{isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}</span>
-                            {isSell && <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>{currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}</span>}
-                            <span className="text-txt-muted">total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}</span>
-                            {pred && (
-                              <>
-                                <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
-                                <span className="text-accent">model: {(pred.p_yes * 100).toFixed(0)}%</span>
-                                <span className={pnlCls(pred.p_yes - pred.yes_ask)}>edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}{((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp</span>
-                              </>
-                            )}
-                            <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
-                              {trade.dry_run ? "DRY" : "LIVE"}
-                            </span>
-                            {detailSources.length > 0 && <span className="text-[9px] text-txt-muted">{detailSources.length} source{detailSources.length !== 1 ? "s" : ""}</span>}
-                            {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
-                          </button>
-                          {isExpanded && hasDetail && (
-                            <div className="pt-1">
-                              <RationalePanel reasoning={detailReasoning} sources={detailSources} />
+                  return { trade, qty, isSell, cost, currentSellPnl: isSell ? sellPnl : 0, cumulativeQty: Math.abs(netShares), cumulativeSide: netShares > 0 ? "YES" : netShares < 0 ? "NO" : null, totalCost };
+                });
+
+                return (
+                  <div className="relative py-1.5">
+                    <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
+                    <div
+                      role="button"
+                      className={`rounded px-1 -mx-1 transition-colors ${hasGroupDetail ? "cursor-pointer hover:bg-t-panel-hover/40" : ""}`}
+                      onClick={() => { if (!hasGroupDetail) return; setExpandedEntryId(isGroupExpanded ? null : event.key); }}
+                    >
+                      {subRows.map(({ trade, qty, isSell, cost, currentSellPnl, cumulativeQty, cumulativeSide, totalCost }, subIdx) => {
+                        const pred = trade.prediction;
+                        return (
+                          <div key={subIdx} className={`flex items-start gap-3 ${subIdx > 0 ? "mt-0.5" : ""}`}>
+                            <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0 text-right pr-1">
+                              {subIdx === 0 ? fmtTime(trade.created_at) : "↳"}
                             </div>
-                          )}
+                            <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                              {isSell && <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>}
+                              <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                                {trade.side.toUpperCase()}
+                              </span>
+                              <span className="text-txt-primary">{isSell ? "-" : "+"}{qty} @ {trade.price_cents}c</span>
+                              <span className="text-txt-muted">{isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}</span>
+                              {isSell && <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>{currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}</span>}
+                              <span className="text-txt-muted">total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}</span>
+                              {pred && (
+                                <>
+                                  <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
+                                  <span className="text-accent">model: {(pred.p_yes * 100).toFixed(0)}%</span>
+                                  <span className={pnlCls(pred.p_yes - pred.yes_ask)}>edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}{((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp</span>
+                                </>
+                              )}
+                              <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
+                                {trade.dry_run ? "DRY" : "LIVE"}
+                              </span>
+                              {subIdx === 0 && groupSources.length > 0 && <span className="text-[9px] text-txt-muted">{groupSources.length} source{groupSources.length !== 1 ? "s" : ""}</span>}
+                              {subIdx === 0 && hasGroupDetail && <span className="text-[8px] text-txt-muted ml-auto">{isGroupExpanded ? "▲" : "▼"}</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {isGroupExpanded && hasGroupDetail && (
+                        <div className="flex items-start gap-3 pt-1">
+                          <div className="w-[100px] flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <RationalePanel reasoning={groupReasoning} sources={groupSources} />
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+                );
+              })()}
               {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
                 const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
                 const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
