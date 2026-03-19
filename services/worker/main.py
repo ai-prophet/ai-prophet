@@ -47,7 +47,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from instance_config import get_current_instance_name, get_instance_env
+from instance_config import env_suffix, get_current_instance_name, get_instance_env
 
 load_dotenv()
 
@@ -57,6 +57,10 @@ INSTANCE_NAME = get_current_instance_name()
 
 def _instance_setting(key: str, default: str = "") -> str:
     return str(get_instance_env(key, INSTANCE_NAME, default=default) or default)
+
+
+def _instance_specific_setting(key: str) -> str:
+    return os.getenv(f"{key}_{env_suffix(INSTANCE_NAME)}", "")
 
 
 def _instance_bool_setting(key: str, default: bool) -> bool:
@@ -929,9 +933,12 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
     """
     import httpx
 
-    api_key = _instance_setting("GOOGLE_API_KEY") or _instance_setting("GEMINI_API_KEY")
+    api_key = _instance_specific_setting("GOOGLE_API_KEY") or _instance_specific_setting("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY env var required for Gemini")
+        raise ValueError(
+            f"GOOGLE_API_KEY_{env_suffix(INSTANCE_NAME)} or "
+            f"GEMINI_API_KEY_{env_suffix(INSTANCE_NAME)} env var required for Gemini"
+        )
     base_url = "https://generativelanguage.googleapis.com/v1beta"
     http_client = httpx.Client(timeout=120.0)
 
