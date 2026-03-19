@@ -1756,6 +1756,7 @@ def _get_max_peer_cycle_end(db_engine, all_instances: list[str]) -> datetime | N
         return None
     try:
         from ai_prophet_core.betting.db import get_session
+        from db_models import SystemLog
 
         with get_session(db_engine) as session:
             rows = (

@@ -5449,3 +5449,173 @@ sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) could not translate
 2026-03-18 21:56:51,494 INFO worker: Phase A complete: 0 markets to analyze (from 43 raw)
 2026-03-18 21:56:51,494 INFO worker: No markets to analyze, skipping prediction phase
 2026-03-18 21:56:51,496 INFO worker: Sleeping 1200s until next cycle...
+2026-03-18 22:16:57,196 INFO ai_prophet_core.betting.engine: BettingEngine initialized: strategy=default, mode=DRY RUN, enabled=True, db=yes
+2026-03-18 22:16:57,199 INFO worker: BettingEngine ready: strategy=default, dry_run=True
+2026-03-18 22:16:58,277 INFO worker: Starting cycle: models=['gemini:gemini-3.1-pro-preview'], strategy=default, max_markets=25, max_active=80
+2026-03-18 22:16:58,838 INFO worker: Re-fetching 25 sticky markets: {'KXGREENTERRITORY-29-26APR', 'KXTARIFFBILL-26APR01', 'KXLUTNICKOUT-26APR01', 'KXDIAZOUT-MDC-26APR01', 'KXVOTESAVEAMERICA-26MAR-MAR24', 'KXUSAIRANAGREEMENT-27-26APR', 'KXMEDIARELEASESPIDERMAN-APR26', 'KXLEAVESTARMER-26APR01', 'KXAMBMALAY-26JAN06-APR01', 'KXDHSFUND-26MAR20', 'KXVOTESAVEAMERICA-26MAR-MAR20', 'KXMNDAYCARECHARGE-26APR01', 'KXGROK-GROK5-26APR01', 'KXIPOOLIPOP-26APR01', 'KXIPODISCORD-26APR01', 'KXDHSFUND-26APR01', 'KXALBUMRELEASEDATETRIPPIE-APR01-26', 'KXMULLINCONF-26APR01', 'KXTRUMPOUT27-27-26APR01', 'KXBONDIOUT-26APR01', 'KXIPOFANNIE-26APR01', 'KXIPOSTARLINK-26APR01', 'KXCABLEAVE-26MAR-26APR', 'KXIPOSPACEX-26APR01', 'KXVOTESAVEAMERICA-26MAR-APR01'}
+2026-03-18 22:17:03,445 INFO worker: Selected 36 markets (from 40 candidates, 2000 events, 10 pages)
+2026-03-18 22:17:03,447 INFO worker: Fetched 15 new markets (36 candidates, 21 excluded as already tracked)
+2026-03-18 22:17:03,447 INFO worker: Total markets this cycle: 25 sticky + 15 new = 40
+2026-03-18 22:17:39,822 INFO worker: Phase A complete: 39 markets to analyze (from 40 raw)
+2026-03-18 22:17:39,823 INFO worker: Using remote predictor: https://predictor-441548451945.us-west1.run.app (parallel fanout)
+2026-03-18 22:17:39,823 INFO worker: Fanning out 39 prediction tasks (39 markets × 1 models) with max_workers=20
+2026-03-18 22:17:44,269 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,379 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,380 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,391 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,399 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,405 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,410 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,411 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,413 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,413 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,415 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,418 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,421 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:44,422 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:45,314 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:45,336 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:45,342 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:45,355 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:45,358 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:45,372 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:49,500 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,340 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,551 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,746 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,885 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,924 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,936 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,949 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,954 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:50,975 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,088 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,113 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,114 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,156 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,180 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,200 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,200 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,216 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,221 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:51,242 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:54,701 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXBONDIOUT-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:54,895 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:55,553 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXVOTESAVEAMERICA-26MAR-MAR20 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:55,764 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:55,777 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOFANNIE-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:55,967 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:55,991 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXGROK-GROK5-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,133 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXUSAIRANAGREEMENT-27-26APR prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,138 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXDIAZOUT-MDC-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,169 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPODISCORD-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,172 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXALBUMRELEASEDATETRIPPIE-APR01-26 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,177 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXLUTNICKOUT-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,191 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,194 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXAMBMALAY-26JAN06-APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,309 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXLEAVESTARMER-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,606 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXMULLINCONF-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:56,830 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXTRUMPOUT27-27-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,348 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,518 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,737 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOOLIPOP-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,800 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,837 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,848 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,852 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,852 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXDHSFUND-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,867 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXGREENTERRITORY-29-26APR prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,874 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXMEDIARELEASESPIDERMAN-APR26 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,883 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,883 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,891 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXVOTESAVEAMERICA-26MAR-MAR24 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,892 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,895 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXDHSFUND-26MAR20 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:57,909 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXTARIFFBILL-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:58,036 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:58,059 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:58,091 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:58,094 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:58,100 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:17:58,107 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 1 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:00,091 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:00,996 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:01,201 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:01,405 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:02,563 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:02,744 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,000 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,018 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,041 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,055 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,089 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,104 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,220 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,236 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,255 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,325 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,332 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,437 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:03,479 WARNING worker:   [gemini:gemini-3.1-pro-preview] remote attempt 2 failed, retrying in 5s: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:05,320 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOSTARLINK-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:06,208 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXCABLEAVE-26MAR-26APR prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:06,409 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOSPACEX-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:06,632 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXVOTESAVEAMERICA-26MAR-APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:07,764 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXTRUMPUFC-UFC327 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:07,995 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPORIPPLING-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,200 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPODEEL-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,226 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXFREDDIE-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,230 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOBEASTINDUSTRIES-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,235 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOCLUELY-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,288 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXTVSEASONRELEASETHELASTOFUS-26-APR prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,422 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOOURA-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,437 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOBREX-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,450 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOOPENAI-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,465 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXSTRIPEIPO-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,558 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOGLEAN-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,615 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPHONERELEASE-IPHONE18-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,636 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXELECTVENEZUELA-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,730 ERROR worker:   [gemini:gemini-3.1-pro-preview] KXIPOANDURIL-26APR01 prediction failed: 500 Server Error: Internal Server Error for url: https://predictor-441548451945.us-west1.run.app/predict
+2026-03-18 22:18:08,732 INFO worker: Phase B complete: 0/39 predictions in 28.9s
+2026-03-18 22:18:08,732 WARNING worker:   No model predictions for KXGREENTERRITORY-29-26APR, skipping
+2026-03-18 22:18:08,732 WARNING worker:   No model predictions for KXTARIFFBILL-26APR01, skipping
+2026-03-18 22:18:08,732 WARNING worker:   No model predictions for KXLUTNICKOUT-26APR01, skipping
+2026-03-18 22:18:08,732 WARNING worker:   No model predictions for KXDIAZOUT-MDC-26APR01, skipping
+2026-03-18 22:18:08,732 WARNING worker:   No model predictions for KXVOTESAVEAMERICA-26MAR-MAR24, skipping
+2026-03-18 22:18:08,732 WARNING worker:   No model predictions for KXUSAIRANAGREEMENT-27-26APR, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXMEDIARELEASESPIDERMAN-APR26, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXLEAVESTARMER-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXAMBMALAY-26JAN06-APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXDHSFUND-26MAR20, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXVOTESAVEAMERICA-26MAR-MAR20, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXGROK-GROK5-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOOLIPOP-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPODISCORD-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXDHSFUND-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXALBUMRELEASEDATETRIPPIE-APR01-26, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXMULLINCONF-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXTRUMPOUT27-27-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXBONDIOUT-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOFANNIE-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOSTARLINK-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXCABLEAVE-26MAR-26APR, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOSPACEX-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXVOTESAVEAMERICA-26MAR-APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXTRUMPUFC-UFC327, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPORIPPLING-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPODEEL-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOCLUELY-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOBEASTINDUSTRIES-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXFREDDIE-26APR01, skipping
+2026-03-18 22:18:08,733 WARNING worker:   No model predictions for KXIPOBREX-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXTVSEASONRELEASETHELASTOFUS-26-APR, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXIPOOURA-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXSTRIPEIPO-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXIPOOPENAI-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXIPOGLEAN-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXIPOANDURIL-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXIPHONERELEASE-IPHONE18-26APR01, skipping
+2026-03-18 22:18:08,734 WARNING worker:   No model predictions for KXELECTVENEZUELA-26APR01, skipping
+2026-03-18 22:18:09,578 INFO worker: Updated 0 positions from order history
+2026-03-18 22:18:09,862 INFO worker: Cycle complete: 0 total results, 0 orders placed across 1 models
+2026-03-18 22:18:09,863 INFO worker: Sleeping 1200s until next cycle...
