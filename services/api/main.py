@@ -37,6 +37,7 @@ import logging
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import func, text
 from instance_config import DEFAULT_INSTANCE_NAME, get_instance_env, normalize_instance_name
 
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 from ai_prophet_core.betting.db import create_db_engine, get_session
 from ai_prophet_core.betting.db_schema import (
+    Base as CoreBase,
     BettingOrder,
     BettingPrediction,
     BettingSignal,
@@ -51,6 +53,7 @@ from ai_prophet_core.betting.db_schema import (
 
 # Import dashboard-specific models
 from db_models import (
+    AlertDismissal,
     MarketPriceSnapshot,
     ModelRun,
     SystemLog,
@@ -75,6 +78,7 @@ async def lifespan(app: FastAPI):
     # Startup: verify DB connection
     try:
         engine = get_db()
+        CoreBase.metadata.create_all(engine, checkfirst=True)
         with get_session(engine) as session:
             session.execute(text("SELECT 1"))
     except Exception as e:
@@ -140,6 +144,14 @@ def _instance_list_setting(key: str, instance_name: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _worker_poll_interval(instance_name: str) -> int:
+    return int(_instance_setting("WORKER_POLL_INTERVAL_SEC", instance_name, "3600"))
+
+
+def _worker_stale_threshold_sec(instance_name: str) -> int:
+    return max(1800, int(_worker_poll_interval(instance_name) * 1.5))
+
+
 def _build_kalshi_adapter(instance_name: str):
     from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
@@ -198,6 +210,8 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     # Last worker heartbeat
     last_heartbeat = None
     worker_status = "unknown"
+    poll_interval = _worker_poll_interval(resolved_instance)
+    stale_threshold_sec = _worker_stale_threshold_sec(resolved_instance)
     try:
         with get_session(engine) as session:
             row = (
@@ -209,7 +223,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
             if row:
                 last_heartbeat = row.created_at.isoformat()
                 age_sec = (datetime.now(UTC) - row.created_at.replace(tzinfo=UTC)).total_seconds()
-                worker_status = "healthy" if age_sec < 1800 else "stale"
+                worker_status = "healthy" if age_sec < stale_threshold_sec else "stale"
     except Exception:
         pass
 
@@ -261,7 +275,6 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
 
     dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
     enabled = _instance_bool_setting("LIVE_BETTING_ENABLED", resolved_instance, False)
-    poll_interval = int(_instance_setting("WORKER_POLL_INTERVAL_SEC", resolved_instance, "900"))
     worker_models = _instance_list_setting("WORKER_MODELS", resolved_instance)
 
     return {
@@ -1268,6 +1281,32 @@ def get_resolved_markets(
 # ── GET /alerts ──────────────────────────────────────────────────
 
 
+class AlertClearRequest(BaseModel):
+    alert_key: str
+    instance_name: str | None = None
+
+
+def _build_alert(
+    *,
+    key: str,
+    alert_type: str,
+    severity: str,
+    message: str,
+    timestamp: str,
+    market_id: str | None = None,
+) -> dict[str, Any]:
+    alert = {
+        "key": key,
+        "type": alert_type,
+        "severity": severity,
+        "message": message,
+        "timestamp": timestamp,
+    }
+    if market_id is not None:
+        alert["market_id"] = market_id
+    return alert
+
+
 @app.get("/alerts")
 def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Active system alerts: stale workers, exposure limits, model divergences, errors."""
@@ -1275,9 +1314,11 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
     engine = get_db()
     alerts: list[dict[str, Any]] = []
     now = datetime.now(UTC)
+    stale_threshold_sec = _worker_stale_threshold_sec(resolved_instance)
+    sticky_alert_keys = {"stale_worker", "exposure"}
 
     with get_session(engine) as session:
-        # 1. Stale worker check: heartbeat > 30 min
+        # 1. Stale worker check: heartbeat older than 1.5x poll interval
         last_heartbeat = (
             _instance_query(session, SystemLog, resolved_instance)
             .filter(SystemLog.level == "HEARTBEAT", SystemLog.component == "worker")
@@ -1286,21 +1327,26 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
         )
         if last_heartbeat:
             age_sec = (now - last_heartbeat.created_at.replace(tzinfo=UTC)).total_seconds()
-            if age_sec > 1800:
+            if age_sec > stale_threshold_sec:
                 minutes_ago = int(age_sec / 60)
-                alerts.append({
-                    "type": "stale_worker",
-                    "severity": "error",
-                    "message": f"Worker heartbeat is {minutes_ago} minutes old. Last seen: {last_heartbeat.created_at.isoformat()}",
-                    "timestamp": now.isoformat(),
-                })
+                alerts.append(_build_alert(
+                    key="stale_worker",
+                    alert_type="stale_worker",
+                    severity="error",
+                    message=(
+                        f"Worker heartbeat is {minutes_ago} minutes old. "
+                        f"Last seen: {last_heartbeat.created_at.isoformat()}"
+                    ),
+                    timestamp=now.isoformat(),
+                ))
         else:
-            alerts.append({
-                "type": "stale_worker",
-                "severity": "error",
-                "message": "No worker heartbeat found. Worker may have never started.",
-                "timestamp": now.isoformat(),
-            })
+            alerts.append(_build_alert(
+                key="stale_worker",
+                alert_type="stale_worker",
+                severity="error",
+                message="No worker heartbeat found. Worker may have never started.",
+                timestamp=now.isoformat(),
+            ))
 
         # 2. Total exposure check
         positions = _instance_query(session, TradingPosition, resolved_instance).all()
@@ -1309,12 +1355,16 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
         )
         exposure_threshold = float(os.getenv("ALERT_EXPOSURE_THRESHOLD", "500"))
         if total_exposure > exposure_threshold:
-            alerts.append({
-                "type": "exposure",
-                "severity": "warning",
-                "message": f"Total exposure ${total_exposure:.2f} exceeds threshold ${exposure_threshold:.2f}",
-                "timestamp": now.isoformat(),
-            })
+            alerts.append(_build_alert(
+                key="exposure",
+                alert_type="exposure",
+                severity="warning",
+                message=(
+                    f"Total exposure ${total_exposure:.2f} exceeds threshold "
+                    f"${exposure_threshold:.2f}"
+                ),
+                timestamp=now.isoformat(),
+            ))
 
         # 3. Model-market divergence > 20pp
         markets = _instance_query(session, TradingMarket, resolved_instance).all()
@@ -1331,17 +1381,18 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
             if latest_pred:
                 divergence = abs(latest_pred.p_yes - mkt.yes_ask)
                 if divergence > 0.20:
-                    alerts.append({
-                        "type": "divergence",
-                        "severity": "warning",
-                        "message": (
+                    alerts.append(_build_alert(
+                        key=f"divergence:{mkt.market_id}:{latest_pred.id}",
+                        alert_type="divergence",
+                        severity="warning",
+                        message=(
                             f"Model-market divergence of {divergence:.0%} on "
                             f"'{mkt.title}': model={latest_pred.p_yes:.2f}, "
                             f"market={mkt.yes_ask:.2f}"
                         ),
-                        "market_id": mkt.market_id,
-                        "timestamp": now.isoformat(),
-                    })
+                        market_id=mkt.market_id,
+                        timestamp=now.isoformat(),
+                    ))
 
         # 4. Recent ERROR logs (last 1 hour)
         one_hour_ago = now - timedelta(hours=1)
@@ -1356,14 +1407,51 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
             .all()
         )
         for log in error_logs:
-            alerts.append({
-                "type": "system_error",
-                "severity": "error",
-                "message": f"[{log.component}] {log.message}",
-                "timestamp": log.created_at.isoformat(),
-            })
+            alerts.append(_build_alert(
+                key=f"system_error:{log.id}",
+                alert_type="system_error",
+                severity="error",
+                message=f"[{log.component}] {log.message}",
+                timestamp=log.created_at.isoformat(),
+            ))
 
-    return {"alerts": alerts}
+        active_keys = {alert["key"] for alert in alerts}
+        inactive_sticky_keys = sticky_alert_keys - active_keys
+        if inactive_sticky_keys:
+            (
+                _instance_query(session, AlertDismissal, resolved_instance)
+                .filter(AlertDismissal.alert_key.in_(inactive_sticky_keys))
+                .delete(synchronize_session=False)
+            )
+
+        dismissed_keys = {
+            row.alert_key
+            for row in _instance_query(session, AlertDismissal, resolved_instance).all()
+        }
+
+    return {"alerts": [alert for alert in alerts if alert["key"] not in dismissed_keys]}
+
+
+@app.post("/alerts/clear")
+def clear_alert(req: AlertClearRequest) -> dict[str, Any]:
+    resolved_instance = _instance_name(req.instance_name)
+    engine = get_db()
+    with get_session(engine) as session:
+        existing = (
+            _instance_query(session, AlertDismissal, resolved_instance)
+            .filter(AlertDismissal.alert_key == req.alert_key)
+            .first()
+        )
+        if existing is None:
+            session.add(
+                AlertDismissal(
+                    instance_name=resolved_instance,
+                    alert_key=req.alert_key,
+                    created_at=datetime.now(UTC),
+                )
+            )
+
+    return {"ok": True, "alert_key": req.alert_key, "instance_name": resolved_instance}
 
 
 # ── GET /predictions/{market_id} ─────────────────────────────────

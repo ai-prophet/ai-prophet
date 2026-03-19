@@ -72,6 +72,7 @@ export default function Dashboard() {
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [resolvedMarkets, setResolvedMarkets] = useState<ResolvedMarketsData | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [clearingAlertKey, setClearingAlertKey] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
@@ -169,8 +170,34 @@ export default function Dashboard() {
     setAnalytics(null);
     setResolvedMarkets(null);
     setAlerts([]);
+    setClearingAlertKey(null);
     setLastUpdate("");
   }, []);
+
+  const refreshAlerts = useCallback(async () => {
+    const next = await instanceApi.getAlerts();
+    setAlerts(next.alerts);
+    const current = dataCacheRef.current[selectedInstance.key];
+    if (current) {
+      dataCacheRef.current[selectedInstance.key] = {
+        ...current,
+        alerts: next.alerts,
+      };
+    }
+  }, [instanceApi, selectedInstance.key]);
+
+  const clearAlert = useCallback(async (alertKey: string) => {
+    setClearingAlertKey(alertKey);
+    try {
+      await instanceApi.clearAlert(alertKey);
+      await refreshAlerts();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to clear alert";
+      setError(`${selectedInstance.label}: ${message}`);
+    } finally {
+      setClearingAlertKey((current) => (current === alertKey ? null : current));
+    }
+  }, [instanceApi, refreshAlerts, selectedInstance.label]);
 
   const fetchAll = useCallback(async () => {
     const requestId = activeRequestRef.current + 1;
@@ -650,6 +677,8 @@ export default function Dashboard() {
               <AlertsPanel
                 alerts={alerts}
                 onAlertClick={focusMarket}
+                onAlertClear={clearAlert}
+                clearingAlertKey={clearingAlertKey}
               />
             )}
             {supportTab === "activity" && <LiveActivity logs={logs} />}

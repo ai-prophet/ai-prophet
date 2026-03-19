@@ -17,14 +17,14 @@ Environment variables:
     KALSHI_BASE_URL           — Kalshi API base URL
     LIVE_BETTING_ENABLED      — Master kill switch (default: false)
     LIVE_BETTING_DRY_RUN      — Dry-run mode (default: true)
-    WORKER_POLL_INTERVAL_SEC  — Seconds between cycles (default: 900)
+    WORKER_POLL_INTERVAL_SEC  — Seconds between cycles (default: 3600)
     WORKER_MODELS             — Comma-separated model specs (default: gemini:gemini-3.1-pro-preview)
                                  Providers: openai, anthropic, gemini
                                  Examples: gemini:gemini-3.1-pro-preview, anthropic:claude-sonnet-4-5-20250929
     GOOGLE_API_KEY            — Google AI API key (for gemini provider)
     WORKER_STRATEGY           — Betting strategy: default|rebalancing (default: default)
-    WORKER_MAX_MARKETS        — Max NEW markets to fetch per cycle (default: 25)
-    WORKER_MAX_ACTIVE_MARKETS — Max total active markets (sticky + new) (default: 40)
+    WORKER_MAX_MARKETS        — Max NEW markets to fetch per cycle (default: 50)
+    WORKER_MAX_ACTIVE_MARKETS — Max total active markets (sticky + new) (default: 50)
 """
 
 from __future__ import annotations
@@ -1102,8 +1102,8 @@ def run_cycle(args) -> None:
     """
     strategy_name = _instance_setting("WORKER_STRATEGY", "rebalancing")
     dry_run_override = True if args.dry_run else None
-    max_markets = _instance_int_setting("WORKER_MAX_MARKETS", 25)
-    max_active = _instance_int_setting("WORKER_MAX_ACTIVE_MARKETS", 40)
+    max_markets = _instance_int_setting("WORKER_MAX_MARKETS", 50)
+    max_active = _instance_int_setting("WORKER_MAX_ACTIVE_MARKETS", 50)
     models_str = _instance_setting("WORKER_MODELS", "gemini:gemini-3.1-pro-preview")
     model_specs = [m.strip() for m in models_str.split(",") if m.strip()]
     predictor_service_url = _instance_setting("PREDICTOR_SERVICE_URL", "").rstrip("/")
@@ -1807,7 +1807,7 @@ def main() -> None:
     setup_logging(args.verbose)
     _start_health_server()
 
-    poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", 900)
+    poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", 3600)
     peer_instances_str = _instance_setting("WORKER_PEER_INSTANCES", "")
     peer_instances = [p.strip() for p in peer_instances_str.split(",") if p.strip()] if peer_instances_str else []
     all_sync_instances = list({INSTANCE_NAME} | set(peer_instances))

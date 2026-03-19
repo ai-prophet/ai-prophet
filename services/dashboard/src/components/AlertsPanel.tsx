@@ -25,9 +25,13 @@ const SEVERITY_CONFIG = {
 export function AlertsPanel({
   alerts,
   onAlertClick,
+  onAlertClear,
+  clearingAlertKey,
 }: {
   alerts: Alert[];
   onAlertClick?: (marketId: string) => void;
+  onAlertClear?: (alertKey: string) => void;
+  clearingAlertKey?: string | null;
 }) {
   const sortedAlerts = useMemo(() => {
     return [...alerts].sort((a, b) => {
@@ -78,29 +82,15 @@ export function AlertsPanel({
           <div className="divide-y divide-t-border/30">
             {sortedAlerts.map((alert, idx) => {
               const config = SEVERITY_CONFIG[alert.severity] ?? SEVERITY_CONFIG.info;
-
-              return (
-                <button
-                  key={`${alert.type}-${alert.timestamp}-${idx}`}
-                  type="button"
-                  disabled={!alert.market_id}
-                  onClick={() => {
-                    if (alert.market_id) onAlertClick?.(alert.market_id);
-                  }}
-                  className={`w-full px-3 py-2 text-left transition-colors ${
-                    alert.market_id
-                      ? "hover:bg-t-panel-hover cursor-pointer"
-                      : "cursor-default"
-                  }`}
-                >
+              const isClearing = clearingAlertKey === alert.key;
+              const content = (
+                <>
                   <div className="flex items-start gap-2">
-                    {/* Severity dot */}
                     <span
                       className={`w-1.5 h-1.5 rounded-full mt-1 shrink-0 ${config.dot}`}
                     />
 
                     <div className="flex-1 min-w-0">
-                      {/* Type badge + timestamp */}
                       <div className="flex items-center gap-1.5 mb-0.5">
                         <span
                           className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-px rounded border ${config.badge}`}
@@ -112,12 +102,10 @@ export function AlertsPanel({
                         </span>
                       </div>
 
-                      {/* Message */}
                       <p className="text-[10px] text-txt-primary leading-snug">
                         {alert.message}
                       </p>
 
-                      {/* Market ID if present */}
                       {alert.market_id && (
                         <span className="text-[8px] font-mono text-txt-muted mt-0.5 inline-block">
                           {alert.market_id}
@@ -125,7 +113,38 @@ export function AlertsPanel({
                       )}
                     </div>
                   </div>
-                </button>
+                </>
+              );
+
+              return (
+                <div
+                  key={`${alert.type}-${alert.timestamp}-${idx}`}
+                  className="flex items-start gap-2 px-3 py-2"
+                >
+                  <div className="flex-1 min-w-0">
+                    {alert.market_id ? (
+                      <button
+                        type="button"
+                        onClick={() => onAlertClick?.(alert.market_id!)}
+                        className="w-full text-left transition-colors hover:bg-t-panel-hover rounded-sm -mx-1 px-1 py-0.5"
+                      >
+                        {content}
+                      </button>
+                    ) : (
+                      <div className="px-1 py-0.5">
+                        {content}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onAlertClear?.(alert.key)}
+                    disabled={isClearing}
+                    className="shrink-0 mt-0.5 text-[9px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-t-border text-txt-muted hover:text-txt-primary hover:border-t-border-light disabled:opacity-50 disabled:cursor-wait"
+                  >
+                    {isClearing ? "Clearing" : "Clear"}
+                  </button>
+                </div>
               );
             })}
           </div>

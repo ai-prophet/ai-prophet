@@ -105,6 +105,22 @@ class SystemLog(Base):
     )
 
 
+class AlertDismissal(Base):
+    """Dismissed dashboard alerts keyed by a stable alert fingerprint."""
+
+    __tablename__ = "alert_dismissals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    alert_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "alert_key", name="uq_alert_dismissal_instance_key"),
+        Index("ix_alert_dismissal_instance_created", "instance_name", "created_at"),
+    )
+
+
 class MarketPriceSnapshot(Base):
     """Periodic market price snapshots for time-series analysis."""
 

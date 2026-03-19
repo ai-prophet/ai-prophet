@@ -1038,11 +1038,11 @@ KALSHI_PRIVATE_KEY_B64=...         # Base64-encoded RSA private key
 KALSHI_BASE_URL=https://api.elections.kalshi.com
 
 # ── Worker ────────────────────────────────────────────────────
-WORKER_POLL_INTERVAL_SEC=900       # Seconds between trading cycles (default: 15 min)
+WORKER_POLL_INTERVAL_SEC=3600      # Seconds between trading cycles (default: 60 min)
 WORKER_MODELS=gemini:gemini-3.1-pro-preview   # Model to use for predictions
 WORKER_STRATEGY=default            # Strategy: "default" (edge-proportional)
-WORKER_MAX_MARKETS=25              # Max new markets to rank and select per cycle
-WORKER_MAX_ACTIVE_MARKETS=40       # Max total markets (new + sticky positions)
+WORKER_MAX_MARKETS=50              # Max new markets to rank and select per cycle
+WORKER_MAX_ACTIVE_MARKETS=50       # Max total markets (new + sticky positions)
 
 # ── Model provider API keys ────────────────────────────────────
 GOOGLE_API_KEY=...                 # Gemini models
