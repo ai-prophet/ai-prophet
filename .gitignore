@@ -37,11 +37,15 @@ htmlcov/
 # Node / Next.js
 node_modules/
 .next/
+.next_stale/
 out/
 .turbo/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Local logs
+logs/*.log
 
 # IDE
 .vscode/

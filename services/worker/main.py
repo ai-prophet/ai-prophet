@@ -1122,6 +1122,14 @@ def run_cycle(args) -> None:
         "Starting cycle: instance=%s, models=%s, strategy=%s, max_markets=%d, max_active=%d",
         INSTANCE_NAME, model_specs, strategy_name, max_markets, max_active,
     )
+    if db_engine is not None:
+        log_system_event(
+            db_engine,
+            "INFO",
+            f"Cycle start: fetcher={is_market_fetcher}, peers={peer_instances or []}, "
+            f"models={model_specs}, strategy={strategy_name}, max_active={max_active}",
+            instance_name=INSTANCE_NAME,
+        )
 
     # 1. Gather sticky markets (already tracked in DB)
     tracked_tickers = (
@@ -1175,11 +1183,21 @@ def run_cycle(args) -> None:
     raw_markets = sticky_markets + new_markets
     logger.info("Total markets this cycle: %d sticky + %d new = %d",
                 len(sticky_markets), len(new_markets), len(raw_markets))
+    if db_engine is not None:
+        log_system_event(
+            db_engine,
+            "INFO",
+            f"Market discovery: sticky={len(sticky_markets)}, "
+            f"new={len(new_markets)}, total={len(raw_markets)}, "
+            f"tracked={len(tracked_tickers)}, mode={'fetcher' if is_market_fetcher else 'mirror'}",
+            instance_name=INSTANCE_NAME,
+        )
 
     if not raw_markets:
         logger.warning("No markets fetched, skipping cycle")
         if db_engine:
             log_system_event(db_engine, "WARNING", "No markets fetched from Kalshi", instance_name=INSTANCE_NAME)
+            log_heartbeat(db_engine, message="cycle_end", instance_name=INSTANCE_NAME)
         if betting_engine:
             betting_engine.close()
         return
@@ -1311,9 +1329,24 @@ def run_cycle(args) -> None:
 
     logger.info("Phase A complete: %d markets to analyze (from %d raw)",
                 len(markets_to_analyze), len(raw_markets))
+    if db_engine is not None:
+        log_system_event(
+            db_engine,
+            "INFO",
+            f"Phase A complete: {len(markets_to_analyze)} analyzable markets from {len(raw_markets)} raw",
+            instance_name=INSTANCE_NAME,
+        )
 
     if not markets_to_analyze:
         logger.info("No markets to analyze, skipping prediction phase")
+        if db_engine is not None:
+            log_system_event(
+                db_engine,
+                "WARNING",
+                f"No markets to analyze after filtering ({len(raw_markets)} raw markets)",
+                instance_name=INSTANCE_NAME,
+            )
+            log_heartbeat(db_engine, message="cycle_end", instance_name=INSTANCE_NAME)
         if betting_engine:
             betting_engine.close()
         return
@@ -1360,9 +1393,23 @@ def run_cycle(args) -> None:
                     )
                 except Exception as e:
                     logger.error("  [%s] %s prediction failed: %s", ms, ticker, e)
+                    if db_engine is not None:
+                        log_system_event(
+                            db_engine,
+                            "ERROR",
+                            f"Prediction failed for {ticker} [{ms}]: {e}",
+                            instance_name=INSTANCE_NAME,
+                        )
 
         logger.info("Phase B complete: %d/%d predictions in %.1fs",
                      len(predictions), len(prediction_tasks), time.time() - t_fan)
+        if db_engine is not None:
+            log_system_event(
+                db_engine,
+                "INFO",
+                f"Phase B complete: {len(predictions)}/{len(prediction_tasks)} predictions succeeded",
+                instance_name=INSTANCE_NAME,
+            )
     else:
         # ── Local sequential prediction (development fallback) ────
         logger.info("Using local predictors (sequential, no PREDICTOR_SERVICE_URL set)")
@@ -1419,6 +1466,13 @@ def run_cycle(args) -> None:
                         else:
                             logger.error("  [%s] prediction failed after %d attempts: %s",
                                          model_spec, max_retries + 1, e)
+                            if db_engine is not None:
+                                log_system_event(
+                                    db_engine,
+                                    "ERROR",
+                                    f"Prediction failed for {ticker} [{model_spec}] after {max_retries + 1} attempts: {e}",
+                                    instance_name=INSTANCE_NAME,
+                                )
 
     # ── Phase C: Aggregate & bet (sequential) ─────────────────────
     # BettingEngine is NOT thread-safe — process all markets sequentially.
@@ -1455,6 +1509,13 @@ def run_cycle(args) -> None:
 
         if not model_predictions:
             logger.warning("  No model predictions for %s, skipping", ticker)
+            if db_engine is not None:
+                log_system_event(
+                    db_engine,
+                    "WARNING",
+                    f"No model predictions available for {ticker}; skipping market",
+                    instance_name=INSTANCE_NAME,
+                )
             all_market_prices[market_id] = (yes_ask, no_ask)
             continue
 
@@ -1580,6 +1641,13 @@ def run_cycle(args) -> None:
                 f"skipped={skipped}, total={len(total_results)}",
                 instance_name=INSTANCE_NAME,
             )
+    elif db_engine is not None:
+        log_system_event(
+            db_engine,
+            "WARNING",
+            f"Cycle produced no betting results across {len(markets_to_analyze)} analyzed markets",
+            instance_name=INSTANCE_NAME,
+        )
 
     # 3b. Check alert conditions and log to SystemLog
     if db_engine:
@@ -1746,8 +1814,20 @@ def main() -> None:
             run_cycle(args)
         except SystemExit:
             break
-        except Exception:
+        except Exception as e:
             traceback.print_exc()
+            try:
+                from ai_prophet_core.betting.db import create_db_engine
+                db_engine = create_db_engine()
+                log_system_event(
+                    db_engine,
+                    "ERROR",
+                    f"Worker loop crashed: {type(e).__name__}: {e}",
+                    instance_name=INSTANCE_NAME,
+                )
+                log_heartbeat(db_engine, message="cycle_error", instance_name=INSTANCE_NAME)
+            except Exception:
+                pass
 
         if args.once:
             logger.info("--once flag set, exiting after single cycle.")

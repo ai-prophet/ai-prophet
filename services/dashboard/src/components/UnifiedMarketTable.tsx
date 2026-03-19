@@ -149,18 +149,6 @@ export function UnifiedMarketTable({
     return Array.from(cats).sort();
   }, [rows]);
 
-  // Scroll-to-market from heatmap click
-  useEffect(() => {
-    if (!scrollToMarketId) return;
-    setExpandedMarketId(scrollToMarketId);
-    // Wait for render then scroll
-    requestAnimationFrame(() => {
-      const el = rowRefs.current.get(scrollToMarketId);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      onScrollComplete?.();
-    });
-  }, [scrollToMarketId, onScrollComplete]);
-
   const handleSort = (key: SortKey, multi: boolean) => {
     setSortKeys((prev) => {
       const idx = prev.findIndex((s) => s.key === key);
@@ -245,6 +233,28 @@ export function UnifiedMarketTable({
       return 0;
     });
   }, [rows, sortKeys, computeMarketDiff]);
+
+  // Scroll-to-market from alerts / heatmap clicks
+  useEffect(() => {
+    if (!scrollToMarketId) return;
+    setViewMode("markets");
+    setSearch("");
+    setFilterMode("all");
+    setCategoryFilter(new Set());
+    const targetIndex = sorted.findIndex((row) => row.market_id === scrollToMarketId);
+    if (targetIndex >= 0) {
+      setVisibleCount(Math.max(PAGE_SIZE, targetIndex + 1));
+    }
+    setExpandedMarketId(scrollToMarketId);
+    // Wait for the row to become visible before scrolling.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = rowRefs.current.get(scrollToMarketId);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        onScrollComplete?.();
+      });
+    });
+  }, [scrollToMarketId, onScrollComplete, sorted]);
 
   // Filter
   const filtered = useMemo(() => {

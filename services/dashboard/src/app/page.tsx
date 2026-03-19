@@ -77,6 +77,7 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [scrollToMarketId, setScrollToMarketId] = useState<string | null>(null);
   const [supportTab, setSupportTab] = useState<"risk" | "alerts" | "activity">("risk");
+  const [marketViewTab, setMarketViewTab] = useState<"activity" | "heatmap">("activity");
   const dataCacheRef = useRef<Record<string, DashboardSnapshot>>({});
   const activeRequestRef = useRef(0);
   const selectedInstance =
@@ -88,6 +89,21 @@ export default function Dashboard() {
   );
   const isSwitchingInstance =
     loadingInstanceKey != null && loadingInstanceKey === selectedInstance.key;
+
+  const focusMarket = useCallback((marketId: string) => {
+    const normalizedTarget = marketId.startsWith("kalshi:")
+      ? marketId
+      : (
+        markets.find((m) => m.market_id === marketId || m.ticker === marketId)?.market_id
+        ?? `kalshi:${marketId}`
+      );
+
+    setMarketViewTab("activity");
+    setScrollToMarketId(null);
+    requestAnimationFrame(() => {
+      setScrollToMarketId(normalizedTarget);
+    });
+  }, [markets]);
 
   // Live net P&L per market: cash flow from trades + current bid value of open position
   const livePnlByMarket = (() => {
@@ -633,7 +649,7 @@ export default function Dashboard() {
             {supportTab === "alerts" && (
               <AlertsPanel
                 alerts={alerts}
-                onAlertClick={(marketId) => setScrollToMarketId(marketId)}
+                onAlertClick={focusMarket}
               />
             )}
             {supportTab === "activity" && <LiveActivity logs={logs} />}
@@ -647,39 +663,61 @@ export default function Dashboard() {
         </div>
         */}
 
-        {/* Row 4: Position Heatmap */}
+        {/* Row 4: Market Views */}
         <div>
-          <SectionLabel text="Position Heatmap" count={positions.length > 0 ? positions.length : undefined} />
-          {positions.length > 0 ? (
-            <PositionHeatmap
-              positions={positions}
+          <div className="flex items-center gap-1.5 mb-1.5">
+            {[
+              { key: "activity" as const, label: "Market Activity", count: markets.length > 0 ? markets.length : undefined },
+              { key: "heatmap" as const, label: "Position Heatmap", count: positions.length > 0 ? positions.length : undefined },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setMarketViewTab(tab.key)}
+                className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+                  marketViewTab === tab.key
+                    ? "bg-accent/20 text-accent"
+                    : "text-txt-muted hover:text-txt-primary hover:bg-t-panel"
+                }`}
+              >
+                {tab.label}
+                {tab.count != null && (
+                  <span className="ml-1 rounded bg-t-border px-1.5 py-px font-mono text-[9px] text-txt-muted">
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          {marketViewTab === "activity" && (
+            <UnifiedMarketTable
+              key={selectedInstance.key}
               markets={markets}
-              pnlByMarket={livePnlByMarket}
-              onCellClick={setScrollToMarketId}
+              positions={positions}
+              trades={trades}
+              apiClient={instanceApi}
+              instanceCacheKey={selectedInstance.key}
+              scrollToMarketId={scrollToMarketId}
+              onScrollComplete={() => setScrollToMarketId(null)}
             />
-          ) : (
-            <div className="bg-t-panel border border-t-border rounded p-6 text-center text-txt-muted text-[10px]">
-              No positions to visualize
-            </div>
+          )}
+          {marketViewTab === "heatmap" && (
+            positions.length > 0 ? (
+              <PositionHeatmap
+                positions={positions}
+                markets={markets}
+                pnlByMarket={livePnlByMarket}
+                onCellClick={focusMarket}
+              />
+            ) : (
+              <div className="bg-t-panel border border-t-border rounded p-6 text-center text-txt-muted text-[10px]">
+                No positions to visualize
+              </div>
+            )
           )}
         </div>
 
-        {/* Row 5: Unified Market Table */}
-        <div>
-          <SectionLabel text="Market Activity" count={markets.length} />
-          <UnifiedMarketTable
-            key={selectedInstance.key}
-            markets={markets}
-            positions={positions}
-            trades={trades}
-            apiClient={instanceApi}
-            instanceCacheKey={selectedInstance.key}
-            scrollToMarketId={scrollToMarketId}
-            onScrollComplete={() => setScrollToMarketId(null)}
-          />
-        </div>
-
-        {/* Row 6: Resolved Markets */}
+        {/* Row 5: Resolved Markets */}
         <div>
           <SectionLabel text="Resolved Markets" />
           <ModelCalibration resolvedMarkets={resolvedMarkets} />
