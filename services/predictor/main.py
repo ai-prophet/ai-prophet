@@ -13,11 +13,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from instance_config import env_suffix, normalize_instance_name
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -32,6 +36,7 @@ PREDICTOR_API_KEY = os.getenv("PREDICTOR_API_KEY", "")
 class PredictRequest(BaseModel):
     model_spec: str  # e.g. "gemini:gemini-3.1-pro-preview:market"
     market_info: dict  # {title, subtitle?, category?, yes_ask, no_ask}
+    instance_name: str | None = None
 
 
 class PredictResponse(BaseModel):
@@ -55,7 +60,7 @@ def predict(req: PredictRequest, x_api_key: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     try:
-        result = run_prediction(req.model_spec, req.market_info)
+        result = run_prediction(req.model_spec, req.market_info, req.instance_name)
         return PredictResponse(**result)
     except Exception as e:
         logger.error("Prediction failed for %s: %s", req.model_spec, e)
@@ -207,10 +212,28 @@ def _predict_anthropic(model_name: str, market_info: dict, include_market: bool)
     return _parse_prediction(response.content[0].text)
 
 
-def _predict_gemini(model_name: str, market_info: dict, include_market: bool) -> dict:
-    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+def _instance_gemini_key(instance_name: str | None) -> str:
+    normalized = normalize_instance_name(instance_name)
+    suffix = env_suffix(normalized)
+    return (
+        os.getenv(f"GOOGLE_API_KEY_{suffix}", "")
+        or os.getenv(f"GEMINI_API_KEY_{suffix}", "")
+    )
+
+
+def _predict_gemini(
+    model_name: str,
+    market_info: dict,
+    include_market: bool,
+    instance_name: str | None,
+) -> dict:
+    api_key = _instance_gemini_key(instance_name)
     if not api_key:
-        raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY env var required")
+        normalized = normalize_instance_name(instance_name)
+        suffix = env_suffix(normalized)
+        raise ValueError(
+            f"GOOGLE_API_KEY_{suffix} or GEMINI_API_KEY_{suffix} env var required"
+        )
 
     http_client = _get_gemini_http_client()
     system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
@@ -260,7 +283,7 @@ def _predict_gemini(model_name: str, market_info: dict, include_market: bool) ->
 
 # ── Main prediction router ────────────────────────────────────────
 
-def run_prediction(model_spec: str, market_info: dict) -> dict:
+def run_prediction(model_spec: str, market_info: dict, instance_name: str | None = None) -> dict:
     """Parse model spec and dispatch to the right provider."""
     parts = model_spec.split(":")
     if len(parts) >= 3:
@@ -280,6 +303,6 @@ def run_prediction(model_spec: str, market_info: dict) -> dict:
     elif provider in ("anthropic", "claude"):
         return _predict_anthropic(model_name, market_info, include_market)
     elif provider in ("gemini", "google"):
-        return _predict_gemini(model_name, market_info, include_market)
+        return _predict_gemini(model_name, market_info, include_market, instance_name)
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")

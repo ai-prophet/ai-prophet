@@ -1011,7 +1011,11 @@ def _remote_predict(
 
     resp = requests.post(
         f"{service_url}/predict",
-        json={"model_spec": model_spec, "market_info": market_info},
+        json={
+            "model_spec": model_spec,
+            "market_info": market_info,
+            "instance_name": INSTANCE_NAME,
+        },
         headers={"X-API-Key": api_key} if api_key else {},
         timeout=130,
     )
