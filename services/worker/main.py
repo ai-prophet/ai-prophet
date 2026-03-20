@@ -312,7 +312,7 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                 existing.yes_bid = yes_bid
                 existing.yes_ask = yes_ask
                 existing.no_bid = no_bid
-                existing.no_ask = no_ask
+                existing.no_ask = _no_ask
                 existing.ticker = ticker
                 existing.event_ticker = event_ticker
                 existing.volume_24h = volume_24h
@@ -330,7 +330,7 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
                     yes_bid=yes_bid,
                     yes_ask=yes_ask,
                     no_bid=no_bid,
-                    no_ask=no_ask,
+                    no_ask=_no_ask,
                     volume_24h=volume_24h,
                     expiration=expiration,
                     updated_at=now,
@@ -595,19 +595,29 @@ def get_tracked_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[st
         return set()
 
 
+def _fetch_raw_market(adapter, ticker: str) -> dict | None:
+    """Fetch raw market data from Kalshi (including resolved/closed markets)."""
+    try:
+        base_url = adapter._base_url
+        path = f"/trade-api/v2/markets/{ticker}"
+        headers = adapter._sign_request("GET", path)
+        resp = adapter._session.get(base_url + path, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("market", {})
+    except Exception as e:
+        logger.warning("Failed to fetch raw market %s: %s", ticker, e)
+        return None
+
+
 def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
     """Fetch the resolution result from Kalshi and update the DB."""
     try:
         from ai_prophet_core.betting.db import get_session as _gs
         from db_models import TradingMarket as _TM
 
-        # Fetch raw market data (without status filter) to get the result
-        base_url = adapter._base_url
-        path = f"/trade-api/v2/markets/{ticker}"
-        headers = adapter._sign_request("GET", path)
-        resp = adapter._session.get(base_url + path, headers=headers, timeout=10)
-        resp.raise_for_status()
-        mkt = resp.json().get("market", {})
+        mkt = _fetch_raw_market(adapter, ticker)
+        if mkt is None:
+            return
 
         result = mkt.get("result", "")  # "yes", "no", or ""
         last_price = 1.0 if result == "yes" else 0.0

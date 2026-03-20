@@ -36,6 +36,22 @@ from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, Portfo
 
 logger = logging.getLogger(__name__)
 
+_position_replay_cache: tuple | None = None
+
+
+def _get_position_replay():
+    """Lazy-import position_replay helpers, inserting sys.path only once."""
+    global _position_replay_cache
+    if _position_replay_cache is not None:
+        return _position_replay_cache
+    import sys, os
+    _services = os.path.join(os.path.dirname(__file__), "../../../../services")
+    if _services not in sys.path:
+        sys.path.insert(0, _services)
+    from position_replay import replay_orders_by_ticker, summarize_replayed_positions
+    _position_replay_cache = (replay_orders_by_ticker, summarize_replayed_positions)
+    return _position_replay_cache
+
 
 @dataclass
 class BetResult:
@@ -308,9 +324,7 @@ class BettingEngine:
         try:
             from .db import get_session
             from .db_schema import BettingOrder
-            import sys, os
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../services"))
-            from position_replay import replay_orders_by_ticker, summarize_replayed_positions
+            replay_orders_by_ticker, summarize_replayed_positions = _get_position_replay()
 
             with get_session(self._engine) as session:
                 orders = (
@@ -409,12 +423,13 @@ class BettingEngine:
                         shares=Decimal(str(held_count)),
                         limit_price=Decimal(str(sell_price)),
                     )
+                    sell_status = "FILLED"
                     try:
                         sell_result = adapter.submit_order(sell_req)
+                        sell_status = sell_result.status.value
                         logger.info(
                             "[BETTING] NET: sold %d %s on %s → %s",
-                            held_count, held_side.upper(), ticker,
-                            sell_result.status.value,
+                            held_count, held_side.upper(), ticker, sell_status,
                         )
                         self._save_order(
                             signal_id=signal_id,
@@ -423,7 +438,7 @@ class BettingEngine:
                             side=held_side,
                             count=held_count,
                             price_cents=sell_price_cents,
-                            status=sell_result.status.value,
+                            status=sell_status,
                             filled_shares=float(sell_result.filled_shares),
                             fill_price=float(sell_result.fill_price),
                             exchange_order_id=sell_result.exchange_order_id,
@@ -431,15 +446,16 @@ class BettingEngine:
                         )
                     except Exception as e:
                         logger.error("[BETTING] NET sell failed: %s", e)
+                        sell_status = "ERROR"
 
                     count = count - held_count
                     if count <= 0:
                         return BetResult(
                             market_id=market_id,
                             signal=signal,
-                            order_placed=True,
+                            order_placed=sell_status != "ERROR",
                             order_id=sell_order_id,
-                            status=sell_result.status.value if 'sell_result' in dir() else "FILLED",
+                            status=sell_status,
                         )
                     # Continue to buy remaining on new side
                     action = "BUY"

@@ -7,6 +7,7 @@ import os
 from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.exc import DisconnectionError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -49,33 +50,39 @@ def create_db_engine(
 _session_factories: dict[int, sessionmaker] = {}
 
 
-@contextmanager
-def get_session(engine: Engine):
-    """Yield a DB session with automatic retry on transient connection errors."""
+def _get_factory(engine: Engine) -> sessionmaker:
     key = id(engine)
     if key not in _session_factories:
         _session_factories[key] = sessionmaker(bind=engine, expire_on_commit=False)
+    return _session_factories[key]
 
-    last_err = None
-    for attempt in range(2):
-        session = _session_factories[key]()
-        try:
-            yield session
-            session.commit()
-            return
-        except Exception as exc:
-            session.rollback()
-            # Retry once on connection-level errors (Supabase drops, TCP resets)
-            from sqlalchemy.exc import OperationalError, DisconnectionError
-            if attempt == 0 and isinstance(exc, (OperationalError, DisconnectionError)):
-                last_err = exc
-                logger.warning("DB connection error (retrying): %s", exc)
-                session.close()
-                continue
-            raise
-        finally:
-            session.close()
 
-    # Should not reach here, but just in case
-    if last_err is not None:
-        raise last_err
+@contextmanager
+def get_session(engine: Engine):
+    """Yield a DB session. Retries once on transient connection errors.
+
+    On OperationalError / DisconnectionError the failed session is discarded,
+    the pool connection is invalidated, and a fresh session is created for a
+    single retry — all before yielding, so the @contextmanager contract
+    (exactly one yield) is preserved.
+    """
+    factory = _get_factory(engine)
+    session = factory()
+    try:
+        # Test the connection before yielding — if it's dead, the retry
+        # below creates a fresh session before the caller ever sees it.
+        session.connection()
+    except (OperationalError, DisconnectionError) as exc:
+        logger.warning("DB connection stale, retrying with fresh session: %s", exc)
+        session.close()
+        engine.dispose()  # drop all pooled connections
+        session = factory()
+
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

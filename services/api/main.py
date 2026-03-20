@@ -704,7 +704,8 @@ def get_pnl(
         # Group snapshots by ticker, sorted by time — for bisect lookup
         snapshots_by_ticker: dict[str, list[tuple[datetime, float, float]]] = defaultdict(list)
         for snap in all_snapshots:
-            tk = snap.ticker or (snap.market_id[len("kalshi:"):] if snap.market_id.startswith("kalshi:") else snap.market_id)
+            mid = snap.market_id or ""
+            tk = snap.ticker or (mid[len("kalshi:"):] if mid.startswith("kalshi:") else mid) or "unknown"
             snapshots_by_ticker[tk].append((snap.timestamp, snap.yes_ask, snap.no_ask))
 
         def _price_at(ticker: str, ts: datetime) -> dict[str, float] | None:

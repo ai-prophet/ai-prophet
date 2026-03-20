@@ -132,6 +132,9 @@ class DefaultBettingStrategy(BettingStrategy):
         spread = yes_ask + no_ask
         if spread > self.max_spread:
             return None
+        # Skip crossed/invalid markets (spread < 1 means prices are unreliable)
+        if spread < 0.90:
+            return None
 
         lower_bound = 1.0 - no_ask
         upper_bound = yes_ask
@@ -217,6 +220,8 @@ class RebalancingStrategy(BettingStrategy):
         spread = yes_ask + no_ask
         if spread > self.max_spread:
             return None
+        if spread < 0.90:
+            return None
 
         # Within-spread filter: if prediction sits inside the bid-ask band,
         # there is no edge — skip without updating state.
@@ -251,8 +256,9 @@ class RebalancingStrategy(BettingStrategy):
         cost = shares * price
 
         # Cap buy orders by available cash — block entirely if cash is zero or negative
+        # (applies to both BUY YES when delta > 0, and BUY NO when delta < 0)
         port = self.portfolio
-        if port is not None and side in ("yes", "no") and delta > 0:
+        if port is not None and side in ("yes", "no"):
             available = float(port.cash)
             if available <= 0:
                 return None  # No cash available; refuse to go further negative
