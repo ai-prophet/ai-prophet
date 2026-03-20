@@ -475,11 +475,15 @@ def _load_order_ledger_state(
     db_engine,
     adapter,
     instance_name: str,
+    dry_run: bool = True,
 ):
     """Build authoritative position state directly from the order ledger.
 
     This avoids relying on trading_positions rows that may lag behind the
     actual betting_orders history during the active cycle.
+
+    For DRY_RUN: virtual cash = starting_cash - capital_deployed + realized.
+    For LIVE: real balance from Kalshi already reflects all trades.
     """
     if db_engine is None:
         return None
@@ -500,14 +504,18 @@ def _load_order_ledger_state(
         positions = replay_orders_by_ticker(orders)
         capital_deployed, total_realized, open_position_count = summarize_replayed_positions(positions)
 
-        try:
-            real_balance = adapter.get_balance()
-        except Exception:
-            real_balance = Decimal("0")
+        if dry_run:
+            starting_cash = Decimal(str(_instance_setting("WORKER_STARTING_CASH", "10000")))
+            cash = starting_cash - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
+        else:
+            try:
+                cash = adapter.get_balance()
+            except Exception:
+                cash = Decimal("0")
 
         return {
             "positions": positions,
-            "cash": real_balance - Decimal(str(capital_deployed)) + Decimal(str(total_realized)),
+            "cash": cash,
             "total_pnl": Decimal(str(total_realized)),
             "position_count": open_position_count,
         }
@@ -1134,6 +1142,8 @@ def build_betting_engine(strategy_name: str = "default", dry_run_override: bool 
         from ai_prophet_core.betting import DefaultBettingStrategy
         strategy = DefaultBettingStrategy()
 
+    starting_cash = float(_instance_setting("WORKER_STARTING_CASH", "10000"))
+
     engine = BettingEngine(
         strategy=strategy,
         db_engine=db_engine,
@@ -1141,6 +1151,7 @@ def build_betting_engine(strategy_name: str = "default", dry_run_override: bool 
         kalshi_config=settings.kalshi,
         enabled=settings.enabled,
         instance_name=INSTANCE_NAME,
+        starting_cash=starting_cash,
     )
     logger.info(
         "BettingEngine ready: instance=%s, strategy=%s, dry_run=%s",
@@ -1546,7 +1557,8 @@ def run_cycle(args) -> None:
 
     # ── Phase C: Aggregate & bet (sequential) ─────────────────────
     # BettingEngine is NOT thread-safe — process all markets sequentially.
-    order_ledger_state = _load_order_ledger_state(db_engine, adapter, INSTANCE_NAME)
+    dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", True)
+    order_ledger_state = _load_order_ledger_state(db_engine, adapter, INSTANCE_NAME, dry_run=dry_run)
     for mkt in markets_to_analyze:
         if _shutdown_requested:
             logger.info("Shutdown requested, stopping betting")

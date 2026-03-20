@@ -80,9 +80,11 @@ class BettingEngine:
         enabled: bool = True,
         max_markets_per_tick: int = MAX_MARKETS_PER_TICK,
         instance_name: str = "Haifeng",
+        starting_cash: float = 10000.0,
     ) -> None:
         self.strategy = strategy or DefaultBettingStrategy()
         self.dry_run = dry_run
+        self.starting_cash = starting_cash
         self.enabled = enabled
         self.max_markets_per_tick = max_markets_per_tick
         self.instance_name = instance_name
@@ -109,7 +111,7 @@ class BettingEngine:
         forecasts: dict[str, float],
         market_prices: dict[str, tuple[float, float]],
         source: str = "",
-        portfolio: PortfolioSnapshot | None = None,
+        portfolio: PortfolioSnapshot | None = None,  # noqa: ARG002 — kept for API compat; live DB state used instead
     ) -> list[BetResult]:
         """Run the full predict → evaluate → place → log cycle.
 
@@ -118,7 +120,8 @@ class BettingEngine:
             forecasts: ``{market_id: p_yes}`` predictions.
             market_prices: ``{market_id: (yes_ask, no_ask)}`` live quotes.
             source: Identifier for the prediction source (model name, etc.).
-            portfolio: Optional portfolio snapshot for strategy context.
+            portfolio: Ignored. Portfolio is refreshed from live DB state
+                before each market's strategy evaluation.
 
         Returns:
             A :class:`BetResult` for every market in *forecasts*.
@@ -126,7 +129,7 @@ class BettingEngine:
         if not self.enabled:
             return []
 
-        # Make portfolio context available to the strategy
+        # Use caller's portfolio as fallback when no DB is available
         self.strategy._portfolio = portfolio
 
         results: list[BetResult] = []
@@ -154,7 +157,20 @@ class BettingEngine:
                 no_ask=no_ask,
             )
 
-            # 2. Evaluate strategy
+            # 2. Refresh portfolio from live DB state (not the stale snapshot
+            #    from the caller) so the strategy always sees the authoritative
+            #    position for THIS market — prevents stale-delta over-buying.
+            #    Falls back to caller's portfolio when no DB is configured.
+            if self._engine is not None:
+                ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
+                live_side, live_qty, live_cash = self._live_ledger_state(ticker)
+                self.strategy._portfolio = PortfolioSnapshot(
+                    cash=live_cash,
+                    market_position_shares=Decimal(str(live_qty)),
+                    market_position_side=live_side,
+                )
+
+            # 3. Evaluate strategy
             signal = self.strategy.evaluate(
                 market_id=market_id,
                 p_yes=p_yes,
@@ -170,7 +186,7 @@ class BettingEngine:
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
                 continue
 
-            # 3. Persist signal
+            # 4. Persist signal
             signal_id = self._save_signal(prediction_id, signal)
 
             logger.info(
@@ -181,7 +197,7 @@ class BettingEngine:
 
             pending_orders.append((market_id, p_yes, yes_ask, no_ask, signal, signal_id))
 
-        # 4. Cap to max_markets_per_tick, keeping highest-edge signals
+        # 5. Cap to max_markets_per_tick, keeping highest-edge signals
         if len(pending_orders) > self.max_markets_per_tick:
             logger.warning(
                 "[BETTING] %d signals exceed max_markets_per_tick=%d, "
@@ -201,7 +217,7 @@ class BettingEngine:
                     error="Dropped: exceeded max_markets_per_tick",
                 ))
 
-        # 5. Place orders
+        # 6. Place orders
         for market_id, _p_yes, yes_ask, no_ask, signal, signal_id in pending_orders:
             result = self._place_and_log_order(
                 tick_ts=tick_ts,
@@ -279,11 +295,16 @@ class BettingEngine:
         """Query the live order ledger for ground-truth position and cash.
 
         Returns (side, qty, available_cash) by replaying ALL instance orders
-        from the DB and fetching the real balance from the adapter.  Called
-        immediately before every order placement so nothing is ever stale.
+        from the DB.  Called immediately before every order placement so
+        nothing is ever stale.
+
+        For DRY_RUN mode: uses starting_cash as the fixed baseline (no API
+        call needed — DRY_RUN orders never affect the real Kalshi balance).
+        For LIVE mode: fetches real balance from the adapter (Kalshi already
+        deducts for real orders, so we use it directly without subtraction).
         """
         if self._engine is None:
-            return None, 0, Decimal("0")
+            return None, 0, Decimal(str(self.starting_cash))
         try:
             from .db import get_session
             from .db_schema import BettingOrder
@@ -303,12 +324,16 @@ class BettingEngine:
             positions = replay_orders_by_ticker(orders)
             capital_deployed, total_realized, _ = summarize_replayed_positions(positions)
 
-            try:
-                real_balance = self._get_adapter().get_balance()
-            except Exception:
-                real_balance = Decimal("0")
-
-            cash = real_balance - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
+            if self.dry_run:
+                # DRY_RUN: fixed virtual budget — no API call needed
+                base = Decimal(str(self.starting_cash))
+                cash = base - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
+            else:
+                # LIVE: real balance from Kalshi already accounts for real orders
+                try:
+                    cash = self._get_adapter().get_balance()
+                except Exception:
+                    cash = Decimal("0")
 
             pos = positions.get(ticker)
             if pos is None:

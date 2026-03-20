@@ -141,19 +141,32 @@ class DefaultBettingStrategy(BettingStrategy):
         diff = p_yes - yes_ask
 
         if diff > 0:
-            shares = p_yes - yes_ask
+            desired_shares = p_yes - yes_ask
             price = yes_ask
             side = "yes"
         elif diff < 0:
-            shares = abs(diff)
+            desired_shares = abs(diff)
             price = no_ask
             side = "no"
         else:
             return None
 
-        cost = shares * price
+        # Subtract same-side holdings so we only buy the delta needed to reach
+        # the target position.  Opposite-side holdings are handled by the
+        # engine's NET flip logic, so we don't adjust for those here.
+        port = self.portfolio
+        if port and port.market_position_side and float(port.market_position_shares) > 0:
+            if port.market_position_side.lower() == side:
+                current_contracts = float(port.market_position_shares)
+                desired_contracts = round(desired_shares * 100)
+                delta = max(0, desired_contracts - current_contracts) / 100.0
+                if delta < 0.005:  # less than 1 contract needed — already at target
+                    return None
+                desired_shares = delta
 
-        return BetSignal(side=side, shares=shares, price=price, cost=cost)
+        cost = desired_shares * price
+
+        return BetSignal(side=side, shares=desired_shares, price=price, cost=cost)
 
 
 class RebalancingStrategy(BettingStrategy):

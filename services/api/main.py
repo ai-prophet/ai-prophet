@@ -1669,27 +1669,29 @@ def get_system_logs(
 def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Fetch Kalshi account balance (works in both live and dry-run modes).
 
-    In dry-run mode, computes a virtual balance:
-      kalshi_balance - capital_deployed + realized_pnl
-    so the balance decreases when capital is deployed and increases
-    when gains are realized.
+    In dry-run mode, computes a virtual balance from the configured
+    WORKER_STARTING_CASH baseline (the real Kalshi balance is not used
+    because DRY_RUN orders never touch the real account):
+      starting_cash - capital_deployed + realized_pnl
+
+    In live mode, returns the real Kalshi account balance directly.
     """
     try:
         resolved_instance = _instance_name(instance_name)
         dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
-        adapter = _build_kalshi_adapter(resolved_instance)
-        real_balance = float(adapter.get_balance())
-        adapter.close()
 
         if dry_run:
+            starting_cash = float(_instance_setting("WORKER_STARTING_CASH", resolved_instance, "10000"))
             db_engine = get_db()
             with get_session(db_engine) as session:
                 positions = _instance_query(session, TradingPosition, resolved_instance).all()
                 capital_deployed = sum(p.avg_price * p.quantity for p in positions)
                 realized_pnl = sum(p.realized_pnl for p in positions)
-            balance = real_balance - capital_deployed + realized_pnl
+            balance = starting_cash - capital_deployed + realized_pnl
         else:
-            balance = real_balance
+            adapter = _build_kalshi_adapter(resolved_instance)
+            balance = float(adapter.get_balance())
+            adapter.close()
 
         return {
             "balance": balance,
