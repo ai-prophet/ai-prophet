@@ -694,14 +694,45 @@ def get_pnl(
         for mkt in _instance_query(session, TradingMarket, resolved_instance).all():
             market_titles[mkt.ticker] = mkt.title or ""
 
+        # Pre-load ALL price snapshots for this instance, keyed by (ticker, timestamp)
+        # so we can look up the closest price for any ticker at any trade time.
+        all_snapshots = (
+            _instance_query(session, MarketPriceSnapshot, resolved_instance)
+            .order_by(MarketPriceSnapshot.timestamp.asc())
+            .all()
+        )
+        # Group snapshots by ticker, sorted by time — for bisect lookup
+        snapshots_by_ticker: dict[str, list[tuple[datetime, float, float]]] = defaultdict(list)
+        for snap in all_snapshots:
+            tk = snap.ticker or (snap.market_id[len("kalshi:"):] if snap.market_id.startswith("kalshi:") else snap.market_id)
+            snapshots_by_ticker[tk].append((snap.timestamp, snap.yes_ask, snap.no_ask))
+
+        def _price_at(ticker: str, ts: datetime) -> dict[str, float] | None:
+            """Find the closest price snapshot for ticker at or before ts."""
+            snaps = snapshots_by_ticker.get(ticker)
+            if not snaps:
+                return None
+            # Binary search for the last snapshot at or before ts
+            lo, hi = 0, len(snaps) - 1
+            result_idx = -1
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                if snaps[mid][0] <= ts:
+                    result_idx = mid
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            if result_idx < 0:
+                return None
+            _, ya, na = snaps[result_idx]
+            return {"yes_ask": ya, "no_ask": na}
+
         ticker_positions: dict[str, InventoryPosition] = {}
         pnl_series: list[dict[str, Any]] = []
         trade_markers: list[dict[str, Any]] = []
         total_trades = 0
         total_volume = 0.0
         cumulative_realized = 0.0
-        # Running snapshot of market prices updated as we process each trade
-        historical_prices: dict[str, dict[str, float | None]] = {}
 
         for row in rows:
             action, side, shares, price = normalize_order(row)
@@ -715,43 +746,25 @@ def get_pnl(
             pnl_impact = pos.apply_order(row, ticker=ticker)
             cumulative_realized += pnl_impact
 
-            # Update price snapshot from this trade's prediction (or the
-            # order's own fill price as fallback when prediction lookup fails)
-            pred = pred_by_signal.get(row.signal_id)
-            if pred:
-                pred_ticker = pred.market_id
-                if pred_ticker.startswith("kalshi:"):
-                    pred_ticker = pred_ticker[len("kalshi:"):]
-                historical_prices[pred_ticker] = {
-                    "yes_ask": pred.yes_ask,
-                    "no_ask": pred.no_ask,
-                }
-            elif ticker not in historical_prices:
-                # Fallback: derive approximate prices from the order itself
-                if side == "yes":
-                    historical_prices[ticker] = {"yes_ask": price, "no_ask": 1.0 - price}
-                else:
-                    historical_prices[ticker] = {"yes_ask": 1.0 - price, "no_ask": price}
-
-            # Compute open_value and cash_spent at this point in time using
-            # historical prices — matches the header's formula exactly:
-            #   cash_pnl   = cumulative realized (locked-in gains/losses)
-            #   open_value = Σ(bid × qty)  for open positions
-            #   cash_spent = Σ(avg_price × qty)  for open positions
-            #   net_pnl    = cash_pnl + open_value - cash_spent
+            # Compute open_value and cash_spent at this trade's timestamp
+            # using actual recorded price snapshots (not predictions).
+            trade_ts = row.created_at
             point_open_value = 0.0
             point_cash_spent = 0.0
             for t, p in ticker_positions.items():
                 pos_side, pos_qty, avg_price = p.current_position()
                 if pos_side is None or pos_qty <= 0:
                     continue
-                prices = historical_prices.get(t)
+                prices = _price_at(t, trade_ts)
                 bid: float | None = None
                 if prices:
                     if pos_side == "yes":
-                        bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
+                        bid = 1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None
                     else:
-                        bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
+                        bid = 1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None
+                elif price > 0:
+                    # Last resort: use the trade's own price
+                    bid = price if side == pos_side else (1.0 - price)
                 point_open_value += (bid if bid is not None else 0.0) * pos_qty
                 point_cash_spent += avg_price * pos_qty
 
