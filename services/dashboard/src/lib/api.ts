@@ -291,6 +291,33 @@ export interface ModelCalibrationData {
   }>;
 }
 
+export interface BrierScorePoint {
+  timestamp: string;
+  market_id: string;
+  market_title: string;
+  source: string;
+  outcome: "YES" | "NO";
+  model_prob: number;
+  market_prob: number;
+  model_brier: number;
+  market_brier: number;
+}
+
+export interface BrierScoresData {
+  series: BrierScorePoint[];
+  summary: {
+    model_avg_brier: number;
+    market_avg_brier: number;
+    total_predictions: number;
+    total_markets: number;
+  };
+  by_model: Record<string, {
+    model_avg_brier: number;
+    market_avg_brier: number;
+    count: number;
+  }>;
+}
+
 export interface ResolvedMarketRow {
   market_id: string;
   title: string;
@@ -356,6 +383,26 @@ export interface PriceHistoryPoint {
   volume_24h: number | null;
   model_p_yes: number | null;
   model_name: string | null;
+}
+
+// ── Comparison model types ──────────────────────────────────────
+
+export interface ComparisonModelData {
+  instance_name: string;
+  model_label: string;
+  balance: number;
+  total_pnl: number;
+  starting_cash: number;
+  trade_count: number;
+  open_positions: number;
+  win_rate: number;
+  last_updated: string | null;
+  error?: string;
+}
+
+export interface ComparisonModelsData {
+  models: Record<string, ComparisonModelData>;
+  timestamp: string;
 }
 
 // ── Unified market row ──────────────────────────────────────
@@ -722,6 +769,14 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
         return null;
       });
     },
+    getBrierScores: (modelName?: string) => {
+      let url = "/analytics/brier-scores";
+      if (modelName) url += `?model_name=${encodeURIComponent(modelName)}`;
+      return fetchJSON<BrierScoresData>(normalizedBaseUrl, buildPath(url)).catch((e) => {
+        console.warn("Failed to fetch brier scores:", e);
+        return null;
+      });
+    },
     getResolvedMarkets: () =>
       fetchJSON<ResolvedMarketsData>(normalizedBaseUrl, buildPath("/analytics/resolved-markets")).catch((e) => {
         console.warn("Failed to fetch resolved markets:", e);
@@ -758,6 +813,11 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
         }),
     clearAllData: () =>
       fetch(`${normalizedBaseUrl}${buildPath("/data/clear")}`, { method: "DELETE" }).then((r) => r.json()),
+    getComparisonModels: () =>
+      fetchJSON<ComparisonModelsData>(normalizedBaseUrl, buildPath("/comparison-models")).catch((e) => {
+        console.warn("Failed to fetch comparison models:", e);
+        return null;
+      }),
   };
 }
 

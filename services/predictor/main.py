@@ -172,12 +172,26 @@ _anthropic_client = None
 _gemini_http_client = None
 
 
+_grok_client = None
+
+
 def _get_openai_client():
     global _openai_client
     if _openai_client is None:
         import openai
         _openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     return _openai_client
+
+
+def _get_grok_client():
+    global _grok_client
+    if _grok_client is None:
+        import openai
+        _grok_client = openai.OpenAI(
+            api_key=os.getenv("XAI_API_KEY", ""),
+            base_url="https://api.x.ai/v1",
+        )
+    return _grok_client
 
 
 def _get_anthropic_client():
@@ -199,6 +213,22 @@ def _get_gemini_http_client():
 
 def _predict_openai(model_name: str, market_info: dict, include_market: bool) -> dict:
     client = _get_openai_client()
+    system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.2,
+        max_tokens=800,
+        response_format={"type": "json_object"},
+    )
+    return _parse_prediction(response.choices[0].message.content)
+
+
+def _predict_grok(model_name: str, market_info: dict, include_market: bool) -> dict:
+    client = _get_grok_client()
     system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
     response = client.chat.completions.create(
         model=model_name,
@@ -316,5 +346,7 @@ def run_prediction(model_spec: str, market_info: dict, instance_name: str | None
         return _predict_anthropic(model_name, market_info, include_market)
     elif provider in ("gemini", "google"):
         return _predict_gemini(model_name, market_info, include_market, instance_name)
+    elif provider == "grok":
+        return _predict_grok(model_name, market_info, include_market)
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")

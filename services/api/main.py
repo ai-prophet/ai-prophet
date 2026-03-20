@@ -1176,6 +1176,144 @@ def get_model_calibration(
         }
 
 
+# ── GET /analytics/brier-scores ─────────────────────────────────
+
+
+@app.get("/analytics/brier-scores")
+def get_brier_scores(
+    model_name: str | None = Query(None, description="Filter by model name"),
+    instance_name: str | None = Query(None),
+) -> dict[str, Any]:
+    """Timestep-level Brier scores for resolved events.
+
+    For each BettingPrediction on a resolved market, computes a Brier score
+    for both the model probability and the market price, framed from the
+    resolved side (outcome = 1).  Lower scores are better.
+
+    - Model Brier:  (model_prob_resolved_side - 1)^2
+    - Market Brier: (market_prob_resolved_side - 1)^2
+
+    Where:
+      resolved YES  → model_prob = p_yes,       market_prob = yes_ask
+      resolved NO   → model_prob = 1 - p_yes,   market_prob = no_ask
+    """
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+    with get_session(engine) as session:
+        # 1. Resolved markets: expired with last_price of 0 or 1
+        resolved_markets = (
+            _instance_query(session, TradingMarket, resolved_instance)
+            .filter(
+                TradingMarket.expiration < datetime.now(UTC),
+                TradingMarket.last_price.in_([0.0, 1.0]),
+            )
+            .all()
+        )
+        resolved_map: dict[str, float] = {
+            m.market_id: m.last_price for m in resolved_markets
+        }
+        title_map: dict[str, str] = {
+            m.market_id: m.title for m in resolved_markets
+        }
+
+        empty_response: dict[str, Any] = {
+            "series": [],
+            "summary": {
+                "model_avg_brier": 0.0,
+                "market_avg_brier": 0.0,
+                "total_predictions": 0,
+                "total_markets": 0,
+            },
+            "by_model": {},
+        }
+
+        if not resolved_map:
+            return empty_response
+
+        # 2. All predictions for resolved markets (every timestep)
+        pred_query = _instance_query(
+            session, BettingPrediction, resolved_instance
+        ).filter(BettingPrediction.market_id.in_(list(resolved_map.keys())))
+        if model_name:
+            pred_query = pred_query.filter(BettingPrediction.source == model_name)
+        predictions = pred_query.order_by(BettingPrediction.created_at.asc()).all()
+
+        if not predictions:
+            return empty_response
+
+        # 3. Compute per-timestep Brier scores
+        series: list[dict[str, Any]] = []
+        model_brier_sum = 0.0
+        market_brier_sum = 0.0
+        total = 0
+        seen_markets: set[str] = set()
+
+        # Per-model accumulators
+        by_model_acc: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"model_brier_sum": 0.0, "market_brier_sum": 0.0, "count": 0}
+        )
+
+        for p in predictions:
+            outcome = resolved_map.get(p.market_id)
+            if outcome is None:
+                continue
+
+            resolved_yes = outcome == 1.0
+
+            if resolved_yes:
+                model_prob = p.p_yes
+                market_prob = p.yes_ask
+            else:
+                model_prob = 1.0 - p.p_yes
+                market_prob = p.no_ask
+
+            m_brier = (model_prob - 1.0) ** 2
+            mkt_brier = (market_prob - 1.0) ** 2
+
+            series.append({
+                "timestamp": p.created_at.isoformat(),
+                "market_id": p.market_id,
+                "market_title": title_map.get(p.market_id, ""),
+                "source": p.source,
+                "outcome": "YES" if resolved_yes else "NO",
+                "model_prob": round(model_prob, 6),
+                "market_prob": round(market_prob, 6),
+                "model_brier": round(m_brier, 6),
+                "market_brier": round(mkt_brier, 6),
+            })
+
+            model_brier_sum += m_brier
+            market_brier_sum += mkt_brier
+            total += 1
+            seen_markets.add(p.market_id)
+
+            acc = by_model_acc[p.source]
+            acc["model_brier_sum"] += m_brier
+            acc["market_brier_sum"] += mkt_brier
+            acc["count"] += 1
+
+        # 4. Build response
+        by_model: dict[str, dict[str, Any]] = {}
+        for model, acc in sorted(by_model_acc.items()):
+            cnt = int(acc["count"])
+            by_model[model] = {
+                "model_avg_brier": round(acc["model_brier_sum"] / cnt, 6) if cnt else 0.0,
+                "market_avg_brier": round(acc["market_brier_sum"] / cnt, 6) if cnt else 0.0,
+                "count": cnt,
+            }
+
+        return {
+            "series": series,
+            "summary": {
+                "model_avg_brier": round(model_brier_sum / total, 6) if total else 0.0,
+                "market_avg_brier": round(market_brier_sum / total, 6) if total else 0.0,
+                "total_predictions": total,
+                "total_markets": len(seen_markets),
+            },
+            "by_model": by_model,
+        }
+
+
 # ── GET /analytics/resolved-markets ─────────────────────────────
 
 
@@ -1763,6 +1901,91 @@ def get_kalshi_positions(instance_name: str | None = Query(None)) -> dict[str, A
             "instance_name": _instance_name(instance_name),
             "timestamp": datetime.now(UTC).isoformat(),
         }
+
+
+# ── GET /comparison-models ───────────────────────────────────────
+
+COMPARISON_INSTANCE_NAMES = ["GPT5", "Grok4", "Opus46"]
+COMPARISON_MODEL_LABELS: dict[str, str] = {
+    "GPT5": "GPT-5.4",
+    "Grok4": "Grok 4",
+    "Opus46": "Claude Opus 4.6",
+}
+
+
+@app.get("/comparison-models")
+def get_comparison_models() -> dict[str, Any]:
+    """Summary of comparison model dry-run instances (GPT-5.4, Grok 4, Opus 4.6).
+
+    Returns balance, P&L, trade count, win rate, and last update for each model.
+    These instances always run in dry-run mode for performance benchmarking.
+    """
+    engine = get_db()
+    starting_cash = float(
+        os.getenv("COMPARISON_STARTING_CASH", os.getenv("WORKER_STARTING_CASH", "10000"))
+    )
+    results: dict[str, Any] = {}
+
+    for inst in COMPARISON_INSTANCE_NAMES:
+        try:
+            with get_session(engine) as session:
+                positions = (
+                    session.query(TradingPosition)
+                    .filter(TradingPosition.instance_name == inst)
+                    .all()
+                )
+                capital_deployed = sum(p.avg_price * p.quantity for p in positions if p.quantity > 0)
+                realized_pnl = sum(p.realized_pnl for p in positions)
+                balance = starting_cash - capital_deployed + realized_pnl
+
+                trade_count = (
+                    session.query(func.count(BettingOrder.id))
+                    .filter(
+                        BettingOrder.instance_name == inst,
+                        BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
+                    )
+                    .scalar()
+                    or 0
+                )
+
+                last_run = (
+                    session.query(ModelRun)
+                    .filter(ModelRun.instance_name == inst)
+                    .order_by(ModelRun.timestamp.desc())
+                    .first()
+                )
+
+                positions_with_pnl = [p for p in positions if p.realized_pnl != 0]
+                winning = sum(1 for p in positions_with_pnl if p.realized_pnl > 0)
+                win_rate = winning / len(positions_with_pnl) if positions_with_pnl else 0.0
+
+                results[inst] = {
+                    "instance_name": inst,
+                    "model_label": COMPARISON_MODEL_LABELS.get(inst, inst),
+                    "balance": round(balance, 2),
+                    "total_pnl": round(realized_pnl, 4),
+                    "starting_cash": starting_cash,
+                    "trade_count": trade_count,
+                    "open_positions": len([p for p in positions if p.quantity > 0]),
+                    "win_rate": round(win_rate, 4),
+                    "last_updated": last_run.timestamp.isoformat() if last_run else None,
+                }
+        except Exception as e:
+            logger.error("Failed to get comparison data for %s: %s", inst, e)
+            results[inst] = {
+                "instance_name": inst,
+                "model_label": COMPARISON_MODEL_LABELS.get(inst, inst),
+                "balance": starting_cash,
+                "total_pnl": 0.0,
+                "starting_cash": starting_cash,
+                "trade_count": 0,
+                "open_positions": 0,
+                "win_rate": 0.0,
+                "last_updated": None,
+                "error": str(e),
+            }
+
+    return {"models": results, "timestamp": datetime.now(UTC).isoformat()}
 
 
 # ── DELETE /data/clear ───────────────────────────────────────────

@@ -473,6 +473,9 @@ export default function Dashboard() {
             )}
           </div>
           <div className="flex items-center gap-3">
+            <Link href="/comparison" className="text-[10px] text-txt-muted hover:text-accent transition-colors px-2 py-1 rounded border border-t-border">
+              Model Arena
+            </Link>
             <Link href="/docs" className="text-[10px] text-txt-muted hover:text-accent transition-colors px-2 py-1 rounded border border-t-border">
               Docs
             </Link>

@@ -21,3 +21,4 @@ steps:
       - '--concurrency=80'
       - '--min-instances=1'
       - '--max-instances=5'
+      - '--set-env-vars=XAI_API_KEY=$$XAI_API_KEY'
