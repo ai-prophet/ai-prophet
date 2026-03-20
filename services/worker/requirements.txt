@@ -1,0 +1,7 @@
+psycopg2-binary
+python-dotenv
+openai
+anthropic
+google-genai
+sqlalchemy
+requests

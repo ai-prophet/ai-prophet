@@ -808,7 +808,7 @@ def get_pnl(
                 "total_pnl": round(total_pnl, 4),
                 "total_trades": total_trades,
                 "total_volume": round(total_volume, 4),
-                "active_positions": len(positions),
+                "active_positions": sum(1 for p in ticker_positions.values() if p.current_position()[0] is not None),
             },
         }
 
