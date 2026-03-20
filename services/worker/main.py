@@ -595,6 +595,40 @@ def get_tracked_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[st
         return set()
 
 
+def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
+    """Fetch the resolution result from Kalshi and update the DB."""
+    try:
+        from ai_prophet_core.betting.db import get_session as _gs
+        from db_models import TradingMarket as _TM
+
+        # Fetch raw market data (without status filter) to get the result
+        base_url = adapter._base_url
+        path = f"/trade-api/v2/markets/{ticker}"
+        headers = adapter._sign_request("GET", path)
+        resp = adapter._session.get(base_url + path, headers=headers, timeout=10)
+        resp.raise_for_status()
+        mkt = resp.json().get("market", {})
+
+        result = mkt.get("result", "")  # "yes", "no", or ""
+        last_price = 1.0 if result == "yes" else 0.0
+
+        market_id = f"kalshi:{ticker}"
+        with _gs(db_engine) as session:
+            row = session.query(_TM).filter_by(
+                instance_name=INSTANCE_NAME, market_id=market_id,
+            ).first()
+            if row:
+                row.last_price = last_price
+                row.yes_ask = last_price
+                row.yes_bid = last_price
+                row.no_ask = 1.0 - last_price
+                row.no_bid = 1.0 - last_price
+                row.updated_at = datetime.now(UTC)
+                logger.info("  Marked %s as resolved → %s (last_price=%.1f)", ticker, result or "unknown", last_price)
+    except Exception as e:
+        logger.warning("  Failed to mark %s resolved: %s", ticker, e)
+
+
 def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
     """Fetch a single market by ticker, then its parent event for clean title/category."""
     base_url = adapter._base_url
@@ -1226,7 +1260,9 @@ def run_cycle(args) -> None:
             if mkt:
                 sticky_markets.append(mkt)
             else:
-                logger.info("  Sticky market %s no longer active, skipping", ticker)
+                logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
+                if db_engine is not None:
+                    _mark_market_resolved(db_engine, adapter, ticker)
 
     # 2. Discover NEW markets — either from Kalshi (fetcher) or from peer instance (mirror)
     new_slots = max(0, max_active - len(sticky_markets))

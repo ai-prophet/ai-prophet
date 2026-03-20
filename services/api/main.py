@@ -715,7 +715,8 @@ def get_pnl(
             pnl_impact = pos.apply_order(row, ticker=ticker)
             cumulative_realized += pnl_impact
 
-            # Update price snapshot from this trade's prediction
+            # Update price snapshot from this trade's prediction (or the
+            # order's own fill price as fallback when prediction lookup fails)
             pred = pred_by_signal.get(row.signal_id)
             if pred:
                 pred_ticker = pred.market_id
@@ -725,6 +726,12 @@ def get_pnl(
                     "yes_ask": pred.yes_ask,
                     "no_ask": pred.no_ask,
                 }
+            elif ticker not in historical_prices:
+                # Fallback: derive approximate prices from the order itself
+                if side == "yes":
+                    historical_prices[ticker] = {"yes_ask": price, "no_ask": 1.0 - price}
+                else:
+                    historical_prices[ticker] = {"yes_ask": 1.0 - price, "no_ask": price}
 
             # Compute open_value and cash_spent at this point in time using
             # historical prices — matches the header's formula exactly:
