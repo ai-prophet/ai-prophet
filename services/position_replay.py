@@ -76,11 +76,16 @@ class InventoryPosition:
         if yes_qty == 0 and no_qty == 0:
             return None, 0.0, 0.0
 
-        # Mixed inventory should not happen in clean data. Prefer the larger side
-        # for display; callers can inspect raw yes/no inventory if needed.
-        if yes_qty >= no_qty:
-            return "yes", yes_qty, self.yes_cost / yes_qty if yes_qty > EPSILON else 0.0
-        return "no", no_qty, self.no_cost / no_qty if no_qty > EPSILON else 0.0
+        # Net YES and NO against each other: YES+NO pairs cancel at settlement.
+        # Report only the net directional exposure so the strategy sees true risk.
+        net = yes_qty - no_qty
+        if net > EPSILON:
+            avg = self.yes_cost / yes_qty if yes_qty > EPSILON else 0.0
+            return "yes", net, avg
+        if net < -EPSILON:
+            avg = self.no_cost / no_qty if no_qty > EPSILON else 0.0
+            return "no", -net, avg
+        return None, 0.0, 0.0  # perfectly hedged
 
     def _held_for(self, side: str) -> tuple[float, float]:
         if side == "yes":

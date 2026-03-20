@@ -237,10 +237,12 @@ class RebalancingStrategy(BettingStrategy):
 
         cost = shares * price
 
-        # Cap buy orders by available cash
+        # Cap buy orders by available cash — block entirely if cash is zero or negative
         port = self.portfolio
-        if port and port.cash > 0 and side in ("yes", "no") and delta > 0:
+        if port is not None and side in ("yes", "no") and delta > 0:
             available = float(port.cash)
+            if available <= 0:
+                return None  # No cash available; refuse to go further negative
             if cost > available:
                 shares = available / price if price > 0 else 0
                 cost = shares * price

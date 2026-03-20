@@ -726,22 +726,23 @@ def get_pnl(
                     "no_ask": pred.no_ask,
                 }
 
-            # Compute portfolio unrealized P&L using prices known at this point
+            # Compute portfolio unrealized P&L using prices known at this point in time
+            # (historical prices from predictions). Live prices are only applied at the
+            # final series point so intermediate points reflect actual historical P&L.
             cumulative_unrealized = 0.0
             for t, p in ticker_positions.items():
                 pos_side, pos_qty, avg_price = p.current_position()
                 if pos_side is None or pos_qty <= 0:
                     continue
-                # Use current market prices (most accurate), fall back to historical
-                prices = current_prices.get(t) or historical_prices.get(t)
+                prices = historical_prices.get(t)
+                bid: float | None = None
                 if prices:
                     if pos_side == "yes":
                         bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
                     else:
                         bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
-                    if bid is None:
-                        continue
-                    cumulative_unrealized += (bid - avg_price) * pos_qty
+                # No historical price → treat as 0 (same as header: cashSpent counted, openValue = 0)
+                cumulative_unrealized += ((bid if bid is not None else 0.0) - avg_price) * pos_qty
 
             cumulative_pnl = cumulative_realized + cumulative_unrealized
 
@@ -769,22 +770,25 @@ def get_pnl(
                 "pnl_impact": round(pnl_impact, 4),
             })
 
-        # Position-level P&L for summary — use live bid prices for unrealized
+        # Position-level P&L for summary — use live bid prices for unrealized.
+        # For positions with no market price (resolved/missing), treat bid=0 so
+        # the full cost basis is counted as a loss — matching what the header shows.
         positions = _instance_query(session, TradingPosition, resolved_instance).all()
         total_realized = sum(p.realized_pnl for p in positions)
         total_unrealized = 0.0
         for p in positions:
+            if p.quantity <= 0:
+                continue
             mkt_ticker = p.market_id[len("kalshi:"):] if p.market_id.startswith("kalshi:") else p.market_id
             prices = current_prices.get(mkt_ticker)
+            bid: float | None = None
             if prices:
                 if p.contract == "yes":
                     bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
                 else:
                     bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
-                if bid is not None:
-                    total_unrealized += (bid - p.avg_price) * p.quantity
-                    continue
-            pass  # no market data, skip this position's unrealized
+            # If no price available, treat as 0 (position worth nothing)
+            total_unrealized += ((bid if bid is not None else 0.0) - p.avg_price) * p.quantity
         total_pnl = total_realized + total_unrealized
 
         # Correct the final series point to match live P&L

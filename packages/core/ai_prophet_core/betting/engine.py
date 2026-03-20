@@ -275,6 +275,50 @@ class BettingEngine:
         )
         return self._adapter
 
+    def _live_ledger_state(self, ticker: str) -> tuple[str | None, int, Decimal]:
+        """Query the live order ledger for ground-truth position and cash.
+
+        Returns (side, qty, available_cash) by replaying ALL instance orders
+        from the DB and fetching the real balance from the adapter.  Called
+        immediately before every order placement so nothing is ever stale.
+        """
+        if self._engine is None:
+            return None, 0, Decimal("0")
+        try:
+            from .db import get_session
+            from .db_schema import BettingOrder
+            import sys, os
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../services"))
+            from position_replay import replay_orders_by_ticker, summarize_replayed_positions
+
+            with get_session(self._engine) as session:
+                orders = (
+                    session.query(BettingOrder)
+                    .filter(BettingOrder.instance_name == self.instance_name)
+                    .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                    .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
+                    .all()
+                )
+
+            positions = replay_orders_by_ticker(orders)
+            capital_deployed, total_realized, _ = summarize_replayed_positions(positions)
+
+            try:
+                real_balance = self._get_adapter().get_balance()
+            except Exception:
+                real_balance = Decimal("0")
+
+            cash = real_balance - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
+
+            pos = positions.get(ticker)
+            if pos is None:
+                return None, 0, cash
+            side, qty, _ = pos.current_position()
+            return side, max(0, round(qty)), cash
+        except Exception as e:
+            logger.warning("[BETTING] _live_ledger_state query failed for %s: %s", ticker, e)
+            return None, 0, Decimal("0")
+
     def _place_and_log_order(
         self,
         tick_ts: datetime,
@@ -300,18 +344,20 @@ class BettingEngine:
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
 
-        # --- NET position management ---
-        portfolio = self.strategy.portfolio
+        # --- Live ledger state: single DB query for ground-truth position + cash ---
+        # Both NET management and the cash check use this so neither is ever stale,
+        # even when multiple markets are processed in the same cycle.
+        live_side, live_qty, live_cash = self._live_ledger_state(ticker)
         action = "BUY"
         effective_side = signal.side.upper()
         sell_price = signal.price  # fallback; overwritten if a SELL is needed
 
-        if portfolio and portfolio.market_position_side and portfolio.market_position_shares > 0:
-            held_side = portfolio.market_position_side.lower()
+        if live_side and live_qty > 0:
+            held_side = live_side.lower()
             want_side = signal.side.lower()
 
             if held_side != want_side:
-                held_count = max(1, round(float(portfolio.market_position_shares)))
+                held_count = live_qty
                 # Use the correct price for the side being sold
                 sell_price = yes_ask if held_side == "yes" else no_ask
                 sell_price_cents = max(1, min(99, round(sell_price * 100)))
@@ -374,25 +420,36 @@ class BettingEngine:
                     action = "BUY"
                     effective_side = want_side.upper()
 
-        # --- Cash constraint: reject BUY orders that exceed available cash ---
-        if action == "BUY" and portfolio and portfolio.cash > 0:
+        # --- Cash constraint: use live cash so multi-market cycles don't overspend ---
+        if action == "BUY":
+            if live_cash <= 0:
+                logger.warning(
+                    "[BETTING] Insufficient cash: live balance is $%.2f, skipping BUY %s",
+                    float(live_cash), ticker,
+                )
+                return BetResult(
+                    market_id=market_id,
+                    signal=signal,
+                    order_placed=False,
+                    error=f"Insufficient cash: live balance is ${float(live_cash):.2f}",
+                )
             order_cost = Decimal(str(count)) * Decimal(str(signal.price))
-            if order_cost > portfolio.cash:
-                max_shares = int(portfolio.cash / Decimal(str(signal.price)))
+            if order_cost > live_cash:
+                max_shares = int(live_cash / Decimal(str(signal.price)))
                 if max_shares <= 0:
                     logger.warning(
                         "[BETTING] Insufficient cash: need $%.2f but only $%.2f available, skipping %s",
-                        float(order_cost), float(portfolio.cash), ticker,
+                        float(order_cost), float(live_cash), ticker,
                     )
                     return BetResult(
                         market_id=market_id,
                         signal=signal,
                         order_placed=False,
-                        error=f"Insufficient cash: need ${float(order_cost):.2f}, have ${float(portfolio.cash):.2f}",
+                        error=f"Insufficient cash: need ${float(order_cost):.2f}, have ${float(live_cash):.2f}",
                     )
                 logger.info(
                     "[BETTING] Cash cap: reducing %s from %d to %d shares (cash=$%.2f)",
-                    ticker, count, max_shares, float(portfolio.cash),
+                    ticker, count, max_shares, float(live_cash),
                 )
                 count = max_shares
 
