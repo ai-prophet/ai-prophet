@@ -16,7 +16,7 @@ import {
 import type { PnLPoint, TradeMarker } from "@/lib/api";
 import { TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
-type ViewMode = "cumulative" | "realized" | "unrealized";
+type ViewMode = "pnl" | "open_value" | "cash_pnl";
 type TimeFrame = "1h" | "1d" | "1w" | "all";
 
 const TIME_FRAME_MS: Record<TimeFrame, number | null> = {
@@ -33,6 +33,19 @@ const TIME_FRAME_LABELS: Record<TimeFrame, string> = {
   "all": "All",
 };
 
+const VIEW_LABELS: Record<ViewMode, string> = {
+  pnl: "P&L",
+  open_value: "Open Value",
+  cash_pnl: "Cash P&L",
+};
+
+const TOOLTIP_LABELS: Record<string, string> = {
+  pnl: "Net P&L",
+  open_value: "Open Value",
+  cash_pnl: "Cash P&L",
+  drawdown: "Drawdown",
+};
+
 export function PnLChart({
   data,
   tradeMarkers = [],
@@ -40,7 +53,7 @@ export function PnLChart({
   data: PnLPoint[];
   tradeMarkers?: TradeMarker[];
 }) {
-  const [viewMode, setViewMode] = useState<ViewMode>("cumulative");
+  const [viewMode, setViewMode] = useState<ViewMode>("pnl");
   const [showDrawdown, setShowDrawdown] = useState(false);
   const [showTradeMarkers, setShowTradeMarkers] = useState(true);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("all");
@@ -62,8 +75,8 @@ export function PnLChart({
     let peak = 0;
     return data.map((d) => {
       const pnl = d.pnl ?? 0;
-      const realized = d.realized_pnl ?? 0;
-      const unrealized = d.unrealized_pnl ?? (pnl - realized);
+      const cashPnl = d.cash_pnl ?? d.realized_pnl ?? 0;
+      const openValue = d.open_value ?? 0;
 
       if (pnl > peak) peak = pnl;
       const drawdown = peak > 0 ? pnl - peak : 0;
@@ -77,8 +90,8 @@ export function PnLChart({
         }),
         timestamp: new Date(d.timestamp).getTime(),
         pnl,
-        realized,
-        unrealized,
+        cash_pnl: cashPnl,
+        open_value: openValue,
         drawdown,
         tradeCost: d.trade_cost,
         ticker: d.ticker,
@@ -106,12 +119,7 @@ export function PnLChart({
     );
   }
 
-  const dataKey =
-    viewMode === "cumulative"
-      ? "pnl"
-      : viewMode === "realized"
-        ? "realized"
-        : "unrealized";
+  const dataKey = viewMode;
 
   const lastVal = filteredData[filteredData.length - 1]?.[dataKey] ?? 0;
   const isUp = lastVal >= 0;
@@ -125,13 +133,7 @@ export function PnLChart({
       <div className="px-3 py-1.5 border-b border-t-border flex items-center gap-2 flex-wrap">
         {/* View mode */}
         <div className="flex items-center gap-1">
-          {(
-            [
-              ["cumulative", "P&L"],
-              ["realized", "Realized"],
-              ["unrealized", "Unrealized"],
-            ] as [ViewMode, string][]
-          ).map(([mode, label]) => (
+          {(Object.entries(VIEW_LABELS) as [ViewMode, string][]).map(([mode, label]) => (
             <button
               key={mode}
               onClick={() => setViewMode(mode)}
@@ -258,13 +260,7 @@ export function PnLChart({
               contentStyle={TOOLTIP_STYLE}
               labelStyle={TOOLTIP_LABEL_STYLE}
               formatter={(value: number, name: string) => {
-                const labels: Record<string, string> = {
-                  pnl: "Cumulative P&L",
-                  realized: "Realized",
-                  unrealized: "Unrealized",
-                  drawdown: "Drawdown",
-                };
-                return [`$${value.toFixed(4)}`, labels[name] ?? name];
+                return [`$${value.toFixed(4)}`, TOOLTIP_LABELS[name] ?? name];
               }}
             />
             <ReferenceLine y={0} stroke={CHART_COLORS.reference} strokeDasharray="4 4" />

@@ -149,8 +149,13 @@ export interface Position {
 export interface PnLPoint {
   timestamp: string;
   pnl: number;
-  realized_pnl: number;
-  unrealized_pnl: number;
+  cash_pnl: number;
+  open_value: number;
+  cash_spent: number;
+  /** @deprecated Use cash_pnl instead */
+  realized_pnl?: number;
+  /** @deprecated Use open_value - cash_spent instead */
+  unrealized_pnl?: number;
   trade_cost: number;
   ticker: string;
   side: string;

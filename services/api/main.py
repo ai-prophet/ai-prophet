@@ -726,10 +726,14 @@ def get_pnl(
                     "no_ask": pred.no_ask,
                 }
 
-            # Compute portfolio unrealized P&L using prices known at this point in time
-            # (historical prices from predictions). Live prices are only applied at the
-            # final series point so intermediate points reflect actual historical P&L.
-            cumulative_unrealized = 0.0
+            # Compute open_value and cash_spent at this point in time using
+            # historical prices — matches the header's formula exactly:
+            #   cash_pnl   = cumulative realized (locked-in gains/losses)
+            #   open_value = Σ(bid × qty)  for open positions
+            #   cash_spent = Σ(avg_price × qty)  for open positions
+            #   net_pnl    = cash_pnl + open_value - cash_spent
+            point_open_value = 0.0
+            point_cash_spent = 0.0
             for t, p in ticker_positions.items():
                 pos_side, pos_qty, avg_price = p.current_position()
                 if pos_side is None or pos_qty <= 0:
@@ -741,19 +745,19 @@ def get_pnl(
                         bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
                     else:
                         bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
-                # No historical price → treat as 0 (same as header: cashSpent counted, openValue = 0)
-                cumulative_unrealized += ((bid if bid is not None else 0.0) - avg_price) * pos_qty
+                point_open_value += (bid if bid is not None else 0.0) * pos_qty
+                point_cash_spent += avg_price * pos_qty
 
-            cumulative_pnl = cumulative_realized + cumulative_unrealized
+            cumulative_pnl = cumulative_realized + point_open_value - point_cash_spent
 
             ts = row.created_at.isoformat()
 
-            # Embed realized and unrealized directly in each series point
             pnl_series.append({
                 "timestamp": ts,
                 "pnl": round(cumulative_pnl, 4),
-                "realized_pnl": round(cumulative_realized, 4),
-                "unrealized_pnl": round(cumulative_unrealized, 4),
+                "cash_pnl": round(cumulative_realized, 4),
+                "open_value": round(point_open_value, 4),
+                "cash_spent": round(point_cash_spent, 4),
                 "trade_cost": round(cost, 4),
                 "ticker": row.ticker,
                 "side": row.side,
@@ -770,12 +774,11 @@ def get_pnl(
                 "pnl_impact": round(pnl_impact, 4),
             })
 
-        # Final P&L: use the BettingOrder replay (complete) for realized, and
-        # live prices for unrealized.  We do NOT use TradingPosition here because
-        # fully closed positions are deleted from that table, losing their
-        # realized P&L — causing the chart to diverge from the header.
-        total_realized = cumulative_realized  # from BettingOrder replay above
-        total_unrealized = 0.0
+        # Final point: use LIVE prices (not historical) so the chart endpoint
+        # reflects current portfolio value — same as the header.
+        total_cash_pnl = cumulative_realized
+        total_open_value = 0.0
+        total_cash_spent = 0.0
         for t, p in ticker_positions.items():
             pos_side, pos_qty, avg_price = p.current_position()
             if pos_side is None or pos_qty <= 0:
@@ -787,14 +790,16 @@ def get_pnl(
                     bid = prices.get("yes_bid") or (1.0 - prices["no_ask"] if prices.get("no_ask") is not None else None)
                 else:
                     bid = prices.get("no_bid") or (1.0 - prices["yes_ask"] if prices.get("yes_ask") is not None else None)
-            total_unrealized += ((bid if bid is not None else 0.0) - avg_price) * pos_qty
-        total_pnl = total_realized + total_unrealized
+            total_open_value += (bid if bid is not None else 0.0) * pos_qty
+            total_cash_spent += avg_price * pos_qty
+        total_pnl = total_cash_pnl + total_open_value - total_cash_spent
 
         # Correct the final series point to match live P&L
         if pnl_series:
             pnl_series[-1]["pnl"] = round(total_pnl, 4)
-            pnl_series[-1]["realized_pnl"] = round(total_realized, 4)
-            pnl_series[-1]["unrealized_pnl"] = round(total_unrealized, 4)
+            pnl_series[-1]["cash_pnl"] = round(total_cash_pnl, 4)
+            pnl_series[-1]["open_value"] = round(total_open_value, 4)
+            pnl_series[-1]["cash_spent"] = round(total_cash_spent, 4)
 
         return {
             "series": pnl_series,
