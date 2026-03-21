@@ -247,26 +247,38 @@ class RebalancingStrategy(BettingStrategy):
             side = "yes"
             shares = delta
             price = yes_ask
+            # If we hold NO, engine will sell those first (NET flip) — no cash needed for that portion
+            sell_portion = min(shares, abs(current_pos)) if current_pos < 0 else 0.0
         else:
             # Decrease YES exposure → buy NO (engine handles sell-first)
             side = "no"
             shares = abs(delta)
             price = no_ask
+            # If we hold YES, engine will sell those first (NET flip) — no cash needed for that portion
+            sell_portion = min(shares, current_pos) if current_pos > 0 else 0.0
+
+        buy_portion = shares - sell_portion
+
+        # Only cap the BUY portion by available cash — sells return cash, they cost nothing.
+        # Include expected sell proceeds so the buy isn't under-sized after a NET flip.
+        port = self.portfolio
+        if buy_portion > 0 and port is not None:
+            sell_price = no_ask if side == "yes" else yes_ask
+            sell_proceeds = sell_portion * sell_price
+            available = float(port.cash) + sell_proceeds
+            if available <= 0:
+                # No cash for the buy portion; only do the sell-down
+                buy_portion = 0.0
+            else:
+                buy_cost = buy_portion * price
+                if buy_cost > available:
+                    buy_portion = available / price if price > 0 else 0.0
+
+        shares = sell_portion + buy_portion
+        if shares < self.min_trade:
+            return None
 
         cost = shares * price
-
-        # Cap buy orders by available cash — block entirely if cash is zero or negative
-        # (applies to both BUY YES when delta > 0, and BUY NO when delta < 0)
-        port = self.portfolio
-        if port is not None and side in ("yes", "no"):
-            available = float(port.cash)
-            if available <= 0:
-                return None  # No cash available; refuse to go further negative
-            if cost > available:
-                shares = available / price if price > 0 else 0
-                cost = shares * price
-                if shares < self.min_trade:
-                    return None
 
         return BetSignal(
             side=side,
@@ -277,5 +289,7 @@ class RebalancingStrategy(BettingStrategy):
                 "target": round(target, 6),
                 "current_pos": round(current_pos, 6),
                 "delta": round(delta, 6),
+                "sell_portion": round(sell_portion, 6),
+                "buy_portion": round(buy_portion, 6),
             },
         )

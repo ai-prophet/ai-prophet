@@ -201,38 +201,33 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     db_ok = False
-    try:
-        with get_session(engine) as session:
-            session.execute(text("SELECT 1"))
-            db_ok = True
-    except Exception:
-        pass
-
-    # Last worker heartbeat
     last_heartbeat = None
     worker_status = "unknown"
+    last_cycle_end = None
+    effective_last_cycle_end = None
     poll_interval = _worker_poll_interval(resolved_instance)
     stale_threshold_sec = _worker_stale_threshold_sec(resolved_instance)
+
     try:
         with get_session(engine) as session:
-            row = (
+            # 1. DB ping
+            session.execute(text("SELECT 1"))
+            db_ok = True
+
+            # 2. Last worker heartbeat
+            hb_row = (
                 _instance_query(session, SystemLog, resolved_instance)
                 .filter(SystemLog.level == "HEARTBEAT", SystemLog.component == "worker")
                 .order_by(SystemLog.created_at.desc())
                 .first()
             )
-            if row:
-                last_heartbeat = row.created_at.isoformat()
-                age_sec = (datetime.now(UTC) - row.created_at.replace(tzinfo=UTC)).total_seconds()
+            if hb_row:
+                last_heartbeat = hb_row.created_at.isoformat()
+                age_sec = (datetime.now(UTC) - hb_row.created_at.replace(tzinfo=UTC)).total_seconds()
                 worker_status = "healthy" if age_sec < stale_threshold_sec else "stale"
-    except Exception:
-        pass
 
-    # Find last cycle_end heartbeat for countdown timer (instance-specific)
-    last_cycle_end = None
-    try:
-        with get_session(engine) as session:
-            row = (
+            # 3. Last cycle_end for this instance
+            ce_row = (
                 _instance_query(session, SystemLog, resolved_instance)
                 .filter(
                     SystemLog.level == "HEARTBEAT",
@@ -242,16 +237,12 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
                 .order_by(SystemLog.created_at.desc())
                 .first()
             )
-            if row:
-                last_cycle_end = row.created_at.isoformat()
-    except Exception:
-        pass
+            if ce_row:
+                last_cycle_end = ce_row.created_at.isoformat()
 
-    # Effective last cycle_end = max across ALL instances (for synced countdown timer)
-    effective_last_cycle_end = last_cycle_end
-    try:
-        with get_session(engine) as session:
-            rows = (
+            # 4. Effective last cycle_end across ALL instances
+            effective_last_cycle_end = last_cycle_end
+            ce_rows = (
                 session.query(SystemLog)
                 .filter(
                     SystemLog.level == "HEARTBEAT",
@@ -262,10 +253,9 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
                 .limit(10)
                 .all()
             )
-            # Most recent cycle_end per instance, then take the max
             seen: set[str] = set()
             latest_per: dict[str, Any] = {}
-            for r in rows:
+            for r in ce_rows:
                 if r.instance_name not in seen:
                     seen.add(r.instance_name)
                     latest_per[r.instance_name] = r.created_at
@@ -679,8 +669,9 @@ def get_pnl(
                 filtered_rows.append(row)
             rows = filtered_rows
 
-        # Current prices for final valuation
+        # Current prices + titles: single TradingMarket query (was 2 separate queries)
         current_prices: dict[str, dict[str, float | None]] = {}
+        market_titles: dict[str, str] = {}
         for mkt in _instance_query(session, TradingMarket, resolved_instance).all():
             current_prices[mkt.ticker] = {
                 "yes_ask": mkt.yes_ask,
@@ -688,19 +679,18 @@ def get_pnl(
                 "yes_bid": mkt.yes_bid,
                 "no_bid": mkt.no_bid,
             }
-
-        # Market titles for trade markers
-        market_titles: dict[str, str] = {}
-        for mkt in _instance_query(session, TradingMarket, resolved_instance).all():
             market_titles[mkt.ticker] = mkt.title or ""
 
-        # Pre-load ALL price snapshots for this instance, keyed by (ticker, timestamp)
-        # so we can look up the closest price for any ticker at any trade time.
-        all_snapshots = (
-            _instance_query(session, MarketPriceSnapshot, resolved_instance)
-            .order_by(MarketPriceSnapshot.timestamp.asc())
-            .all()
-        )
+        # Pre-load price snapshots only for tickers in the order set + time window
+        order_tickers = list({r.ticker for r in rows if r.ticker})
+        snap_query = _instance_query(session, MarketPriceSnapshot, resolved_instance)
+        if order_tickers:
+            snap_query = snap_query.filter(MarketPriceSnapshot.ticker.in_(order_tickers))
+        if rows:
+            earliest_order = min(r.created_at for r in rows)
+            snap_query = snap_query.filter(MarketPriceSnapshot.timestamp >= earliest_order - timedelta(hours=1))
+        all_snapshots = snap_query.order_by(MarketPriceSnapshot.timestamp.asc()).all()
+
         # Group snapshots by ticker, sorted by time — for bisect lookup
         snapshots_by_ticker: dict[str, list[tuple[datetime, float, float]]] = defaultdict(list)
         for snap in all_snapshots:
@@ -869,19 +859,36 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
         )
 
         # Build model source lookup: market_id -> model name
-        # Use the source field from the latest BettingPrediction per market.
+        # Targeted query: only fetch latest source per market (not ALL predictions)
         market_model_source: dict[str, str] = {}
         try:
-            all_preds = (
-                _instance_query(session, BettingPrediction, resolved_instance)
-                .order_by(BettingPrediction.created_at.desc())
-                .all()
+            latest_sources = (
+                session.execute(
+                    text(
+                        "SELECT DISTINCT ON (market_id) market_id, source "
+                        "FROM betting_predictions "
+                        "WHERE instance_name = :inst "
+                        "ORDER BY market_id, created_at DESC"
+                    ),
+                    {"inst": resolved_instance},
+                ).fetchall()
             )
-            for pred in all_preds:
-                if pred.market_id not in market_model_source:
-                    market_model_source[pred.market_id] = pred.source
+            for row in latest_sources:
+                market_model_source[row[0]] = row[1]
         except Exception:
-            pass
+            # Fallback for SQLite (no DISTINCT ON): load minimal columns
+            try:
+                preds = (
+                    _instance_query(session, BettingPrediction, resolved_instance)
+                    .with_entities(BettingPrediction.market_id, BettingPrediction.source)
+                    .order_by(BettingPrediction.created_at.desc())
+                    .all()
+                )
+                for mid, src in preds:
+                    if mid not in market_model_source:
+                        market_model_source[mid] = src
+            except Exception:
+                pass
 
         # Count orders per market for trade counts
         orders_per_market: dict[str, int] = defaultdict(int)

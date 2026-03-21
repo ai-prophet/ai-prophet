@@ -251,36 +251,56 @@ export default function Dashboard() {
     }
 
     try {
-      const [t, m, posData, pnlData, h, l, b, an, resolved, al] = await Promise.all([
+      // Tier 1: Critical data — renders header, metrics, markets, alerts immediately
+      const [t, m, posData, h, b, al] = await Promise.all([
         instanceApi.getTrades(500),
         instanceApi.getMarkets(200),
         instanceApi.getPositions(200),
-        instanceApi.getPnL(),
         instanceApi.getHealth(),
-        instanceApi.getSystemLogs(40),
         instanceApi.getKalshiBalance().catch(() => null),
-        instanceApi.getAnalyticsSummary(),
-        instanceApi.getResolvedMarkets(),
         instanceApi.getAlerts(),
       ]);
       if (activeRequestRef.current !== requestId) return;
 
-      const snapshot: DashboardSnapshot = {
+      // Apply Tier 1 immediately so the page renders
+      const cached = dataCacheRef.current[instanceKey];
+      const tier1Snapshot: DashboardSnapshot = {
         trades: t,
         markets: m,
         positions: posData.positions,
-        pnl: pnlData,
+        pnl: cached?.pnl ?? null,
         health: h,
-        logs: l,
+        logs: cached?.logs ?? [],
         balance: b,
-        analytics: an,
-        resolvedMarkets: resolved,
+        analytics: cached?.analytics ?? null,
+        resolvedMarkets: cached?.resolvedMarkets ?? null,
         alerts: al.alerts,
         lastUpdate: formatLastUpdateTime(),
       };
-      dataCacheRef.current[instanceKey] = snapshot;
-      applySnapshot(snapshot);
+      dataCacheRef.current[instanceKey] = tier1Snapshot;
+      applySnapshot(tier1Snapshot);
       setError("");
+      setLoadingInstanceKey((current) => (current === instanceKey ? null : current));
+
+      // Tier 2: Heavy analytics — fills in P&L chart, risk metrics, resolved markets, logs
+      const [pnlData, l, an, resolved] = await Promise.all([
+        instanceApi.getPnL(),
+        instanceApi.getSystemLogs(40),
+        instanceApi.getAnalyticsSummary(),
+        instanceApi.getResolvedMarkets(),
+      ]);
+      if (activeRequestRef.current !== requestId) return;
+
+      const fullSnapshot: DashboardSnapshot = {
+        ...tier1Snapshot,
+        pnl: pnlData,
+        logs: l,
+        analytics: an,
+        resolvedMarkets: resolved,
+        lastUpdate: formatLastUpdateTime(),
+      };
+      dataCacheRef.current[instanceKey] = fullSnapshot;
+      applySnapshot(fullSnapshot);
     } catch (e) {
       if (activeRequestRef.current !== requestId) return;
       const message = e instanceof Error ? e.message : "Failed to fetch data";
