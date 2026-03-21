@@ -9,7 +9,7 @@ from .config import (
     load_live_betting_dotenv,
 )
 from .engine import BetResult, BettingEngine
-from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
 
 __all__ = [
     # Engine
@@ -18,6 +18,7 @@ __all__ = [
     # Strategy
     "BettingStrategy",
     "DefaultBettingStrategy",
+    "RebalancingStrategy",
     "BetSignal",
     "PortfolioSnapshot",
     # Config
