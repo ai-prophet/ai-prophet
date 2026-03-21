@@ -511,6 +511,17 @@ export default function Dashboard() {
         )}
       </header>
 
+      {isSwitchingInstance ? (
+        <div className="flex flex-col items-center justify-center min-h-[70vh] gap-4">
+          <div className="relative w-10 h-10">
+            <div className="absolute inset-0 rounded-full border-2 border-t-border" />
+            <div className="absolute inset-0 rounded-full border-2 border-t-transparent border-accent animate-spin" />
+          </div>
+          <span className="text-xs font-mono text-txt-muted tracking-wider">
+            Loading {selectedInstance.label}…
+          </span>
+        </div>
+      ) : (
       <div className="max-w-[1800px] mx-auto px-5 py-3 space-y-3 relative">
         <div className="space-y-3">
         {error && (
@@ -820,6 +831,7 @@ export default function Dashboard() {
 
         </div>
       </div>
+      )}
     </main>
   );
 }
