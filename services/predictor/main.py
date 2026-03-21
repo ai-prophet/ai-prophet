@@ -214,16 +214,21 @@ def _get_gemini_http_client():
 def _predict_openai(model_name: str, market_info: dict, include_market: bool) -> dict:
     client = _get_openai_client()
     system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=[
+    # Newer OpenAI models (gpt-5.x, o-series) use max_completion_tokens and
+    # don't support response_format=json_object — detect by model name prefix.
+    is_legacy = model_name.startswith(("gpt-4", "gpt-3"))
+    kwargs = {
+        "model": model_name,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.2,
-        max_tokens=800,
-        response_format={"type": "json_object"},
-    )
+        "max_completion_tokens": 800,
+    }
+    if is_legacy:
+        kwargs["temperature"] = 0.2
+        kwargs["response_format"] = {"type": "json_object"}
+    response = client.chat.completions.create(**kwargs)
     return _parse_prediction(response.choices[0].message.content)
 
 
@@ -237,7 +242,7 @@ def _predict_grok(model_name: str, market_info: dict, include_market: bool) -> d
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.2,
-        max_tokens=800,
+        max_completion_tokens=800,
         response_format={"type": "json_object"},
     )
     return _parse_prediction(response.choices[0].message.content)
@@ -304,7 +309,12 @@ def _predict_gemini(
     if not candidates:
         raise ValueError(f"Gemini returned no candidates: {data}")
 
-
+    # Extract text content from the first candidate
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text_parts = [p.get("text", "") for p in parts if "text" in p]
+    text = " ".join(text_parts).strip()
+    if not text:
+        raise ValueError(f"Gemini returned empty content: {data}")
 
     sources: list[dict] = []
     try:
