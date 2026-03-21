@@ -1329,7 +1329,9 @@ function TimelineTab({
                             ? "bg-profit-dim text-profit"
                             : run.decision === "BUY_NO"
                               ? "bg-loss-dim text-loss"
-                              : "bg-t-border/30 text-txt-muted"
+                              : run.decision === "HOLD_NOPROFIT"
+                                ? "bg-yellow-900/30 text-yellow-500"
+                                : "bg-t-border/30 text-txt-muted"
                         }`}
                       >
                         {run.decision}

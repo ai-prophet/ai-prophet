@@ -1373,6 +1373,11 @@ def run_cycle(args) -> None:
             logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
             continue
 
+        # Skip markets where the outcome is nearly certain (≥97% or ≤3%) — no profit opportunity.
+        if yes_ask >= 0.97 or yes_ask <= 0.03:
+            logger.debug("Skipping %s: near-certain price (yes_ask=%.3f)", ticker, yes_ask)
+            continue
+
         # Never bet on MENTIONS markets — they track social media activity,
         # not real-world events, and are not suitable for model prediction.
         if market.get("category", "").upper() == "MENTIONS":
@@ -1693,6 +1698,25 @@ def run_cycle(args) -> None:
                 )
             except Exception as e:
                 logger.debug("Could not materialize ledger-based portfolio snapshot: %s", e)
+
+        # If the market drifted to near-certain territory since it was pulled, skip betting.
+        if yes_ask >= 0.97 or yes_ask <= 0.03:
+            logger.info(
+                "  HOLD_NOPROFIT %s — near-certain price (yes_ask=%.3f), skipping",
+                ticker, yes_ask,
+            )
+            if db_engine and betting_engine is not None:
+                for ms, pred in model_predictions.items():
+                    save_model_run(
+                        db_engine, ms, market_id, "HOLD_NOPROFIT", pred.get("confidence"),
+                        metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
+                                  "analysis": pred.get("analysis", {}),
+                                  "sources": pred.get("sources", []),
+                                  "yes_ask": yes_ask, "no_ask": no_ask},
+                        instance_name=INSTANCE_NAME,
+                    )
+            all_market_prices[market_id] = (yes_ask, no_ask)
+            continue
 
         if db_engine and betting_engine is not None:
             for ms, pred in model_predictions.items():
