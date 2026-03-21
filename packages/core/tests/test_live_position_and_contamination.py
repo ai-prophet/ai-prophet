@@ -9,17 +9,12 @@ Validates:
 
 from __future__ import annotations
 
-import sys
-import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import create_engine
-
-# Ensure position_replay is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "services"))
 
 from ai_prophet_core.betting.adapters.base import OrderStatus
 from ai_prophet_core.betting.db_schema import Base, BettingOrder, BettingPrediction, BettingSignal

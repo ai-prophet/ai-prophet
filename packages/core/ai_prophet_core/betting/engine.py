@@ -36,21 +36,7 @@ from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, Portfo
 
 logger = logging.getLogger(__name__)
 
-_position_replay_cache: tuple | None = None
-
-
-def _get_position_replay():
-    """Lazy-import position_replay helpers, inserting sys.path only once."""
-    global _position_replay_cache
-    if _position_replay_cache is not None:
-        return _position_replay_cache
-    import sys, os
-    _services = os.path.join(os.path.dirname(__file__), "../../../../services")
-    if _services not in sys.path:
-        sys.path.insert(0, _services)
-    from position_replay import replay_orders_by_ticker, summarize_replayed_positions
-    _position_replay_cache = (replay_orders_by_ticker, summarize_replayed_positions)
-    return _position_replay_cache
+from .position_replay import replay_orders_by_ticker, summarize_replayed_positions
 
 
 @dataclass
@@ -324,7 +310,6 @@ class BettingEngine:
         try:
             from .db import get_session
             from .db_schema import BettingOrder
-            replay_orders_by_ticker, summarize_replayed_positions = _get_position_replay()
 
             with get_session(self._engine) as session:
                 orders = (
