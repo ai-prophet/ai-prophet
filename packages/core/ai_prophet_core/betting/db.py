@@ -29,8 +29,8 @@ def create_db_engine(
     if url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
         return create_engine(url, echo=echo, connect_args=connect_args, **kwargs)
-    pool_size = kwargs.pop("pool_size", 5)
-    max_overflow = kwargs.pop("max_overflow", 5)
+    pool_size = kwargs.pop("pool_size", 1)
+    max_overflow = kwargs.pop("max_overflow", 2)
     return create_engine(
         url,
         echo=echo,
