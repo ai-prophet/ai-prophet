@@ -1,0 +1,241 @@
+# Render Blueprint — Kalshi Live Trading System
+# https://docs.render.com/blueprint-spec
+#
+# Secrets are managed in the Render dashboard (sync: false).
+# Set these in the Environment tab for each service, or in the
+# "kalshi-trading-shared" env var group:
+#   DATABASE_URL, GEMINI_API_KEY_HAIFENG, GEMINI_API_KEY_JIBANG,
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY
+# And per-service:
+#   KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_B64, PREDICTOR_API_KEY
+
+envVarGroups:
+  - name: kalshi-trading-shared
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: KALSHI_BASE_URL
+        value: https://api.elections.kalshi.com
+      - key: LIVE_BETTING_ENABLED
+        value: "true"
+      - key: LIVE_BETTING_DRY_RUN
+        value: "true"
+      - key: GEMINI_API_KEY_HAIFENG
+        sync: false
+      - key: GEMINI_API_KEY_JIBANG
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+
+services:
+  # ── Trading Worker — Haifeng ──────────────────────────────────
+  - type: worker
+    name: kalshi-trading-worker-haifeng
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/worker/main.py
+    envVars:
+      - key: TRADING_INSTANCE_NAME
+        value: Haifeng
+      - key: WORKER_POLL_INTERVAL_SEC
+        value: "3600"
+      - key: WORKER_MODELS
+        value: "gemini:gemini-3.1-pro-preview"
+      - key: WORKER_MAX_MARKETS
+        value: "50"
+      - key: WORKER_MAX_ACTIVE_MARKETS
+        value: "50"
+      - key: WORKER_STRATEGY
+        value: rebalancing
+      - key: MARKET_FETCHER
+        value: "true"
+      - key: WORKER_PEER_INSTANCES
+        value: Jibang
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - key: PREDICTOR_SERVICE_URL
+        value: https://predictor-441548451945.us-west1.run.app
+      - key: PREDICTOR_API_KEY
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── Trading Worker — Jibang ───────────────────────────────────
+  - type: worker
+    name: kalshi-trading-worker-jibang
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/worker/main.py
+    envVars:
+      - key: TRADING_INSTANCE_NAME
+        value: Jibang
+      - key: WORKER_POLL_INTERVAL_SEC
+        value: "3600"
+      - key: WORKER_MODELS
+        value: "gemini:gemini-3.1-pro-preview:market"
+      - key: WORKER_MAX_MARKETS
+        value: "50"
+      - key: WORKER_MAX_ACTIVE_MARKETS
+        value: "50"
+      - key: WORKER_STRATEGY
+        value: rebalancing
+      - key: MARKET_FETCHER
+        value: "false"
+      - key: WORKER_PEER_INSTANCES
+        value: Haifeng
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - key: PREDICTOR_SERVICE_URL
+        value: https://predictor-441548451945.us-west1.run.app
+      - key: PREDICTOR_API_KEY
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── Comparison Worker — GPT-5.4 (dry-run) ──────────────────────
+  - type: worker
+    name: kalshi-trading-worker-gpt5
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/worker/comparison_worker.py
+    envVars:
+      - key: TRADING_INSTANCE_NAME
+        value: GPT5
+      - key: COMPARISON_MODEL
+        value: "openai:gpt-5.4:market"
+      - key: COMPARISON_SOURCE_INSTANCE
+        value: Haifeng
+      - key: COMPARISON_STARTING_CASH
+        value: "10000"
+      - key: COMPARISON_POLL_INTERVAL_SEC
+        value: "3600"
+      - key: LIVE_BETTING_ENABLED
+        value: "true"
+      - key: LIVE_BETTING_DRY_RUN
+        value: "true"
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - key: PREDICTOR_SERVICE_URL
+        value: https://predictor-441548451945.us-west1.run.app
+      - key: PREDICTOR_API_KEY
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── Comparison Worker — Grok 4 (dry-run) ────────────────────────
+  - type: worker
+    name: kalshi-trading-worker-grok4
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/worker/comparison_worker.py
+    envVars:
+      - key: TRADING_INSTANCE_NAME
+        value: Grok4
+      - key: COMPARISON_MODEL
+        value: "grok:grok-4:market"
+      - key: COMPARISON_SOURCE_INSTANCE
+        value: Haifeng
+      - key: COMPARISON_STARTING_CASH
+        value: "10000"
+      - key: COMPARISON_POLL_INTERVAL_SEC
+        value: "3600"
+      - key: LIVE_BETTING_ENABLED
+        value: "true"
+      - key: LIVE_BETTING_DRY_RUN
+        value: "true"
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - key: PREDICTOR_SERVICE_URL
+        value: https://predictor-441548451945.us-west1.run.app
+      - key: PREDICTOR_API_KEY
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── Comparison Worker — Claude Opus 4.6 (dry-run) ───────────────
+  - type: worker
+    name: kalshi-trading-worker-opus46
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/worker/comparison_worker.py
+    envVars:
+      - key: TRADING_INSTANCE_NAME
+        value: Opus46
+      - key: COMPARISON_MODEL
+        value: "anthropic:claude-opus-4-6:market"
+      - key: COMPARISON_SOURCE_INSTANCE
+        value: Haifeng
+      - key: COMPARISON_STARTING_CASH
+        value: "10000"
+      - key: COMPARISON_POLL_INTERVAL_SEC
+        value: "3600"
+      - key: LIVE_BETTING_ENABLED
+        value: "true"
+      - key: LIVE_BETTING_DRY_RUN
+        value: "true"
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - key: PREDICTOR_SERVICE_URL
+        value: https://predictor-441548451945.us-west1.run.app
+      - key: PREDICTOR_API_KEY
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── API Backend ──────────────────────────────────────────────
+  - type: web
+    name: kalshi-trading-api
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: |
+      pip install -e packages/core &&
+      pip install -r services/api/requirements.txt
+    startCommand: uvicorn services.api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: API_CORS_ORIGINS
+        value: https://kalshi-trading-dashboard.onrender.com
+      - fromGroup: kalshi-trading-shared
+    healthCheckPath: /health
+
+  # ── Frontend Dashboard ───────────────────────────────────────
+  - type: web
+    name: kalshi-trading-dashboard
+    runtime: node
+    region: oregon
+    plan: starter
+    rootDir: services/dashboard
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://ai-prophet-api-shared-7lezouvpda-uc.a.run.app
+      - key: NEXT_PUBLIC_DEFAULT_INSTANCE
+        value: haifeng
+      - key: NEXT_PUBLIC_INSTANCE_CONFIG
+        value: '[{"key":"haifeng","label":"Haifeng","apiUrl":"https://ai-prophet-api-shared-7lezouvpda-uc.a.run.app","instanceName":"Haifeng","description":"Gemini without market data"},{"key":"jibang","label":"Jibang","apiUrl":"https://ai-prophet-api-shared-7lezouvpda-uc.a.run.app","instanceName":"Jibang","description":"Gemini with market data"}]'

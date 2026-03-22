@@ -33,6 +33,11 @@ htmlcov/
 *.db
 .env
 .env.*
+!.env.example
+
+# Cloud Run env var files (contain secrets)
+services/worker/haifeng-worker-env.yaml
+services/worker/jibang-worker-env.yaml
 
 # Node / Next.js
 node_modules/
