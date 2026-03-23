@@ -570,6 +570,9 @@ def get_markets(
                 "aggregated_p_yes": aggregated_p_yes,
             })
         return results
+    except Exception as e:
+        logger.warning("GET /markets DB error: %s", e)
+        return []
 
 
 # ── GET /positions ────────────────────────────────────────────────
