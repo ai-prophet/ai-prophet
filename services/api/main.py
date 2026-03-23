@@ -35,8 +35,9 @@ load_dotenv()
 
 import logging
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func, text
 from instance_config import DEFAULT_INSTANCE_NAME, get_instance_env, normalize_instance_name
@@ -97,7 +98,8 @@ app = FastAPI(
 )
 
 # CORS
-cors_origins = os.getenv("API_CORS_ORIGINS", "*").split(",")
+_DEFAULT_CORS = "http://localhost:3000,https://kalshi-trading-dashboard.onrender.com"
+cors_origins = os.getenv("API_CORS_ORIGINS", _DEFAULT_CORS).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -105,6 +107,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch all unhandled exceptions and return JSON so CORS middleware can add headers.
+
+    Without this, SQLAlchemy errors (OperationalError, TimeoutError) escape
+    ExceptionMiddleware, hit ServerErrorMiddleware outside the CORS layer, and
+    return a plain-text 500 with no Access-Control-Allow-Origin header — which
+    the browser reports as "Failed to fetch" instead of a meaningful error.
+    """
+    logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -299,139 +314,143 @@ def get_trades(
     """
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
-    with get_session(engine) as session:
-        total_count = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .with_entities(func.count(BettingOrder.id))
-            .scalar()
-            or 0
-        )
+    try:
+        with get_session(engine) as session:
+            total_count = (
+                _instance_query(session, BettingOrder, resolved_instance)
+                .with_entities(func.count(BettingOrder.id))
+                .scalar()
+                or 0
+            )
 
-        rows = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .order_by(BettingOrder.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-
-        # Bulk-load signals, predictions, and market titles (avoid N+1)
-        signal_ids = [r.signal_id for r in rows if r.signal_id]
-        signals_by_id: dict[int, BettingSignal] = {}
-        if signal_ids:
-            for s in (
-                _instance_query(session, BettingSignal, resolved_instance)
-                .filter(BettingSignal.id.in_(signal_ids))
+            rows = (
+                _instance_query(session, BettingOrder, resolved_instance)
+                .order_by(BettingOrder.created_at.desc())
+                .offset(offset)
+                .limit(limit)
                 .all()
-            ):
-                signals_by_id[s.id] = s
+            )
 
-        pred_ids = [s.prediction_id for s in signals_by_id.values() if s.prediction_id]
-        preds_by_id: dict[int, BettingPrediction] = {}
-        if pred_ids:
-            for p in (
-                _instance_query(session, BettingPrediction, resolved_instance)
-                .filter(BettingPrediction.id.in_(pred_ids))
-                .all()
-            ):
-                preds_by_id[p.id] = p
+            # Bulk-load signals, predictions, and market titles (avoid N+1)
+            signal_ids = [r.signal_id for r in rows if r.signal_id]
+            signals_by_id: dict[int, BettingSignal] = {}
+            if signal_ids:
+                for s in (
+                    _instance_query(session, BettingSignal, resolved_instance)
+                    .filter(BettingSignal.id.in_(signal_ids))
+                    .all()
+                ):
+                    signals_by_id[s.id] = s
 
-        prediction_market_ids = list({
-            p.market_id for p in preds_by_id.values() if p.market_id
-        })
-        model_runs_by_market: dict[str, list[ModelRun]] = defaultdict(list)
-        if prediction_market_ids:
-            for run in (
-                _instance_query(session, ModelRun, resolved_instance)
-                .filter(ModelRun.market_id.in_(prediction_market_ids))
-                .order_by(ModelRun.timestamp.desc())
-                .all()
-            ):
-                model_runs_by_market[run.market_id].append(run)
+            pred_ids = [s.prediction_id for s in signals_by_id.values() if s.prediction_id]
+            preds_by_id: dict[int, BettingPrediction] = {}
+            if pred_ids:
+                for p in (
+                    _instance_query(session, BettingPrediction, resolved_instance)
+                    .filter(BettingPrediction.id.in_(pred_ids))
+                    .all()
+                ):
+                    preds_by_id[p.id] = p
 
-        trade_market_ids = list({f"kalshi:{r.ticker}" for r in rows if r.ticker})
-        market_titles: dict[str, str] = {}
-        if trade_market_ids:
-            for m in (
-                _instance_query(session, TradingMarket, resolved_instance)
-                .filter(TradingMarket.market_id.in_(trade_market_ids))
-                .all()
-            ):
-                market_titles[m.market_id] = m.title
-
-        results = []
-        for row in rows:
-            prediction = None
-            sig = signals_by_id.get(row.signal_id) if row.signal_id else None
-            if sig and sig.prediction_id:
-                pred = preds_by_id.get(sig.prediction_id)
-                if pred:
-                    reasoning = None
-                    sources: list[dict[str, str]] = []
-                    trade_ts = row.created_at
-                    match_window = timedelta(minutes=15)
-                    market_runs = model_runs_by_market.get(pred.market_id, [])
-                    matched_meta = None
-                    matched_delta = None
-
-                    for run in market_runs:
-                        if run.model_name != pred.source:
-                            continue
-                        delta_seconds = abs((run.timestamp - trade_ts).total_seconds())
-                        if delta_seconds > match_window.total_seconds():
-                            continue
-                        if not run.metadata_json:
-                            continue
-                        try:
-                            meta = json.loads(run.metadata_json)
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-                        p_yes = meta.get("p_yes")
-                        if p_yes is None or abs(float(p_yes) - float(pred.p_yes)) > 0.0005:
-                            continue
-                        if matched_delta is None or delta_seconds < matched_delta:
-                            matched_meta = meta
-                            matched_delta = delta_seconds
-
-                    if matched_meta:
-                        reasoning = matched_meta.get("reasoning")
-                        sources = matched_meta.get("sources", [])
-
-                    prediction = {
-                        "p_yes": pred.p_yes,
-                        "yes_ask": pred.yes_ask,
-                        "no_ask": pred.no_ask,
-                        "source": pred.source,
-                        "market_id": pred.market_id,
-                        "reasoning": reasoning,
-                        "sources": sources,
-                    }
-
-            market_title = market_titles.get(f"kalshi:{row.ticker}")
-
-            results.append({
-                "id": row.id,
-                "order_id": row.order_id,
-                "ticker": row.ticker,
-                "action": row.action,
-                "side": row.side,
-                "count": row.count,
-                "price_cents": row.price_cents,
-                "status": row.status,
-                "filled_shares": row.filled_shares,
-                "fill_price": row.fill_price,
-                "exchange_order_id": row.exchange_order_id,
-                "dry_run": row.dry_run,
-                "created_at": row.created_at.isoformat(),
-                "prediction": prediction,
-                "market_title": market_title,
+            prediction_market_ids = list({
+                p.market_id for p in preds_by_id.values() if p.market_id
             })
+            model_runs_by_market: dict[str, list[ModelRun]] = defaultdict(list)
+            if prediction_market_ids:
+                for run in (
+                    _instance_query(session, ModelRun, resolved_instance)
+                    .filter(ModelRun.market_id.in_(prediction_market_ids))
+                    .order_by(ModelRun.timestamp.desc())
+                    .all()
+                ):
+                    model_runs_by_market[run.market_id].append(run)
 
-        return {
-            "trades": results,
-            "total": total_count,
-            "has_more": (offset + limit) < total_count,
-        }
+            trade_market_ids = list({f"kalshi:{r.ticker}" for r in rows if r.ticker})
+            market_titles: dict[str, str] = {}
+            if trade_market_ids:
+                for m in (
+                    _instance_query(session, TradingMarket, resolved_instance)
+                    .filter(TradingMarket.market_id.in_(trade_market_ids))
+                    .all()
+                ):
+                    market_titles[m.market_id] = m.title
+
+            results = []
+            for row in rows:
+                prediction = None
+                sig = signals_by_id.get(row.signal_id) if row.signal_id else None
+                if sig and sig.prediction_id:
+                    pred = preds_by_id.get(sig.prediction_id)
+                    if pred:
+                        reasoning = None
+                        sources: list[dict[str, str]] = []
+                        trade_ts = row.created_at
+                        match_window = timedelta(minutes=15)
+                        market_runs = model_runs_by_market.get(pred.market_id, [])
+                        matched_meta = None
+                        matched_delta = None
+
+                        for run in market_runs:
+                            if run.model_name != pred.source:
+                                continue
+                            delta_seconds = abs((run.timestamp - trade_ts).total_seconds())
+                            if delta_seconds > match_window.total_seconds():
+                                continue
+                            if not run.metadata_json:
+                                continue
+                            try:
+                                meta = json.loads(run.metadata_json)
+                            except (json.JSONDecodeError, TypeError):
+                                continue
+                            p_yes = meta.get("p_yes")
+                            if p_yes is None or abs(float(p_yes) - float(pred.p_yes)) > 0.0005:
+                                continue
+                            if matched_delta is None or delta_seconds < matched_delta:
+                                matched_meta = meta
+                                matched_delta = delta_seconds
+
+                        if matched_meta:
+                            reasoning = matched_meta.get("reasoning")
+                            sources = matched_meta.get("sources", [])
+
+                        prediction = {
+                            "p_yes": pred.p_yes,
+                            "yes_ask": pred.yes_ask,
+                            "no_ask": pred.no_ask,
+                            "source": pred.source,
+                            "market_id": pred.market_id,
+                            "reasoning": reasoning,
+                            "sources": sources,
+                        }
+
+                market_title = market_titles.get(f"kalshi:{row.ticker}")
+
+                results.append({
+                    "id": row.id,
+                    "order_id": row.order_id,
+                    "ticker": row.ticker,
+                    "action": row.action,
+                    "side": row.side,
+                    "count": row.count,
+                    "price_cents": row.price_cents,
+                    "status": row.status,
+                    "filled_shares": row.filled_shares,
+                    "fill_price": row.fill_price,
+                    "exchange_order_id": row.exchange_order_id,
+                    "dry_run": row.dry_run,
+                    "created_at": row.created_at.isoformat(),
+                    "prediction": prediction,
+                    "market_title": market_title,
+                })
+
+            return {
+                "trades": results,
+                "total": total_count,
+                "has_more": (offset + limit) < total_count,
+            }
+    except Exception as e:
+        logger.warning("GET /trades DB error: %s", e)
+        return {"trades": [], "total": 0, "has_more": False}
 
 
 # ── GET /markets ──────────────────────────────────────────────────
@@ -445,7 +464,8 @@ def get_markets(
     """Markets currently being tracked, with latest model prediction."""
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
-    with get_session(engine) as session:
+    try:
+      with get_session(engine) as session:
         rows = (
             _instance_query(session, TradingMarket, resolved_instance)
             .order_by(TradingMarket.updated_at.desc())
