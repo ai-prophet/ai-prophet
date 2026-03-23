@@ -331,7 +331,7 @@ export default function Dashboard() {
   const metrics = computePortfolioMetrics(positions, trades, pnl, markets);
 
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
-  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | "winrate" | null>(null);
 
   // Per-position P&L breakdowns
   const marketById = new Map(markets.map((m) => [m.market_id, m]));
@@ -440,6 +440,17 @@ export default function Dashboard() {
     .filter((r) => r.dbQty > 0.001 && r.currentBid != null)
     .map((r) => ({ title: r.title, contract: r.contract, quantity: r.dbQty, avgEntry: r.avgEntry, currentBid: r.currentBid!, value: r.openValue }))
     .sort((a, b) => b.value - a.value);
+
+  // Win rate breakdown: show markets with wins/losses
+  const winRateBreakdown = perMarket
+    .filter((r) => r.totalRealized !== 0) // Only markets with realized P&L
+    .map((r) => ({
+      title: r.title,
+      contract: r.contract,
+      value: r.totalRealized,
+      isWin: r.totalRealized > 0,
+    }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)); // Sort by absolute value
 
   const cashBalance =
     balance == null
@@ -584,6 +595,8 @@ export default function Dashboard() {
             value={`${(metrics.winRate * 100).toFixed(0)}%`}
             pnl={metrics.winRate >= 0.5 ? 1 : -1}
             tooltip={WIN_RATE_TOOLTIP}
+            onClick={() => setExpandedMetric(expandedMetric === "winrate" ? null : "winrate")}
+            active={expandedMetric === "winrate"}
           />
           <MetricCard
             label="Return"
@@ -632,12 +645,18 @@ export default function Dashboard() {
           <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest">
-                {expandedMetric === "realized" ? "Realized P&L Breakdown" : "Unrealized P&L Breakdown"}
+                {expandedMetric === "realized"
+                  ? "Realized P&L Breakdown"
+                  : expandedMetric === "unrealized"
+                    ? "Unrealized P&L Breakdown"
+                    : "Win Rate Breakdown"}
               </span>
               <span className="text-[9px] text-txt-muted font-mono">
                 {expandedMetric === "realized"
                   ? "(sell_price − avg_entry) × qty_sold"
-                  : "current_bid × open_qty"}
+                  : expandedMetric === "unrealized"
+                    ? "current_bid × open_qty"
+                    : "Markets with realized wins/losses"}
               </span>
             </div>
             {expandedMetric === "realized" && (
@@ -713,6 +732,62 @@ export default function Dashboard() {
                       ))}
                     </tbody>
                   </table>
+            )}
+            {expandedMetric === "winrate" && (
+              winRateBreakdown.length === 0
+                ? <p className="text-[10px] text-txt-muted font-mono">No closed positions yet.</p>
+                : <>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div className="bg-profit-dim/20 border border-profit/30 rounded px-3 py-2">
+                        <div className="text-[9px] text-txt-muted uppercase tracking-wider mb-1">Wins</div>
+                        <div className="text-lg font-bold font-mono text-profit">
+                          {winRateBreakdown.filter(r => r.isWin).length}
+                        </div>
+                        <div className="text-[9px] text-profit font-mono">
+                          +{fmtDollar(winRateBreakdown.filter(r => r.isWin).reduce((sum, r) => sum + r.value, 0))}
+                        </div>
+                      </div>
+                      <div className="bg-loss-dim/20 border border-loss/30 rounded px-3 py-2">
+                        <div className="text-[9px] text-txt-muted uppercase tracking-wider mb-1">Losses</div>
+                        <div className="text-lg font-bold font-mono text-loss">
+                          {winRateBreakdown.filter(r => !r.isWin).length}
+                        </div>
+                        <div className="text-[9px] text-loss font-mono">
+                          {fmtDollar(winRateBreakdown.filter(r => !r.isWin).reduce((sum, r) => sum + r.value, 0))}
+                        </div>
+                      </div>
+                    </div>
+                    <table className="w-full text-[10px] font-mono">
+                      <thead>
+                        <tr className="text-txt-muted border-b border-t-border">
+                          <th className="text-left pb-1 font-medium">Market</th>
+                          <th className="text-center pb-1 font-medium w-12">Side</th>
+                          <th className="text-center pb-1 font-medium w-16">Result</th>
+                          <th className="text-right pb-1 font-medium w-20">P&L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {winRateBreakdown.map((row, i) => (
+                          <tr key={i} className="border-b border-t-border/40 last:border-0">
+                            <td className="py-1.5 pr-3 text-txt-primary truncate max-w-[300px]">{row.title}</td>
+                            <td className="py-1.5 text-center">
+                              <span className={`px-1 rounded text-[8px] font-bold ${row.contract.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                                {row.contract.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="py-1.5 text-center">
+                              <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${row.isWin ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                                {row.isWin ? "WIN" : "LOSS"}
+                              </span>
+                            </td>
+                            <td className={`py-1.5 text-right font-medium ${row.value >= 0 ? "text-profit" : "text-loss"}`}>
+                              {row.value >= 0 ? "+" : ""}{fmtDollar(row.value)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
             )}
           </div>
         )}
