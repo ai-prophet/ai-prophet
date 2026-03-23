@@ -303,10 +303,12 @@ export default function ModelDetailPage() {
     seenMarketIds.add(row.market_id);
 
     const { sells, totalRealized, remainingAvgPrice } = replayTrades(row.trades);
-    totalCashPnl += totalRealized;
-
     const dbQty = row.position?.quantity ?? 0;
     const contract = row.position?.contract ?? (row.trades[0]?.side ?? "yes");
+    const avgEntry = row.position?.avg_price ?? remainingAvgPrice;
+    const realizedValue = row.position?.realized_pnl ?? totalRealized;
+    totalCashPnl += realizedValue;
+
     const mkt = marketById.get(row.market_id);
     let currentBid: number | null = null;
     if (mkt && dbQty > 0.001) {
@@ -314,7 +316,7 @@ export default function ModelDetailPage() {
         ? (mkt.yes_bid ?? (mkt.no_ask != null ? 1.0 - mkt.no_ask : null))
         : (mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null));
     }
-    const cashSpent = remainingAvgPrice * dbQty;
+    const cashSpent = avgEntry * dbQty;
     const openValue = currentBid != null ? currentBid * dbQty : 0;
     totalOpenValue += openValue;
     totalCashSpent += cashSpent;
@@ -322,7 +324,7 @@ export default function ModelDetailPage() {
     const dbPos = positions.find((p) => p.market_id === row.market_id);
     const hasMoreTrades = dbPos != null && Math.abs(totalRealized - dbPos.realized_pnl) > 0.005;
 
-    perMarket.push({ title: row.title, contract, sells, totalRealized, avgEntry: remainingAvgPrice, currentBid, dbQty, openValue, cashSpent, hasMoreTrades });
+    perMarket.push({ title: row.title, contract, sells, totalRealized: realizedValue, avgEntry, currentBid, dbQty, openValue, cashSpent, hasMoreTrades });
   }
 
   const totalLiveNetPnl = totalOpenValue - totalCashSpent + totalCashPnl;
