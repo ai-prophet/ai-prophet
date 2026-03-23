@@ -62,57 +62,62 @@ function ModelCard({ instance, data }: { instance: string; data: ComparisonModel
     : "No activity yet";
 
   return (
-    <div className="bg-t-panel border border-t-border rounded-lg p-4 space-y-3">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div
-            className="w-2.5 h-2.5 rounded-full"
-            style={{ backgroundColor: color }}
-          />
-          <span className="text-sm font-semibold text-txt-primary font-mono">
-            {data.model_label}
-          </span>
-          <span className="text-[9px] text-txt-muted font-mono border border-t-border rounded px-1.5 py-0.5">
-            DRY RUN
-          </span>
+    <Link href={`/comparison/${instance}`} className="block group">
+      <div className="bg-t-panel border border-t-border rounded-lg p-4 space-y-3 transition-all group-hover:border-accent/40 group-hover:bg-t-panel-hover cursor-pointer">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div
+              className="w-2.5 h-2.5 rounded-full"
+              style={{ backgroundColor: color }}
+            />
+            <span className="text-sm font-semibold text-txt-primary font-mono">
+              {data.model_label}
+            </span>
+            <span className="text-[9px] text-txt-muted font-mono border border-t-border rounded px-1.5 py-0.5">
+              DRY RUN
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {data.error && (
+              <span className="text-[9px] text-loss font-mono">⚠ error</span>
+            )}
+            <span className="text-[9px] text-txt-muted group-hover:text-accent transition-colors">→</span>
+          </div>
         </div>
-        {data.error && (
-          <span className="text-[9px] text-loss font-mono">⚠ error</span>
-        )}
-      </div>
 
-      {/* Metrics */}
-      <div className="grid grid-cols-2 gap-2">
-        <StatCard
-          label="Balance"
-          value={`$${data.balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          sub={`started $${data.starting_cash.toLocaleString()}`}
-          pnl={balanceDelta}
-        />
-        <StatCard
-          label="Total P&L"
-          value={fmtDollar(data.total_pnl)}
-          sub={`${pnlPct}% return`}
-          pnl={data.total_pnl}
-        />
-        <StatCard
-          label="Trades"
-          value={String(data.trade_count)}
-          sub={`${data.open_positions} open`}
-        />
-        <StatCard
-          label="Win Rate"
-          value={data.trade_count > 0 ? `${(data.win_rate * 100).toFixed(1)}%` : "—"}
-          sub={data.trade_count > 0 ? `${data.trade_count} settled` : "no settled trades"}
-        />
-      </div>
+        {/* Metrics */}
+        <div className="grid grid-cols-2 gap-2">
+          <StatCard
+            label="Balance"
+            value={`$${data.balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            sub={`started $${data.starting_cash.toLocaleString()}`}
+            pnl={balanceDelta}
+          />
+          <StatCard
+            label="Total P&L"
+            value={fmtDollar(data.total_pnl)}
+            sub={`${pnlPct}% return`}
+            pnl={data.total_pnl}
+          />
+          <StatCard
+            label="Trades"
+            value={String(data.trade_count)}
+            sub={`${data.open_positions} open`}
+          />
+          <StatCard
+            label="Win Rate"
+            value={data.trade_count > 0 ? `${(data.win_rate * 100).toFixed(1)}%` : "—"}
+            sub={data.trade_count > 0 ? `${data.trade_count} settled` : "no settled trades"}
+          />
+        </div>
 
-      {/* Last updated */}
-      <div className="text-[9px] text-txt-muted font-mono border-t border-t-border pt-2">
-        Last prediction: {lastUpdated}
+        {/* Last updated */}
+        <div className="text-[9px] text-txt-muted font-mono border-t border-t-border pt-2">
+          Last prediction: {lastUpdated}
+        </div>
       </div>
-    </div>
+    </Link>
   );
 }
 
@@ -335,7 +340,8 @@ export default function ComparisonPage() {
                     return (
                       <tr
                         key={inst}
-                        className="border-b border-t-border/50 hover:bg-t-border/10 transition-colors"
+                        className="border-b border-t-border/50 hover:bg-t-border/10 transition-colors cursor-pointer"
+                        onClick={() => window.location.href = `/comparison/${inst}`}
                       >
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-1.5">
@@ -343,7 +349,7 @@ export default function ComparisonPage() {
                               className="w-1.5 h-1.5 rounded-full"
                               style={{ backgroundColor: MODEL_COLORS[inst] ?? "#888" }}
                             />
-                            <span className="text-txt-primary">{m.model_label}</span>
+                            <span className="text-txt-primary group-hover:text-accent">{m.model_label}</span>
                           </div>
                         </td>
                         <td className="px-3 py-2 text-right text-txt-primary">
