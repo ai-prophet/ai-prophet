@@ -460,6 +460,9 @@ class BettingEngine:
                     # Continue to buy remaining on new side
                     action = "BUY"
                     effective_side = want_side.upper()
+                    # Refresh cash after the NET sell — proceeds are now persisted
+                    # to DB and must be available for the subsequent BUY.
+                    _, _, live_cash = self._live_ledger_state(ticker)
 
         # --- Cash constraint: use live cash so multi-market cycles don't overspend ---
         if action == "BUY":
