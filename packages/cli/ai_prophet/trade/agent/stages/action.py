@@ -93,6 +93,12 @@ class ActionStage(PipelineStage):
         forecast_data = previous_results["forecast"].data
         forecasts = forecast_data.get("forecasts", {})
 
+        # Collect Bellwether enrichments if available
+        bellwether_enrichments: dict[str, Any] = {}
+        bellwether_result = previous_results.get("bellwether")
+        if bellwether_result and bellwether_result.success:
+            bellwether_enrichments = bellwether_result.data.get("enrichments", {})
+
         logger.info(f"Action stage processing {len(forecasts)} forecasts")
 
         if not forecasts:
@@ -120,8 +126,10 @@ class ActionStage(PipelineStage):
                     continue
 
                 # Call LLM for trade decision
+                bw_data = bellwether_enrichments.get(market_id)
                 decision = self._generate_trade_decision(
-                    market_id, forecast, market_info, tick_ctx
+                    market_id, forecast, market_info, tick_ctx,
+                    bellwether_data=bw_data,
                 )
                 decisions[market_id] = decision
 
@@ -156,6 +164,7 @@ class ActionStage(PipelineStage):
         forecast: dict[str, Any],
         market_info: CandidateMarket,
         tick_ctx: TickContext,
+        bellwether_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Generate trade decision for a market using LLM with tool calling.
 
@@ -181,14 +190,37 @@ class ActionStage(PipelineStage):
         # Build context using shared utilities
         portfolio_summary = format_portfolio_summary(tick_ctx, include_positions=False)
         position_context = format_position_for_market(tick_ctx, market_id)
+        # Build market depth context from Bellwether
+        bellwether_block = ""
+        if bellwether_data:
+            lines = ["MARKET DEPTH (Bellwether):"]
+            cost = bellwether_data.get("cost_to_move_5c")
+            if cost is not None:
+                lines.append(f"- Cost to move price 5c: ${cost:,.0f}")
+            reportability = bellwether_data.get("reportability")
+            if reportability:
+                lines.append(f"- Reportability: {reportability}")
+            poly = bellwether_data.get("polymarket_price")
+            kalshi = bellwether_data.get("kalshi_price")
+            if poly is not None or kalshi is not None:
+                parts = []
+                if poly is not None:
+                    parts.append(f"Polymarket: {poly:.0%}")
+                if kalshi is not None:
+                    parts.append(f"Kalshi: {kalshi:.0%}")
+                lines.append(f"- Cross-platform prices: {', '.join(parts)}")
+            if len(lines) > 1:
+                bellwether_block = "\n" + "\n".join(lines) + "\n"
+
         memory_by_market = getattr(tick_ctx, "memory_by_market", None) or {}
         market_memory = memory_by_market.get(market_id, "")
         memory_block = f"\n\nRECENT MEMORY:\n{market_memory}" if market_memory else ""
         logger.info(
-            "Action prompt market_id=%s memory_in_prompt=%s memory_chars=%d",
+            "Action prompt market_id=%s memory_in_prompt=%s memory_chars=%d bellwether=%s",
             market_id,
             bool(memory_block),
             len(market_memory),
+            bool(bellwether_block),
         )
 
         system_prompt = """You are a trader making position sizing decisions for prediction markets.
@@ -214,6 +246,7 @@ MARKET PRICE: {yes_ask:.0%} to buy YES, {1 - yes_bid:.0%} to buy NO
 
 {portfolio_summary}
 {position_context}
+{bellwether_block}
 What is your trade decision?{memory_block}"""
 
         messages = [
