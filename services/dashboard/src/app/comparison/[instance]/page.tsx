@@ -120,6 +120,48 @@ function MetricCard({
   );
 }
 
+function CycleCountdown({ health }: { health: HealthData | null }) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const cycleEndStr = health?.effective_last_cycle_end ?? health?.last_cycle_end;
+  if (!cycleEndStr || !health?.poll_interval_sec) {
+    return (
+      <span className="text-[10px] text-txt-muted font-mono">
+        Next cycle: --:--
+      </span>
+    );
+  }
+
+  const cycleEndMs = new Date(cycleEndStr).getTime();
+  const nextCycleMs = cycleEndMs + health.poll_interval_sec * 1000;
+  const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
+  const min = Math.floor(remainingSec / 60);
+  const sec = remainingSec % 60;
+  const isOverdue = remainingSec === 0;
+
+  return (
+    <span
+      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+        isOverdue
+          ? "text-warn bg-warn-dim animate-pulse"
+          : remainingSec < 60
+            ? "text-accent bg-accent-dim"
+            : "text-txt-muted"
+      }`}
+      title={`Last cycle ended: ${health.last_cycle_end}`}
+    >
+      {isOverdue
+        ? "Cycle running..."
+        : `Next cycle: ${min}:${sec.toString().padStart(2, "0")}`}
+    </span>
+  );
+}
+
 function SectionLabel({ text, count }: { text: string; count?: number }) {
   return (
     <div className="flex items-center gap-1.5 mb-1.5">
@@ -397,6 +439,7 @@ export default function ModelDetailPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <CycleCountdown health={health} />
             <button
               onClick={() => fetchAll()}
               disabled={refreshing}
