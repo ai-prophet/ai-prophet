@@ -238,8 +238,8 @@ services:
     startCommand: npm start
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        value: https://ai-prophet-api-shared-7lezouvpda-uc.a.run.app
+        value: https://ai-prophet-api-shared-7lezouvpda-uw.a.run.app
       - key: NEXT_PUBLIC_DEFAULT_INSTANCE
         value: haifeng
       - key: NEXT_PUBLIC_INSTANCE_CONFIG
-        value: '[{"key":"haifeng","label":"Haifeng","apiUrl":"https://ai-prophet-api-shared-7lezouvpda-uc.a.run.app","instanceName":"Haifeng","description":"Gemini without market data"},{"key":"jibang","label":"Jibang","apiUrl":"https://ai-prophet-api-shared-7lezouvpda-uc.a.run.app","instanceName":"Jibang","description":"Gemini with market data"}]'
+        value: '[{"key":"haifeng","label":"Haifeng","apiUrl":"https://ai-prophet-api-shared-7lezouvpda-uw.a.run.app","instanceName":"Haifeng","description":"Gemini without market data"},{"key":"jibang","label":"Jibang","apiUrl":"https://ai-prophet-api-shared-7lezouvpda-uw.a.run.app","instanceName":"Jibang","description":"Gemini with market data"}]'
