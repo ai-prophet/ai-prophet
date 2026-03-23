@@ -233,7 +233,7 @@ def _log_heartbeat(db_engine, message: str = "alive") -> None:
                 instance_name=INSTANCE_NAME,
                 level="HEARTBEAT",
                 message=message,
-                component="comparison_worker",
+                component="worker",
                 created_at=datetime.now(UTC),
             ))
     except Exception as e:

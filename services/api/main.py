@@ -160,6 +160,21 @@ def _instance_list_setting(key: str, instance_name: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _heartbeat_components() -> tuple[str, ...]:
+    """Components that may emit liveness heartbeats."""
+    return ("worker", "comparison_worker")
+
+
+def _heartbeat_query(session, instance_name: str):
+    return (
+        _instance_query(session, SystemLog, instance_name)
+        .filter(
+            SystemLog.level == "HEARTBEAT",
+            SystemLog.component.in_(_heartbeat_components()),
+        )
+    )
+
+
 def _worker_poll_interval(instance_name: str) -> int:
     return int(_instance_setting("WORKER_POLL_INTERVAL_SEC", instance_name, "3600"))
 
@@ -231,8 +246,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
 
             # 2. Last worker heartbeat
             hb_row = (
-                _instance_query(session, SystemLog, resolved_instance)
-                .filter(SystemLog.level == "HEARTBEAT", SystemLog.component == "worker")
+                _heartbeat_query(session, resolved_instance)
                 .order_by(SystemLog.created_at.desc())
                 .first()
             )
@@ -243,10 +257,8 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
 
             # 3. Last cycle_end for this instance
             ce_row = (
-                _instance_query(session, SystemLog, resolved_instance)
+                _heartbeat_query(session, resolved_instance)
                 .filter(
-                    SystemLog.level == "HEARTBEAT",
-                    SystemLog.component == "worker",
                     SystemLog.message == "cycle_end",
                 )
                 .order_by(SystemLog.created_at.desc())
@@ -261,7 +273,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
                 session.query(SystemLog)
                 .filter(
                     SystemLog.level == "HEARTBEAT",
-                    SystemLog.component == "worker",
+                    SystemLog.component.in_(_heartbeat_components()),
                     SystemLog.message == "cycle_end",
                 )
                 .order_by(SystemLog.created_at.desc())
@@ -1497,8 +1509,7 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
     with get_session(engine) as session:
         # 1. Stale worker check: heartbeat older than 1.5x poll interval
         last_heartbeat = (
-            _instance_query(session, SystemLog, resolved_instance)
-            .filter(SystemLog.level == "HEARTBEAT", SystemLog.component == "worker")
+            _heartbeat_query(session, resolved_instance)
             .order_by(SystemLog.created_at.desc())
             .first()
         )
