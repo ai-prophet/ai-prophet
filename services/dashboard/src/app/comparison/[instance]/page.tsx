@@ -36,6 +36,8 @@ const MODEL_META: Record<string, { label: string; color: string }> = {
 };
 
 const STARTING_CASH = 10_000;
+const WIN_RATE_TOOLTIP =
+  "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -517,6 +519,7 @@ export default function ModelDetailPage() {
               label="Win Rate"
               value={`${(metrics.winRate * 100).toFixed(0)}%`}
               pnl={metrics.winRate >= 0.5 ? 1 : metrics.winRate > 0 ? -1 : undefined}
+              tooltip={WIN_RATE_TOOLTIP}
             />
             <MetricCard
               label="Return"

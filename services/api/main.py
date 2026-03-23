@@ -660,6 +660,11 @@ def get_positions(
 # ── GET /pnl ─────────────────────────────────────────────────────
 
 
+# Simple in-memory cache for PnL endpoint
+_pnl_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_PNL_CACHE_TTL = 10  # seconds
+
+
 @app.get("/pnl")
 def get_pnl(
     days: int = Query(30, ge=1, le=365),
@@ -673,12 +678,26 @@ def get_pnl(
     Supports filtering by market_id and model/source.
     """
     resolved_instance = _instance_name(instance_name)
+
+    # Check cache (only for default params - no filters)
+    cache_key = f"{resolved_instance}:{days}:{market_id or ''}:{model or ''}"
+    if not market_id and not model and cache_key in _pnl_cache:
+        cached_time, cached_data = _pnl_cache[cache_key]
+        if time.time() - cached_time < _PNL_CACHE_TTL:
+            return cached_data
+
     engine = get_db()
     with get_session(engine) as session:
+        # Limit orders to recent history based on days parameter (performance optimization)
+        cutoff_date = datetime.now(UTC) - timedelta(days=days)
         query = (
             _instance_query(session, BettingOrder, resolved_instance)
-            .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+            .filter(
+                BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
+                BettingOrder.created_at >= cutoff_date,
+            )
             .order_by(BettingOrder.created_at.asc())
+            .limit(2000)  # Hard limit for performance
         )
         rows = query.all()
 
@@ -848,7 +867,7 @@ def get_pnl(
             pnl_series[-1]["open_value"] = round(total_open_value, 4)
             pnl_series[-1]["cash_spent"] = round(total_cash_spent, 4)
 
-        return {
+        result = {
             "series": pnl_series,
             "trade_markers": trade_markers,
             "summary": {
@@ -858,6 +877,12 @@ def get_pnl(
                 "active_positions": sum(1 for p in ticker_positions.values() if p.current_position()[0] is not None),
             },
         }
+
+        # Update cache for default queries
+        if not market_id and not model:
+            _pnl_cache[cache_key] = (time.time(), result)
+
+        return result
 
 
 # ── GET /analytics/summary ──────────────────────────────────────

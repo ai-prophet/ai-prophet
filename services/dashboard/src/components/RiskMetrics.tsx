@@ -3,10 +3,24 @@
 import type { AnalyticsSummary } from "@/lib/api";
 import { fmtDollar, fmtPct, CHART_COLORS } from "@/lib/utils";
 
+const WIN_RATE_TOOLTIP =
+  "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
+
 function metricColor(value: number, greenAbove: number, redBelow: number): string {
   if (value >= greenAbove) return "text-profit";
   if (value <= redBelow) return "text-loss";
   return "text-txt-primary";
+}
+
+function InfoDot({ text }: { text: string }) {
+  return (
+    <span
+      className="inline-flex items-center justify-center w-3 h-3 ml-1 rounded border border-txt-muted/30 text-[7px] text-txt-muted cursor-help hover:border-accent hover:text-accent transition-colors align-middle"
+      title={text}
+    >
+      ?
+    </span>
+  );
 }
 
 export function RiskMetrics({
@@ -78,8 +92,9 @@ export function RiskMetrics({
 
         {/* Win Rate with bar */}
         <div className="bg-t-panel p-3 flex flex-col gap-1.5">
-          <span className="text-[9px] text-txt-muted uppercase tracking-wider">
+          <span className="text-[9px] text-txt-muted uppercase tracking-wider flex items-center">
             Win Rate
+            <InfoDot text={WIN_RATE_TOOLTIP} />
           </span>
           <span className="text-sm font-mono font-medium text-txt-primary">
             {winRatePct.toFixed(1)}%

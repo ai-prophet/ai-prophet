@@ -34,6 +34,8 @@ import { UnifiedMarketTable } from "@/components/UnifiedMarketTable";
 
 const REFRESH_INTERVAL = 5_000;
 const INSTANCE_STORAGE_KEY = "dashboard-instance-key";
+const WIN_RATE_TOOLTIP =
+  "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
 
 type DashboardSnapshot = {
   trades: Trade[];
@@ -581,6 +583,7 @@ export default function Dashboard() {
             label="Win Rate"
             value={`${(metrics.winRate * 100).toFixed(0)}%`}
             pnl={metrics.winRate >= 0.5 ? 1 : -1}
+            tooltip={WIN_RATE_TOOLTIP}
           />
           <MetricCard
             label="Return"
