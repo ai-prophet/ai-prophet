@@ -30,7 +30,7 @@ def create_db_engine(
         connect_args = {"check_same_thread": False}
         return create_engine(url, echo=echo, connect_args=connect_args, **kwargs)
     pool_size = kwargs.pop("pool_size", 1)
-    max_overflow = kwargs.pop("max_overflow", 2)
+    max_overflow = kwargs.pop("max_overflow", 0)
     return create_engine(
         url,
         echo=echo,
