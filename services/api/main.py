@@ -887,7 +887,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
         # (consistent with the position heatmap).
         trade_pnls: list[float] = []
         pnl_by_model: dict[str, dict[str, Any]] = defaultdict(
-            lambda: {"pnl": 0.0, "trades": 0, "wins": 0}
+            lambda: {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0}
         )
         pnl_by_market: dict[str, dict[str, Any]] = defaultdict(
             lambda: {"pnl": 0.0, "trades": 0, "title": ""}
@@ -948,12 +948,14 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             pnl_by_model[source]["trades"] += 1
             if total_pnl > 0:
                 pnl_by_model[source]["wins"] += 1
+            elif total_pnl < 0:
+                pnl_by_model[source]["losses"] += 1
 
         # ── Risk metrics ──────────────────────────────────────────
-        total_trades = len(trade_pnls)
         winning_trades = sum(1 for p in trade_pnls if p > 0)
         losing_trades = sum(1 for p in trade_pnls if p < 0)
-        win_rate = _safe_div(winning_trades, total_trades)
+        decided_trades = winning_trades + losing_trades
+        win_rate = _safe_div(winning_trades, decided_trades)
 
         wins = [p for p in trade_pnls if p > 0]
         losses = [p for p in trade_pnls if p < 0]
@@ -1025,7 +1027,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             name: {
                 "pnl": round(data["pnl"], 4),
                 "trades": data["trades"],
-                "win_rate": round(_safe_div(data["wins"], data["trades"]), 4),
+                "win_rate": round(_safe_div(data["wins"], data["wins"] + data["losses"]), 4),
             }
             for name, data in pnl_by_model.items()
         }
@@ -1049,7 +1051,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             "win_rate": round(win_rate, 4),
             "avg_win": round(avg_win, 4),
             "avg_loss": round(avg_loss, 4),
-            "total_trades": total_trades,
+            "total_trades": decided_trades,
             "winning_trades": winning_trades,
             "losing_trades": losing_trades,
             "pnl_by_model": formatted_pnl_by_model,
