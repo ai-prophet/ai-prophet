@@ -34,9 +34,9 @@ from sqlalchemy.engine import Engine
 from .config import MAX_MARKETS_PER_TICK, KalshiConfig
 from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
 
-logger = logging.getLogger(__name__)
-
 from .position_replay import replay_orders_by_ticker, summarize_replayed_positions
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -263,6 +263,88 @@ class BettingEngine:
         )
         return results[0] if results else None
 
+    def make_trade(
+        self,
+        market_id: str,
+        side: str,
+        shares: int,
+        price: float,
+        tick_ts: datetime | None = None,
+    ) -> BetResult:
+        """Execute a trade directly, bypassing strategy evaluation.
+
+        Routes to paper trading (simulated fill) or live Kalshi based on
+        the ``dry_run`` flag set at construction time.
+
+        Args:
+            market_id: Market identifier, e.g. ``"kalshi:NASDAQ-100-GT5K"``
+                or just ``"NASDAQ-100-GT5K"``.
+            side: ``"yes"`` or ``"no"``.
+            shares: Number of contracts to trade.
+            price: Limit price in the range ``[0.0, 1.0]``.
+            tick_ts: Timestamp for DB records. Defaults to now.
+        """
+        if not self.enabled:
+            return BetResult(market_id=market_id, signal=None, order_placed=False)
+        if tick_ts is None:
+            tick_ts = datetime.now(UTC)
+        signal = BetSignal(
+            side=side.lower(),
+            shares=float(shares),
+            price=price,
+            cost=shares * price,
+        )
+        yes_ask = price if side.lower() == "yes" else 0.0
+        no_ask = price if side.lower() == "no" else 0.0
+        return self._place_and_log_order(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            signal=signal,
+            signal_id=None,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+        )
+
+    def trade_from_forecast(
+        self,
+        market_id: str,
+        p_yes: float,
+        yes_ask: float,
+        no_ask: float,
+        tick_ts: datetime | None = None,
+        source: str = "",
+        question: str = "",
+        portfolio: PortfolioSnapshot | None = None,
+    ) -> BetResult | None:
+        """Evaluate a forecast through the strategy and place a trade if warranted.
+
+        The strategy decides whether to bet, which side, and how many shares.
+        Routes to paper or live Kalshi based on ``dry_run``.
+
+        Args:
+            market_id: Market identifier, e.g. ``"kalshi:NASDAQ-100-GT5K"``.
+            p_yes: Forecast probability that the YES side resolves true (0–1).
+            yes_ask: Current ask price for YES contracts (0–1).
+            no_ask: Current ask price for NO contracts (0–1).
+            tick_ts: Timestamp for DB records. Defaults to now.
+            source: Label for the prediction source (model name, etc.).
+            question: Human-readable market question (for logging).
+            portfolio: Optional portfolio snapshot; overridden by live DB state
+                when a DB engine is configured.
+        """
+        if tick_ts is None:
+            tick_ts = datetime.now(UTC)
+        return self.on_forecast(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            p_yes=p_yes,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            question=question,
+            source=source,
+            portfolio=portfolio,
+        )
+
     def close(self) -> None:
         """Release resources."""
         if self._adapter:
@@ -445,6 +527,9 @@ class BettingEngine:
                     # Continue to buy remaining on new side
                     action = "BUY"
                     effective_side = want_side.upper()
+                    # Refresh cash after the NET sell — proceeds are now persisted
+                    # to DB and must be available for the subsequent BUY.
+                    _, _, live_cash = self._live_ledger_state(ticker)
 
         # --- Cash constraint: use live cash so multi-market cycles don't overspend ---
         if action == "BUY":

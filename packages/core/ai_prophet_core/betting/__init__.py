@@ -1,4 +1,20 @@
-"""Betting module — pluggable strategy, exchange execution, and DB logging."""
+"""Betting module — pluggable strategy, exchange execution, and DB logging.
+
+Quick-start::
+
+    from ai_prophet_core.betting import BettingEngine
+
+    # Paper trading (dry_run=True by default)
+    engine = BettingEngine(dry_run=True)
+
+    # Place a trade directly (paper or live based on dry_run):
+    result = engine.make_trade("kalshi:NASDAQ-100-GT5K", side="yes", shares=10, price=0.65)
+
+    # Or let the strategy decide from a forecast:
+    result = engine.trade_from_forecast(
+        "kalshi:NASDAQ-100-GT5K", p_yes=0.72, yes_ask=0.65, no_ask=0.37
+    )
+"""
 
 from .config import (
     DEFAULT_KALSHI_BASE_URL,
@@ -9,11 +25,12 @@ from .config import (
     load_live_betting_dotenv,
 )
 from .engine import BetResult, BettingEngine
+from .position_replay import InventoryPosition, normalize_order, replay_orders_by_ticker, summarize_replayed_positions
 from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
 
 __all__ = [
-    # Engine
-    "BettingEngine",
+    # Engine — main entry points
+    "BettingEngine",   # make_trade() and trade_from_forecast() live here
     "BetResult",
     # Strategy
     "BettingStrategy",
@@ -28,4 +45,9 @@ __all__ = [
     "KalshiConfig",
     "LiveBettingSettings",
     "load_live_betting_dotenv",
+    # Position replay
+    "InventoryPosition",
+    "normalize_order",
+    "replay_orders_by_ticker",
+    "summarize_replayed_positions",
 ]
