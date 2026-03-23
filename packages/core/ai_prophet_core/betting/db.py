@@ -38,9 +38,13 @@ def create_db_engine(
     }
     if use_null_pool:
         # NullPool: no persistent connections — connect/disconnect per request.
-        # Required when using pgBouncer transaction mode (Supabase port 6543)
-        # from a web server, where holding pooled connections exhausts the limit.
+        # IMPORTANT: This is extremely slow (40+ seconds per request) with Cloud Run + Supabase
+        # because each request creates a new TCP connection + SSL handshake + pgBouncer auth.
+        # Only use this for local development or if you have persistent connection issues.
+        logger.warning("Using NullPool - this will be very slow! Consider using a small pool instead.")
         return create_engine(url, echo=echo, poolclass=NullPool, connect_args=connect_args, **kwargs)
+
+    # Use a very small pool optimized for pgBouncer transaction mode
     pool_size = kwargs.pop("pool_size", 1)
     max_overflow = kwargs.pop("max_overflow", 0)
     return create_engine(
@@ -49,8 +53,8 @@ def create_db_engine(
         pool_size=pool_size,
         max_overflow=max_overflow,
         pool_pre_ping=True,
-        pool_recycle=120,           # 2 min — return idle connections quickly
-        pool_timeout=30,            # fail after 30s waiting for a pool slot
+        pool_recycle=60,            # 1 min — pgBouncer transaction mode closes idle connections quickly
+        pool_timeout=10,            # fail fast if pool is exhausted
         connect_args=connect_args,
         **kwargs,
     )

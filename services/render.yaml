@@ -220,8 +220,10 @@ services:
     envVars:
       - key: API_CORS_ORIGINS
         value: http://localhost:3000,https://kalshi-trading-dashboard.onrender.com
+      # DB_NULL_POOL disabled - causes 40+ second request times with Cloud Run + Supabase
+      # Using small connection pool (pool_size=1) instead for better performance
       - key: DB_NULL_POOL
-        value: "true"
+        value: "false"
       - fromGroup: kalshi-trading-shared
     healthCheckPath: /health
 
