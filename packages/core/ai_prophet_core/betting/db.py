@@ -49,7 +49,7 @@ def create_db_engine(
         pool_size=pool_size,
         max_overflow=max_overflow,
         pool_pre_ping=True,
-        pool_recycle=300,           # 5 min — Supabase drops idle connections aggressively
+        pool_recycle=120,           # 2 min — return idle connections quickly
         pool_timeout=30,            # fail after 30s waiting for a pool slot
         connect_args=connect_args,
         **kwargs,
