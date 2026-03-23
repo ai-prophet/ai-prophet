@@ -20,6 +20,7 @@ import json
 import math
 import os
 import sys
+import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -861,25 +862,43 @@ def get_pnl(
 
 # ── GET /analytics/summary ──────────────────────────────────────
 
+# Simple in-memory cache to prevent redundant heavy queries
+_analytics_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_ANALYTICS_CACHE_TTL = 10  # seconds
+
 
 @app.get("/analytics/summary")
 def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """Comprehensive trading analytics: risk metrics, win rate, model/market breakdowns."""
     resolved_instance = _instance_name(instance_name)
+
+    # Check cache
+    cache_key = resolved_instance
+    if cache_key in _analytics_cache:
+        cached_time, cached_data = _analytics_cache[cache_key]
+        if time.time() - cached_time < _ANALYTICS_CACHE_TTL:
+            return cached_data
+
     engine = get_db()
     with get_session(engine) as session:
-        # Fetch all filled orders
+        # Fetch all filled orders (limited to recent 1000 for performance)
         orders = (
             _instance_query(session, BettingOrder, resolved_instance)
             .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
-            .order_by(BettingOrder.created_at.asc())
+            .order_by(BettingOrder.created_at.desc())
+            .limit(1000)
             .all()
         )
 
         # Fetch positions for realized/unrealized PnL
         positions = _instance_query(session, TradingPosition, resolved_instance).all()
-        # Fetch market info
-        markets = _instance_query(session, TradingMarket, resolved_instance).all()
+        # Fetch only markets with positions or recent trades (limited for performance)
+        position_market_ids = {p.market_id for p in positions}
+        markets = (
+            _instance_query(session, TradingMarket, resolved_instance)
+            .filter(TradingMarket.market_id.in_(position_market_ids) if position_market_ids else False)
+            .all()
+        ) if position_market_ids else []
         market_by_id: dict[str, TradingMarket] = {m.market_id: m for m in markets}
 
         # ── Per-trade P&L computation ─────────────────────────────
@@ -894,36 +913,43 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
         )
 
         # Build model source lookup: market_id -> model name
-        # Targeted query: only fetch latest source per market (not ALL predictions)
+        # Only fetch predictions for markets we have positions in (performance optimization)
         market_model_source: dict[str, str] = {}
-        try:
-            latest_sources = (
-                session.execute(
-                    text(
-                        "SELECT DISTINCT ON (market_id) market_id, source "
-                        "FROM betting_predictions "
-                        "WHERE instance_name = :inst "
-                        "ORDER BY market_id, created_at DESC"
-                    ),
-                    {"inst": resolved_instance},
-                ).fetchall()
-            )
-            for row in latest_sources:
-                market_model_source[row[0]] = row[1]
-        except Exception:
-            # Fallback for SQLite (no DISTINCT ON): load minimal columns
+        if position_market_ids:
             try:
-                preds = (
-                    _instance_query(session, BettingPrediction, resolved_instance)
-                    .with_entities(BettingPrediction.market_id, BettingPrediction.source)
-                    .order_by(BettingPrediction.created_at.desc())
-                    .all()
+                # Build IN clause for positions only
+                placeholders = ", ".join([f":mid_{i}" for i in range(len(position_market_ids))])
+                params = {"inst": resolved_instance}
+                params.update({f"mid_{i}": mid for i, mid in enumerate(position_market_ids)})
+
+                latest_sources = (
+                    session.execute(
+                        text(
+                            f"SELECT DISTINCT ON (market_id) market_id, source "
+                            f"FROM betting_predictions "
+                            f"WHERE instance_name = :inst AND market_id IN ({placeholders}) "
+                            f"ORDER BY market_id, created_at DESC"
+                        ),
+                        params,
+                    ).fetchall()
                 )
-                for mid, src in preds:
-                    if mid not in market_model_source:
-                        market_model_source[mid] = src
+                for row in latest_sources:
+                    market_model_source[row[0]] = row[1]
             except Exception:
-                pass
+                # Fallback for SQLite (no DISTINCT ON): load minimal columns for position markets only
+                try:
+                    preds = (
+                        _instance_query(session, BettingPrediction, resolved_instance)
+                        .filter(BettingPrediction.market_id.in_(position_market_ids))
+                        .with_entities(BettingPrediction.market_id, BettingPrediction.source)
+                        .order_by(BettingPrediction.created_at.desc())
+                        .all()
+                    )
+                    for mid, src in preds:
+                        if mid not in market_model_source:
+                            market_model_source[mid] = src
+                except Exception:
+                    pass
 
         # Count orders per market for trade counts
         orders_per_market: dict[str, int] = defaultdict(int)
@@ -1041,7 +1067,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             for mid, data in pnl_by_market.items()
         }
 
-        return {
+        result = {
             "sharpe_ratio": sharpe_ratio,
             "max_drawdown": round(max_drawdown, 4),
             "max_drawdown_pct": round(max_drawdown_pct, 4),
@@ -1059,6 +1085,10 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             "today_pnl": round(today_pnl, 4),
             "total_exposure": round(total_exposure, 4),
         }
+
+        # Update cache
+        _analytics_cache[cache_key] = (time.time(), result)
+        return result
 
 
 # ── GET /analytics/model-calibration ────────────────────────────
