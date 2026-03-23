@@ -284,25 +284,46 @@ export default function Dashboard() {
       setError("");
       setLoadingInstanceKey((current) => (current === instanceKey ? null : current));
 
-      // Tier 2: Heavy analytics — fills in P&L chart, risk metrics, resolved markets, logs
-      const [pnlData, l, an, resolved] = await Promise.all([
-        instanceApi.getPnL(),
-        instanceApi.getSystemLogs(40),
-        instanceApi.getAnalyticsSummary(),
-        instanceApi.getResolvedMarkets(),
-      ]);
-      if (activeRequestRef.current !== requestId) return;
+      // Tier 2: Heavy analytics — start all in parallel, update UI as each completes
+      instanceApi.getSystemLogs(40).then(l => {
+        if (activeRequestRef.current !== requestId) return;
+        const current = dataCacheRef.current[instanceKey];
+        if (current) {
+          const updated = { ...current, logs: l, lastUpdate: formatLastUpdateTime() };
+          dataCacheRef.current[instanceKey] = updated;
+          applySnapshot(updated);
+        }
+      }).catch(() => {});
 
-      const fullSnapshot: DashboardSnapshot = {
-        ...tier1Snapshot,
-        pnl: pnlData,
-        logs: l,
-        analytics: an,
-        resolvedMarkets: resolved,
-        lastUpdate: formatLastUpdateTime(),
-      };
-      dataCacheRef.current[instanceKey] = fullSnapshot;
-      applySnapshot(fullSnapshot);
+      instanceApi.getPnL().then(pnlData => {
+        if (activeRequestRef.current !== requestId) return;
+        const current = dataCacheRef.current[instanceKey];
+        if (current) {
+          const updated = { ...current, pnl: pnlData, lastUpdate: formatLastUpdateTime() };
+          dataCacheRef.current[instanceKey] = updated;
+          applySnapshot(updated);
+        }
+      }).catch(() => {});
+
+      instanceApi.getAnalyticsSummary().then(an => {
+        if (activeRequestRef.current !== requestId) return;
+        const current = dataCacheRef.current[instanceKey];
+        if (current) {
+          const updated = { ...current, analytics: an, lastUpdate: formatLastUpdateTime() };
+          dataCacheRef.current[instanceKey] = updated;
+          applySnapshot(updated);
+        }
+      }).catch(() => {});
+
+      instanceApi.getResolvedMarkets().then(resolved => {
+        if (activeRequestRef.current !== requestId) return;
+        const current = dataCacheRef.current[instanceKey];
+        if (current) {
+          const updated = { ...current, resolvedMarkets: resolved, lastUpdate: formatLastUpdateTime() };
+          dataCacheRef.current[instanceKey] = updated;
+          applySnapshot(updated);
+        }
+      }).catch(() => {});
     } catch (e) {
       if (activeRequestRef.current !== requestId) return;
       const message = e instanceof Error ? e.message : "Failed to fetch data";
