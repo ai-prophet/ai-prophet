@@ -220,6 +220,8 @@ services:
     envVars:
       - key: API_CORS_ORIGINS
         value: https://kalshi-trading-dashboard.onrender.com
+      - key: DB_NULL_POOL
+        value: "true"
       - fromGroup: kalshi-trading-shared
     healthCheckPath: /health
 

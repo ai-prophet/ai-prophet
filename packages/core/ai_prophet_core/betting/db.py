@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.exc import DisconnectionError, OperationalError
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,17 @@ def create_db_engine(
     if url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
         return create_engine(url, echo=echo, connect_args=connect_args, **kwargs)
+    use_null_pool = kwargs.pop("poolclass", None) is NullPool or \
+        os.getenv("DB_NULL_POOL", "").lower() in ("1", "true")
+    connect_args = {
+        "connect_timeout": 10,
+        "options": "-c statement_timeout=30000 -c lock_timeout=10000",
+    }
+    if use_null_pool:
+        # NullPool: no persistent connections — connect/disconnect per request.
+        # Required when using pgBouncer transaction mode (Supabase port 6543)
+        # from a web server, where holding pooled connections exhausts the limit.
+        return create_engine(url, echo=echo, poolclass=NullPool, connect_args=connect_args, **kwargs)
     pool_size = kwargs.pop("pool_size", 1)
     max_overflow = kwargs.pop("max_overflow", 0)
     return create_engine(
@@ -39,10 +51,7 @@ def create_db_engine(
         pool_pre_ping=True,
         pool_recycle=300,           # 5 min — Supabase drops idle connections aggressively
         pool_timeout=30,            # fail after 30s waiting for a pool slot
-        connect_args={
-            "connect_timeout": 10,  # TCP connect timeout (seconds)
-            "options": "-c statement_timeout=30000 -c lock_timeout=10000",
-        },
+        connect_args=connect_args,
         **kwargs,
     )
 
