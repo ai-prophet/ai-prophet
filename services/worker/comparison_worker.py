@@ -474,9 +474,8 @@ def run_cycle(args) -> None:
         len(predictions), len(markets), time.time() - t_fan,
     )
 
-    # 4. Build engine and portfolio state
+    # 4. Build engine
     engine = _build_engine(db_engine)
-    ledger_state = _build_ledger_state(db_engine)
 
     # 5. Bet on each market sequentially
     placed = 0
@@ -495,6 +494,9 @@ def run_cycle(args) -> None:
         p_yes = pred["p_yes"]
         confidence = pred.get("confidence", 0.5)
         reasoning = pred.get("reasoning", "")
+
+        # Build fresh ledger state for accurate position/cash tracking
+        ledger_state = _build_ledger_state(db_engine)
 
         # Determine decision for model run record
         decision = "HOLD"
