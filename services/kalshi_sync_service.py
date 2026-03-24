@@ -2,15 +2,18 @@
 """
 Kalshi Sync Service - Independent service to sync positions with Kalshi.
 
-This service runs independently of the main worker and periodically:
+This service runs independently of the main worker at 30 minutes past each hour:
 1. Syncs pending order statuses with Kalshi
 2. Reconciles positions between DB and Kalshi
 3. Updates filled/cancelled orders
 4. Does NOT trigger new predictions or trades
 
+Runs at: :30 past each hour (e.g., 1:30, 2:30, 3:30 UTC)
+This is intentionally offset from the worker which runs at the top of the hour.
+
 Usage:
     python services/kalshi_sync_service.py
-    python services/kalshi_sync_service.py --instance Haifeng --interval 1800
+    python services/kalshi_sync_service.py --instance Haifeng
     python services/kalshi_sync_service.py --once  # Run once and exit
 
 Environment variables:
@@ -18,7 +21,7 @@ Environment variables:
     KALSHI_API_KEY_ID         — Kalshi API key ID
     KALSHI_PRIVATE_KEY_B64    — Base64-encoded RSA private key
     KALSHI_BASE_URL           — Kalshi API base URL
-    SYNC_INTERVAL_SEC         — Seconds between sync cycles (default: 1800 = 30 minutes)
+    SYNC_INTERVAL_SEC         — (Deprecated) Now runs at :30 past each hour
 """
 
 from __future__ import annotations
@@ -325,18 +328,40 @@ def run_sync_loop(
             logger.info("[SYNC] Single sync complete, exiting")
             break
 
-        # Wait for next cycle
-        cycle_duration = (datetime.now(UTC) - cycle_start).total_seconds()
-        sleep_time = max(0, interval_sec - cycle_duration)
+        # Calculate time until 30 minutes past the next hour
+        now = datetime.now(UTC)
 
-        if sleep_time > 0 and not _shutdown_requested:
-            logger.info(
-                "[SYNC] Cycle took %.1fs, sleeping %.1fs until next cycle",
-                cycle_duration,
-                sleep_time,
-            )
+        # Find the next :30 time (either this hour or next hour)
+        if now.minute < 30:
+            # Next sync is at :30 this hour
+            next_sync = now.replace(minute=30, second=0, microsecond=0)
+        else:
+            # Next sync is at :30 next hour
+            next_sync = now.replace(minute=30, second=0, microsecond=0) + timedelta(hours=1)
+
+        seconds_until_next_sync = int((next_sync - now).total_seconds())
+
+        if seconds_until_next_sync > 0 and not _shutdown_requested:
+            # Show both UTC and PST times
+            try:
+                import zoneinfo
+                local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+                next_sync_local = next_sync.astimezone(local_tz)
+                logger.info(
+                    "[SYNC] Next sync will run at %s UTC / %s PST (%d seconds)",
+                    next_sync.strftime("%H:%M"),
+                    next_sync_local.strftime("%H:%M"),
+                    seconds_until_next_sync,
+                )
+            except:
+                logger.info(
+                    "[SYNC] Next sync will run at %s UTC (%d seconds)",
+                    next_sync.strftime("%H:%M"),
+                    seconds_until_next_sync,
+                )
+
             # Sleep in small intervals to check for shutdown
-            for _ in range(int(sleep_time)):
+            for _ in range(seconds_until_next_sync):
                 if _shutdown_requested:
                     break
                 time.sleep(1)
