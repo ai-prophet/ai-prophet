@@ -17,9 +17,9 @@ envVarGroups:
       - key: KALSHI_BASE_URL
         value: https://api.elections.kalshi.com
       - key: LIVE_BETTING_ENABLED
-        value: "false"
-      - key: LIVE_BETTING_DRY_RUN
         value: "true"
+      - key: LIVE_BETTING_DRY_RUN
+        value: "false"
       - key: GEMINI_API_KEY_HAIFENG
         sync: false
       - key: GEMINI_API_KEY_JIBANG
