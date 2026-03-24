@@ -58,6 +58,7 @@ export function PnLChart({
   const [showTradeMarkers, setShowTradeMarkers] = useState(true);
   const [timeFrame, setTimeFrame] = useState<TimeFrame>("all");
   const [brushRange, setBrushRange] = useState<{ startIndex: number; endIndex: number } | null>(null);
+  const [groupByCycle, setGroupByCycle] = useState(true);
 
   // Reset brush when timeframe changes
   useEffect(() => { setBrushRange(null); }, [timeFrame]);
@@ -72,6 +73,75 @@ export function PnLChart({
   const chartData = useMemo(() => {
     if (data.length === 0) return [];
 
+    // If grouping by cycle, aggregate trades within each hour
+    if (groupByCycle) {
+      const cycleMap = new Map<number, {
+        timestamp: number;
+        pnl: number;
+        cash_pnl: number;
+        open_value: number;
+        tradeCount: number;
+        trades: typeof data;
+      }>();
+
+      // Group all data points by cycle (hourly boundaries)
+      data.forEach((d) => {
+        const ts = new Date(d.timestamp).getTime();
+        // Round to nearest hour for cycle grouping
+        const cycleTs = Math.floor(ts / (60 * 60 * 1000)) * (60 * 60 * 1000);
+
+        if (!cycleMap.has(cycleTs)) {
+          cycleMap.set(cycleTs, {
+            timestamp: cycleTs,
+            pnl: 0,
+            cash_pnl: 0,
+            open_value: 0,
+            tradeCount: 0,
+            trades: [],
+          });
+        }
+
+        const cycle = cycleMap.get(cycleTs)!;
+        // For each cycle, use the LAST values within that cycle
+        // (as they represent the cumulative state at cycle end)
+        cycle.pnl = d.pnl ?? 0;
+        cycle.cash_pnl = d.cash_pnl ?? d.realized_pnl ?? 0;
+        cycle.open_value = d.open_value ?? 0;
+        cycle.tradeCount++;
+        cycle.trades.push(d);
+      });
+
+      // Convert to array and sort by timestamp
+      const cycles = Array.from(cycleMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+      let peak = 0;
+      return cycles.map((cycle) => {
+        if (cycle.pnl > peak) peak = cycle.pnl;
+        const drawdown = peak > 0 ? cycle.pnl - peak : 0;
+
+        return {
+          time: new Date(cycle.timestamp).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          timestamp: cycle.timestamp,
+          pnl: cycle.pnl,
+          cash_pnl: cycle.cash_pnl,
+          open_value: cycle.open_value,
+          drawdown,
+          tradeCount: cycle.tradeCount,
+          // Keep first trade info for tooltip
+          tradeCost: cycle.trades[0]?.trade_cost,
+          ticker: cycle.trades[0]?.ticker,
+          side: cycle.trades[0]?.side,
+          action: cycle.trades[0]?.action ?? "BUY",
+        };
+      });
+    }
+
+    // Original per-trade data
     let peak = 0;
     return data.map((d) => {
       const pnl = d.pnl ?? 0;
@@ -99,7 +169,7 @@ export function PnLChart({
         action: d.action ?? "BUY",
       };
     });
-  }, [data]);
+  }, [data, groupByCycle]);
 
   // Filter by selected timeframe
   const filteredData = useMemo(() => {
@@ -179,6 +249,15 @@ export function PnLChart({
           <span className={`text-[10px] font-mono font-semibold ${isUp ? "text-profit" : "text-loss"}`}>
             {lastVal >= 0 ? "+" : ""}${lastVal.toFixed(2)}
           </span>
+          <label className="flex items-center gap-1 text-[9px] text-txt-muted cursor-pointer">
+            <input
+              type="checkbox"
+              checked={groupByCycle}
+              onChange={(e) => setGroupByCycle(e.target.checked)}
+              className="w-3 h-3 rounded border-t-border bg-t-bg accent-accent"
+            />
+            Per Cycle
+          </label>
           <label className="flex items-center gap-1 text-[9px] text-txt-muted cursor-pointer">
             <input
               type="checkbox"
@@ -262,12 +341,32 @@ export function PnLChart({
               formatter={(value: number, name: string) => {
                 return [`$${value.toFixed(4)}`, TOOLTIP_LABELS[name] ?? name];
               }}
+              content={(props: any) => {
+                if (!props.active || !props.payload?.[0]) return null;
+                const data = props.payload[0].payload;
+
+                return (
+                  <div style={TOOLTIP_STYLE}>
+                    <p style={TOOLTIP_LABEL_STYLE}>{props.label}</p>
+                    {props.payload.map((entry: any, index: number) => (
+                      <p key={index} style={{ color: entry.color || "#ccc", fontSize: 11, margin: "2px 0" }}>
+                        {TOOLTIP_LABELS[entry.name] ?? entry.name}: ${entry.value.toFixed(4)}
+                      </p>
+                    ))}
+                    {groupByCycle && data.tradeCount && (
+                      <p style={{ color: "#888", fontSize: 10, marginTop: 4, borderTop: "1px solid #333", paddingTop: 4 }}>
+                        Trades in cycle: {data.tradeCount}
+                      </p>
+                    )}
+                  </div>
+                );
+              }}
             />
             <ReferenceLine y={0} stroke={CHART_COLORS.reference} strokeDasharray="4 4" />
 
             {/* Main P&L area */}
             <Area
-              type="monotone"
+              type={groupByCycle ? "stepAfter" : "monotone"}
               dataKey={dataKey}
               stroke={stroke}
               strokeWidth={1.5}
@@ -302,6 +401,35 @@ export function PnLChart({
                 stroke="transparent"
                 dot={(props: any) => {
                   const { cx, cy, payload } = props;
+                  if (groupByCycle) {
+                    // For cycle view, show dots for all cycles with trades
+                    if (!payload?.tradeCount) return <g key={`e-${cx}-${cy}`} />;
+                    return (
+                      <g key={`c-${cx}-${cy}`}>
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={4}
+                          fill={CHART_COLORS.accent}
+                          stroke="#0f1419"
+                          strokeWidth={1.5}
+                          opacity={0.8}
+                        />
+                        {payload.tradeCount > 1 && (
+                          <text
+                            x={cx}
+                            y={cy - 8}
+                            fill={CHART_COLORS.muted}
+                            fontSize={8}
+                            textAnchor="middle"
+                          >
+                            {payload.tradeCount}
+                          </text>
+                        )}
+                      </g>
+                    );
+                  }
+                  // Original per-trade dots
                   if (!payload?.ticker) return <g key={`e-${cx}-${cy}`} />;
                   const isSell = (payload.action ?? "").toLowerCase() === "sell";
                   return (

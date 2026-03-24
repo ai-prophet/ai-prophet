@@ -2033,16 +2033,15 @@ def get_cycle_evaluations(
 
             # Determine the action taken based on whether an order exists
             if row.order_id:
-                # An order was placed
+                # An order was placed - use the actual action (buy/sell) regardless of status
+                action_type = row.order_action.lower() if row.order_action else "buy"
+
                 if row.order_status == "FILLED":
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side}"
-                    action_type = row.order_action.lower()
                 elif row.order_status == "DRY_RUN":
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side} (dry run)"
-                    action_type = "dry_run"
                 else:
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side} (pending)"
-                    action_type = "pending"
             else:
                 # No order = HOLD decision
                 action_taken = "HOLD"

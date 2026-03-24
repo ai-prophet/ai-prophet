@@ -53,7 +53,7 @@ class GeminiClient(LLMClient):
         api_key: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
-        max_retries: int = 3,
+        max_retries: int = 1,  # Changed: No retries, run once only
         retry_delay: float = 1.0,
         verbose: bool = False,
     ):
@@ -64,12 +64,12 @@ class GeminiClient(LLMClient):
             api_key: Google AI API key
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
-            max_retries: Maximum retry attempts on rate limits
-            retry_delay: Initial retry delay in seconds
+            max_retries: Maximum retry attempts (1 = no retries, run once only)
+            retry_delay: Initial retry delay in seconds (unused when max_retries=1)
             verbose: If True, print prompts and responses
         """
         super().__init__(model, api_key, temperature, max_tokens, verbose)
-        self.max_retries = max_retries
+        self.max_retries = 1  # Force no retries - run once only
         self.retry_delay = retry_delay
         self.http_client = httpx.Client(timeout=120.0)
 

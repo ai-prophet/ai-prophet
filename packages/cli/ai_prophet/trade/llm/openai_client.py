@@ -55,7 +55,7 @@ class OpenAIClient(LLMClient):
         api_key: str,
         temperature: float = 0.7,  # Ignored for GPT-5 (uses reasoning effort)
         max_tokens: int | None = None,
-        max_retries: int = 3,
+        max_retries: int = 1,  # Changed: No retries, run once only
         retry_delay: float = 1.0,
         verbose: bool = False,
         reasoning_effort: str = "none",  # none, low, medium, high, xhigh
@@ -68,14 +68,14 @@ class OpenAIClient(LLMClient):
             api_key: OpenAI API key
             temperature: Ignored for GPT-5 (use reasoning_effort instead)
             max_tokens: Maximum output tokens
-            max_retries: Maximum retry attempts on rate limits
-            retry_delay: Initial retry delay in seconds
+            max_retries: Maximum retry attempts (1 = no retries, run once only)
+            retry_delay: Initial retry delay in seconds (unused when max_retries=1)
             verbose: If True, print prompts and responses
             reasoning_effort: How much the model should reason (none/low/medium/high/xhigh)
             verbosity: Output length control (low/medium/high)
         """
         super().__init__(model, api_key, temperature, max_tokens, verbose)
-        self.max_retries = max_retries
+        self.max_retries = 1  # Force no retries - run once only
         self.retry_delay = retry_delay
         self.reasoning_effort = reasoning_effort
         self.verbosity = verbosity

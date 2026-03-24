@@ -69,7 +69,7 @@ class OpenAICompatibleClient(LLMClient):
         api_key: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
-        max_retries: int = 3,
+        max_retries: int = 1,  # Changed: No retries, run once only
         retry_delay: float = 1.0,
         verbose: bool = False,
         base_url: str = "https://api.openai.com/v1",
@@ -82,14 +82,14 @@ class OpenAICompatibleClient(LLMClient):
             api_key: API key for the provider
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
-            max_retries: Maximum retry attempts on rate limits
-            retry_delay: Initial retry delay in seconds
+            max_retries: Maximum retry attempts (1 = no retries, run once only)
+            retry_delay: Initial retry delay in seconds (unused when max_retries=1)
             verbose: If True, log prompts and responses
             base_url: Provider API base URL
             http_timeout: Per-request HTTP timeout in seconds
         """
         super().__init__(model, api_key, temperature, max_tokens, verbose)
-        self.max_retries = max_retries
+        self.max_retries = 1  # Force no retries - run once only
         self.retry_delay = retry_delay
         self.base_url = base_url
         # Disable SDK-internal retries so retry behavior is controlled by this wrapper.

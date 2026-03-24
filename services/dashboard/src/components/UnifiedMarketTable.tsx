@@ -1158,6 +1158,7 @@ function TimelineTab({
   onLoadMore: () => void;
 }) {
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
+  const [showPnLChart, setShowPnLChart] = useState(false);
 
   // Show trades in chronological order (oldest first)
   const chronTrades = useMemo(
@@ -1173,46 +1174,80 @@ function TimelineTab({
   const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
   const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
   const events = useMemo(() => {
-    const tradeEvents = tradesWithRuns.map((item) => ({
-      type: "trade" as const,
-      key: `trade-${item.trade.id}`,
-      sortTs: new Date(item.trade.created_at).getTime(),
-      item,
+    // Only show evaluation events - these represent the actual decisions at each timestep
+    const evaluationEvents = cycleEvaluations.map((evaluation, idx) => ({
+      type: "evaluation" as const,
+      key: `eval-${evaluation.id}-${idx}`,
+      sortTs: evaluation.timestamp ? new Date(evaluation.timestamp).getTime() : Date.now(),
+      evaluation: evaluation,
     }));
-    const predictionEvents = unmatchedRuns.map((run) => ({
-      type: "prediction" as const,
-      key: `prediction-${run.id}`,
-      sortTs: new Date(run.timestamp).getTime(),
-      run,
-    }));
-    return [...tradeEvents, ...predictionEvents].sort((a, b) => a.sortTs - b.sortTs);
-  }, [tradesWithRuns, unmatchedRuns]);
+
+    // Group events by timestamp - events within 1 minute are considered same timestep
+    const grouped = new Map<number, typeof evaluationEvents[0][]>();
+
+    evaluationEvents.forEach(event => {
+      // Round to nearest minute
+      const roundedTs = Math.floor(event.sortTs / 60000) * 60000;
+
+      if (!grouped.has(roundedTs)) {
+        grouped.set(roundedTs, []);
+      }
+      grouped.get(roundedTs)!.push(event);
+    });
+
+    // Convert grouped events to final list
+    const finalEvents: typeof evaluationEvents = [];
+
+    grouped.forEach((eventsAtTime, timestamp) => {
+      if (eventsAtTime.length === 1) {
+        // Single event at this timestamp
+        finalEvents.push(eventsAtTime[0]);
+      } else {
+        // Multiple events at same timestamp - could be position adjustment
+        const sellEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'sell');
+        const buyEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'buy');
+
+        if (sellEvent && buyEvent) {
+          // This is a position adjustment - create a combined event
+          finalEvents.push({
+            ...sellEvent,
+            type: "evaluation" as const,
+            key: `adjustment-${timestamp}`,
+            evaluation: {
+              ...sellEvent.evaluation,
+              action: {
+                type: "adjustment" as any, // Position adjustment
+                description: `SELL ${sellEvent.evaluation.order?.count || 0} → BUY ${buyEvent.evaluation.order?.count || 0}`,
+                reason: "Position adjustment",
+              },
+              // Combine order information
+              adjustment: {
+                sell: sellEvent.evaluation,
+                buy: buyEvent.evaluation,
+              }
+            } as any,
+          });
+        } else {
+          // Not an adjustment, just keep all events
+          finalEvents.push(...eventsAtTime);
+        }
+      }
+    });
+
+    // Sort all events by timestamp, newest first
+    return finalEvents.sort((a, b) => b.sortTs - a.sortTs);
+  }, [cycleEvaluations]);
 
   type TradeEvent = { type: "trade"; key: string; sortTs: number; item: TimelineTradeItem };
   type PredEvent = { type: "prediction"; key: string; sortTs: number; run: ModelRun };
+  type EvalEvent = { type: "evaluation"; key: string; sortTs: number; evaluation: CycleEvaluation };
   type TradeGroupEvent = { type: "trade-group"; key: string; sortTs: number; items: TradeEvent[] };
-  type GroupedTimelineEvent = TradeEvent | PredEvent | TradeGroupEvent;
+  type GroupedTimelineEvent = TradeEvent | PredEvent | EvalEvent | TradeGroupEvent;
 
   const groupedEvents = useMemo((): GroupedTimelineEvent[] => {
-    const result: GroupedTimelineEvent[] = [];
-    let i = 0;
-    while (i < events.length) {
-      const ev = events[i];
-      if (ev.type !== "trade") { result.push(ev as PredEvent); i++; continue; }
-      const group: TradeEvent[] = [ev as TradeEvent];
-      let j = i + 1;
-      while (j < events.length && events[j].type === "trade" && events[j].sortTs - ev.sortTs <= SAME_ACTION_WINDOW_MS) {
-        group.push(events[j] as TradeEvent);
-        j++;
-      }
-      if (group.length > 1) {
-        result.push({ type: "trade-group", key: `group-${ev.key}`, sortTs: ev.sortTs, items: group });
-      } else {
-        result.push(ev as TradeEvent);
-      }
-      i = j;
-    }
-    return result;
+    // Since we only have evaluation events, just return them directly
+    // Later we can group SELL+BUY adjustments if needed
+    return events as EvalEvent[];
   }, [events]);
 
   // Sorted prediction timestamps (oldest first, deduplicated by exact timestamp)
@@ -1299,9 +1334,150 @@ function TimelineTab({
     return map;
   }, [skipGaps]);
 
+  // Pagination state for timeline events
+  const [visibleEventCount, setVisibleEventCount] = useState(10);
+  const paginatedGroupedEvents = useMemo(
+    () => groupedEvents.slice(0, visibleEventCount),
+    [groupedEvents, visibleEventCount]
+  );
+  const hasMoreEvents = groupedEvents.length > visibleEventCount;
+
+  // Calculate P&L data per cycle for the chart
+  const cyclePnLData = useMemo(() => {
+    // Group trades by cycle timestamp (rounded to nearest hour since cycles run hourly)
+    const cycleMap = new Map<number, { timestamp: number; trades: Trade[]; pnl: number }>();
+
+    // Process all trades and group them by cycle
+    chronTrades.forEach(trade => {
+      const tradeTs = new Date(trade.created_at).getTime();
+      // Round to nearest hour (cycle boundary)
+      const cycleTs = Math.floor(tradeTs / (60 * 60 * 1000)) * (60 * 60 * 1000);
+
+      if (!cycleMap.has(cycleTs)) {
+        cycleMap.set(cycleTs, { timestamp: cycleTs, trades: [], pnl: 0 });
+      }
+
+      const cycle = cycleMap.get(cycleTs)!;
+      cycle.trades.push(trade);
+
+      // Calculate P&L for this trade
+      const qty = trade.filled_shares || trade.count;
+      const price = trade.price_cents / 100;
+      const isSell = trade.action?.toUpperCase() === "SELL";
+      // BUY = negative cash flow (spending), SELL = positive cash flow (receiving)
+      const cashFlow = isSell ? qty * price : -(qty * price);
+      cycle.pnl += cashFlow;
+    });
+
+    // Convert to array and sort by timestamp
+    const cycles = Array.from(cycleMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+    // Calculate cumulative P&L
+    let cumulativePnL = 0;
+    const chartData = cycles.map(cycle => {
+      cumulativePnL += cycle.pnl;
+      return {
+        time: new Date(cycle.timestamp).toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          month: 'short',
+          day: 'numeric'
+        }),
+        timestamp: cycle.timestamp,
+        cyclePnL: cycle.pnl,
+        cumulativePnL: cumulativePnL,
+        tradeCount: cycle.trades.length
+      };
+    });
+
+    return chartData;
+  }, [chronTrades]);
+
   // Show both cycle evaluations AND old timeline together
   return (
-    <div className="relative pl-4 max-h-[400px] overflow-y-auto">
+    <div>
+      {/* P&L Chart Toggle */}
+      {cyclePnLData.length > 0 && (
+        <div className="mb-3">
+          <button
+            onClick={() => setShowPnLChart(!showPnLChart)}
+            className="text-[10px] font-medium text-accent hover:text-accent/80 transition-colors"
+          >
+            {showPnLChart ? '▼' : '▶'} P&L per Cycle ({cyclePnLData.length} cycles)
+          </button>
+        </div>
+      )}
+
+      {/* P&L Chart */}
+      {showPnLChart && cyclePnLData.length > 0 && (
+        <div className="mb-4 p-3 bg-t-bg-secondary/30 rounded">
+          <div className="text-[9px] text-txt-muted uppercase tracking-widest font-medium mb-2">
+            Cumulative P&L per Trading Cycle
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={cyclePnLData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
+              <XAxis
+                dataKey="time"
+                tick={{ fontSize: 8, fill: "#888" }}
+                angle={-45}
+                textAnchor="end"
+                height={60}
+              />
+              <YAxis
+                tick={{ fontSize: 8, fill: "#888" }}
+                width={40}
+                tickFormatter={(v) => `$${v.toFixed(0)}`}
+              />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: "#1a1a1a",
+                  border: "1px solid #333",
+                  borderRadius: "4px",
+                }}
+                labelStyle={{ fontSize: 10, color: "#ccc" }}
+                formatter={(value: any, name: string) => {
+                  if (name === "Cumulative P&L") {
+                    const num = Number(value);
+                    return [`$${num.toFixed(2)}`, name];
+                  }
+                  if (name === "Cycle P&L") {
+                    const num = Number(value);
+                    const sign = num >= 0 ? '+' : '';
+                    return [`${sign}$${num.toFixed(2)}`, name];
+                  }
+                  return [value, name];
+                }}
+              />
+              <Line
+                type="stepAfter"
+                dataKey="cumulativePnL"
+                stroke="#22c55e"
+                strokeWidth={2}
+                dot={{ r: 3, fill: "#22c55e" }}
+                name="Cumulative P&L"
+              />
+              <Line
+                type="monotone"
+                dataKey="cyclePnL"
+                stroke="#888"
+                strokeWidth={1}
+                strokeDasharray="5 5"
+                dot={{ r: 2, fill: "#888" }}
+                name="Cycle P&L"
+              />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="mt-2 text-[9px] text-txt-muted">
+            Each point represents net P&L from trades executed in that cycle.
+            Current total: <span className={cyclePnLData.length > 0 ? pnlCls(cyclePnLData[cyclePnLData.length - 1].cumulativePnL) : ''}>
+              ${cyclePnLData.length > 0 ? cyclePnLData[cyclePnLData.length - 1].cumulativePnL.toFixed(2) : '0.00'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="relative pl-4 max-h-[400px] overflow-y-auto">
       <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
 
       {loadingEvaluations && (
@@ -1311,126 +1487,29 @@ function TimelineTab({
         <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
       )}
 
-      {/* Cycle Evaluations Section */}
-      {cycleEvaluations.length > 0 && (
-        <>
-          <div className="text-[10px] font-semibold text-txt-secondary mb-2 mt-1">Cycle Evaluations</div>
-
-        {cycleEvaluations.map((evaluation, idx) => {
-          const isHold = evaluation.action.type === 'hold';
-          const isBuy = evaluation.action.type === 'buy' || (evaluation.action.type === 'dry_run' && evaluation.action.description?.toLowerCase().includes('buy'));
-          const isSell = evaluation.action.type === 'sell' || (evaluation.action.type === 'dry_run' && evaluation.action.description?.toLowerCase().includes('sell'));
-
-          // Parse timestamp
-          const timestamp = evaluation.timestamp ? new Date(evaluation.timestamp) : null;
-          const timeStr = timestamp ? timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
-
-          // Simplify the action text
-          let actionText = evaluation.action.description;
-          if (isHold) actionText = 'HOLD';
-          else if (isBuy && evaluation.action.description?.includes('(dry run)')) actionText = 'BUY (dry run)';
-          else if (isSell && evaluation.action.description?.includes('(dry run)')) actionText = 'SELL (dry run)';
-
-          const edge = evaluation.prediction.edge;
-          const isPositiveEdge = edge != null && edge >= 0;
-          const isNegativeEdge = edge != null && edge < 0;
-
-          return (
-            <div key={`eval-${evaluation.id}-${idx}`} className="relative py-2">
-              {/* Timeline dot - more colorful */}
-              <div className={`absolute left-[-11px] top-[10px] w-2 h-2 rounded-full z-10 ${
-                isHold ? 'bg-accent' : isBuy ? 'bg-profit' : isSell ? 'bg-loss' : 'bg-accent'
-              }`} />
-
-              <div className="text-[12px] leading-relaxed">
-                {/* Main action line */}
-                <div className="flex items-baseline gap-2">
-                  <span className="text-txt-secondary font-medium tabular-nums min-w-[48px]">{timeStr}</span>
-                  <span className={`font-semibold ${
-                    isHold ? 'text-txt-primary' : isBuy ? 'text-profit' : isSell ? 'text-loss' : 'text-txt-primary'
-                  }`}>
-                    {actionText}
-                  </span>
-                  {/* Show order count and filled */}
-                  {evaluation.order && evaluation.order.count > 0 && (
-                    <span className="text-[11px] text-txt-secondary font-mono">
-                      {evaluation.order.filled != null && evaluation.order.filled !== evaluation.order.count ? (
-                        <span className={evaluation.order.filled === 0 ? 'text-txt-muted' : 'text-accent'}>
-                          {evaluation.order.filled}/{evaluation.order.count} filled
-                        </span>
-                      ) : evaluation.order.filled === evaluation.order.count ? (
-                        <span className="text-profit-dim">{evaluation.order.count} filled</span>
-                      ) : (
-                        <span className="text-txt-muted">{evaluation.order.count} ordered</span>
-                      )}
-                    </span>
-                  )}
-                </div>
-
-                {/* Probability details - more colorful with colored edge */}
-                {evaluation.prediction.p_yes != null && evaluation.prediction.yes_ask != null && (
-                  <div className="text-[11px] mt-0.5 pl-[52px] font-mono">
-                    <span className="text-txt-secondary">Model: {(evaluation.prediction.p_yes * 100).toFixed(1)}%</span>
-                    <span className="text-txt-secondary"> | </span>
-                    <span className="text-txt-secondary">Market: YES {(evaluation.prediction.yes_ask * 100).toFixed(1)}%</span>
-                    {evaluation.prediction.no_ask != null && (
-                      <span className="text-txt-secondary"> / NO {(evaluation.prediction.no_ask * 100).toFixed(1)}%</span>
-                    )}
-                    <span className="text-txt-secondary"> | </span>
-                    <span className={edge != null ? (isPositiveEdge ? 'text-profit font-semibold' : 'text-loss font-semibold') : 'text-txt-secondary'}>
-                      Edge: {edge != null ?
-                        `${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%` :
-                        'N/A'}
-                    </span>
-                  </div>
-                )}
-
-                {/* Show reason with better visibility */}
-                {evaluation.action.reason && (
-                  <div className="text-[11px] text-txt-secondary mt-0.5 pl-[52px]">
-                    → {evaluation.action.reason}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-
-          {/* Show more button - more prominent */}
-          {hasMore && (
-            <div className="mt-3 flex justify-center">
-              <button
-                onClick={onLoadMore}
-                disabled={loadingEvaluations}
-                className="px-3 py-1 text-[10px] font-medium text-txt-secondary bg-t-bg-secondary/50 hover:bg-t-bg-secondary hover:text-txt-primary rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loadingEvaluations ? 'Loading...' : `Show more (${totalCycleEvaluations - cycleEvaluations.length} remaining)`}
-              </button>
-            </div>
-          )}
-        </>
+      {/* Show "No predictions yet" if no events */}
+      {!loadingEvaluations && !loadingRuns && events.length === 0 && (
+        <div className="text-[10px] text-txt-muted italic py-4">No predictions yet</div>
       )}
 
-      {/* Old Timeline Section - Trades and Model Predictions */}
+      {/* Unified Timeline Section - Trades, Model Predictions and Cycle Evaluations */}
       {events.length > 0 && (
         <>
-          {cycleEvaluations.length > 0 && (
-            <div className="text-[10px] font-semibold text-txt-secondary mb-2 mt-4 pt-3 border-t border-t-border/50">
-              Historical Timeline
-            </div>
-          )}
 
-      {groupedEvents.map((event, eventIdx) => {
+      {paginatedGroupedEvents.map((event, eventIdx) => {
         const currentRunTs = event.type === "prediction"
           ? new Date(event.run.timestamp).getTime()
-          : event.type === "trade-group"
-            ? event.items[event.items.length - 1].sortTs
-            : event.item.matchedRun
-              ? new Date(event.item.matchedRun.timestamp).getTime()
-              : null;
+          : event.type === "evaluation"
+            ? event.evaluation.timestamp ? new Date(event.evaluation.timestamp).getTime() : null
+            : event.type === "trade-group"
+              ? event.items[event.items.length - 1].sortTs
+              : event.item.matchedRun
+                ? new Date(event.item.matchedRun.timestamp).getTime()
+                : null;
         const nextRunTs = (() => {
-          for (const nextEvent of groupedEvents.slice(eventIdx + 1)) {
+          for (const nextEvent of paginatedGroupedEvents.slice(eventIdx + 1)) {
             if (nextEvent.type === "prediction") return new Date(nextEvent.run.timestamp).getTime();
+            if (nextEvent.type === "evaluation" && nextEvent.evaluation.timestamp) return new Date(nextEvent.evaluation.timestamp).getTime();
             if (nextEvent.type === "trade-group") return nextEvent.items[nextEvent.items.length - 1].sortTs;
             if (nextEvent.type === "trade" && nextEvent.item.matchedRun) return new Date(nextEvent.item.matchedRun.timestamp).getTime();
           }
@@ -1529,6 +1608,199 @@ function TimelineTab({
                   </div>
                 );
               })()}
+              {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
+                const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
+                return (
+                  <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
+                    <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
+                    <div className="w-[100px] flex-shrink-0" />
+                    <div className="text-[9px] text-txt-muted italic">
+                      {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
+                      {isOngoing && " (monitoring continues)"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
+
+        if (event.type === "evaluation") {
+          const { evaluation } = event;
+          const edge = evaluation.prediction?.edge ?? null;
+          const isPositiveEdge = edge != null && edge >= 0;
+          const actionType = evaluation.action?.type?.toUpperCase() ?? "HOLD";
+          const isExpanded = expandedEntryId === event.key;
+          const hasRationale = !!(evaluation.action?.reason || evaluation.action?.description);
+
+          // Check if this is a position adjustment
+          const isAdjustment = actionType === "ADJUSTMENT";
+          const adjustment = (evaluation as any).adjustment;
+
+          if (isAdjustment && adjustment) {
+            // Render position adjustment (SELL + BUY in same timestep)
+            return (
+              <div key={event.key}>
+                <div className="relative py-1.5">
+                  {/* Purple dot for adjustments */}
+                  <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-500 border-2 border-t-bg z-10" />
+
+                  <div className="flex items-start gap-3">
+                    <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                      {evaluation.timestamp ? fmtTime(evaluation.timestamp) : "--:--"}
+                    </div>
+
+                    <div className="flex-1 min-w-0 overflow-hidden">
+                      <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                        <span className="text-[9px] px-1 py-px rounded font-bold bg-purple-900/30 text-purple-400">
+                          ADJUST
+                        </span>
+
+                        {/* Show SELL part */}
+                        <span className="text-loss">
+                          SELL {adjustment.sell.order?.count || 0}
+                        </span>
+                        {adjustment.sell.order && (
+                          <span className={`text-[9px] ${
+                            adjustment.sell.order.filled === adjustment.sell.order.count ? 'text-profit-dim' : 'text-txt-muted'
+                          }`}>
+                            ({adjustment.sell.order.filled}/{adjustment.sell.order.count} filled)
+                          </span>
+                        )}
+
+                        <span className="text-txt-muted">→</span>
+
+                        {/* Show BUY part */}
+                        <span className="text-profit">
+                          BUY {adjustment.buy.order?.count || 0}
+                        </span>
+                        {adjustment.buy.order && (
+                          <span className={`text-[9px] ${
+                            adjustment.buy.order.filled === adjustment.buy.order.count ? 'text-profit-dim' : 'text-txt-muted'
+                          }`}>
+                            ({adjustment.buy.order.filled}/{adjustment.buy.order.count} filled)
+                          </span>
+                        )}
+
+                        {/* Show edge if available */}
+                        {adjustment.buy.prediction?.edge != null && (
+                          <span className={adjustment.buy.prediction.edge >= 0 ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
+                            edge: {adjustment.buy.prediction.edge >= 0 ? '+' : ''}{adjustment.buy.prediction.edge.toFixed(1)}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div key={event.key}>
+              <div className="relative py-1.5">
+                {/* Different colored dot for evaluations - use orange for HOLD, green for BUY, red for SELL */}
+                <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
+                  actionType === "HOLD" ? "bg-orange-400" :
+                  actionType === "BUY" ? "bg-profit" : "bg-loss"
+                }`} />
+
+                <div className="flex items-start gap-3">
+                  <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                    {evaluation.timestamp ? fmtTime(evaluation.timestamp) : "--:--"}
+                  </div>
+
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <button
+                      type="button"
+                      className={`w-full text-left rounded px-1 -mx-1 transition-colors ${
+                        hasRationale ? "cursor-pointer hover:bg-t-panel-hover/40" : ""
+                      }`}
+                      onClick={() => {
+                        if (!hasRationale) return;
+                        setExpandedEntryId(isExpanded ? null : event.key);
+                      }}
+                    >
+                      <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                      {/* Action badge */}
+                      <span className={`text-[9px] px-1 py-px rounded font-bold ${
+                        actionType === "HOLD" ? "bg-yellow-900/30 text-yellow-500" :
+                        actionType === "BUY" ? "bg-profit-dim text-profit" :
+                        "bg-loss-dim text-loss"
+                      }`}>
+                        {actionType}
+                      </span>
+
+                      {/* For BUY/SELL show shares and fill status prominently */}
+                      {evaluation.order && evaluation.order.count > 0 && actionType !== "HOLD" && (
+                        <>
+                          <span className="text-txt-primary font-semibold">
+                            {evaluation.order.count} shares
+                          </span>
+                          {/* Fill status immediately after shares */}
+                          <span className={`text-[10px] font-mono ${
+                            evaluation.order.filled != null && evaluation.order.filled === evaluation.order.count
+                              ? 'text-profit font-semibold'
+                              : evaluation.order.filled != null && evaluation.order.filled > 0
+                              ? 'text-accent font-semibold'
+                              : 'text-txt-muted'
+                          }`}>
+                            {evaluation.order.filled != null ? (
+                              evaluation.order.filled === evaluation.order.count ? (
+                                '✓ filled'
+                              ) : (
+                                `(${evaluation.order.filled}/${evaluation.order.count} filled)`
+                              )
+                            ) : (
+                              'ordered'
+                            )}
+                          </span>
+                        </>
+                      )}
+
+                      {/* Model probability */}
+                      {evaluation.prediction?.p_yes != null && (
+                        <span className="text-accent">
+                          model: {(evaluation.prediction.p_yes * 100).toFixed(0)}%
+                        </span>
+                      )}
+
+                      {/* Market price */}
+                      {evaluation.prediction?.yes_ask != null && (
+                        <span className="text-txt-secondary">
+                          mkt: {(evaluation.prediction.yes_ask * 100).toFixed(0)}c
+                        </span>
+                      )}
+
+                      {/* Edge with color coding */}
+                      {edge != null && (
+                        <span className={isPositiveEdge ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
+                          edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
+                        </span>
+                      )}
+
+                      {/* Show expand indicator if has rationale */}
+                      {hasRationale && (
+                        <span className="text-[8px] text-txt-muted ml-auto">
+                          {isExpanded ? "▲" : "▼"}
+                        </span>
+                      )}
+                    </div>
+                    </button>
+
+                    {/* Expanded rationale section */}
+                    {isExpanded && hasRationale && (
+                      <div className="mt-2 p-2 bg-t-panel-hover/30 rounded text-[10px] text-txt-secondary">
+                        <div className="font-semibold mb-1">Model Rationale:</div>
+                        <div className="text-txt-muted">
+                          {evaluation.action?.reason || evaluation.action?.description || "No rationale available"}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
                 const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
                 return (
@@ -1821,6 +2093,31 @@ function TimelineTab({
           )}
         </div>
       </div>
+
+      {/* Show more button for timeline events */}
+      {hasMoreEvents && (
+        <div className="mt-3 mb-2 flex justify-center">
+          <button
+            onClick={() => setVisibleEventCount(prev => prev + 10)}
+            className="px-3 py-1 text-[10px] font-medium text-txt-secondary bg-t-bg-secondary/50 hover:bg-t-bg-secondary hover:text-txt-primary rounded transition-colors"
+          >
+            Show more ({groupedEvents.length - visibleEventCount} remaining)
+          </button>
+        </div>
+      )}
+
+      {/* Show more button for loading more cycle evaluations from API */}
+      {hasMore && (
+        <div className="mt-1 flex justify-center">
+          <button
+            onClick={onLoadMore}
+            disabled={loadingEvaluations}
+            className="px-3 py-1 text-[10px] font-medium text-accent bg-accent/10 hover:bg-accent/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loadingEvaluations ? 'Loading...' : `Load older evaluations (${totalCycleEvaluations - cycleEvaluations.length} remaining)`}
+          </button>
+        </div>
+      )}
         </>
       )}
 
@@ -1828,6 +2125,7 @@ function TimelineTab({
       {!cycleEvaluations.length && !events.length && !loadingEvaluations && !loadingRuns && (
         <div className="text-[10px] text-txt-muted">No activity for this market</div>
       )}
+      </div>
     </div>
   );
 }
