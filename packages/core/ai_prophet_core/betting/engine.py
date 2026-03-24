@@ -486,7 +486,7 @@ class BettingEngine:
                             held_count, held_side.upper(), ticker, sell_status,
                         )
                         self._save_order(
-                            signal_id=signal_id,
+                            signal_id=None,  # NET sells are not driven by a signal for this market
                             order_id=sell_order_id,
                             ticker=ticker,
                             side=held_side,
@@ -743,7 +743,7 @@ class BettingEngine:
         exchange_order_id: str | None,
         action: str = "BUY",
     ) -> None:
-        if self._engine is None or signal_id is None:
+        if self._engine is None:
             return
 
         from .db import get_session
