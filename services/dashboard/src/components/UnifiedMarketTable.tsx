@@ -1324,39 +1324,49 @@ function TimelineTab({
           else if (isBuy && evaluation.action.description?.includes('(dry run)')) actionText = 'BUY (dry run)';
           else if (isSell && evaluation.action.description?.includes('(dry run)')) actionText = 'SELL (dry run)';
 
+          const edge = evaluation.prediction.edge;
+          const isPositiveEdge = edge != null && edge >= 0;
+          const isNegativeEdge = edge != null && edge < 0;
+
           return (
             <div key={`eval-${evaluation.id}-${idx}`} className="relative py-2">
-              {/* Timeline dot - clean and visible */}
+              {/* Timeline dot - more colorful */}
               <div className={`absolute left-[-11px] top-[10px] w-2 h-2 rounded-full z-10 ${
-                isHold ? 'bg-txt-secondary/60' : isBuy ? 'bg-profit' : isSell ? 'bg-loss' : 'bg-accent'
+                isHold ? 'bg-accent' : isBuy ? 'bg-profit' : isSell ? 'bg-loss' : 'bg-accent'
               }`} />
 
               <div className="text-[12px] leading-relaxed">
                 {/* Main action line */}
                 <div className="flex items-baseline gap-2">
-                  <span className="text-txt-primary/70 font-medium tabular-nums min-w-[48px]">{timeStr}</span>
+                  <span className="text-txt-secondary font-medium tabular-nums min-w-[48px]">{timeStr}</span>
                   <span className={`font-semibold ${
-                    isHold ? 'text-txt-primary/90' : isBuy ? 'text-profit' : isSell ? 'text-loss' : 'text-txt-primary'
+                    isHold ? 'text-txt-primary' : isBuy ? 'text-profit' : isSell ? 'text-loss' : 'text-txt-primary'
                   }`}>
                     {actionText}
                   </span>
                 </div>
 
-                {/* Probability details - always show */}
+                {/* Probability details - more colorful with colored edge */}
                 {evaluation.prediction.p_yes != null && evaluation.prediction.yes_ask != null && (
-                  <div className="text-[11px] text-txt-primary/70 mt-0.5 pl-[52px] font-mono">
-                    Model: {(evaluation.prediction.p_yes * 100).toFixed(1)}% |
-                    Market: YES {(evaluation.prediction.yes_ask * 100).toFixed(1)}%
-                    {evaluation.prediction.no_ask != null && ` / NO ${(evaluation.prediction.no_ask * 100).toFixed(1)}%`} |
-                    Edge: {evaluation.prediction.edge != null ?
-                      `${evaluation.prediction.edge >= 0 ? '+' : ''}${evaluation.prediction.edge.toFixed(1)}%` :
-                      'N/A'}
+                  <div className="text-[11px] mt-0.5 pl-[52px] font-mono">
+                    <span className="text-txt-secondary">Model: {(evaluation.prediction.p_yes * 100).toFixed(1)}%</span>
+                    <span className="text-txt-secondary"> | </span>
+                    <span className="text-txt-secondary">Market: YES {(evaluation.prediction.yes_ask * 100).toFixed(1)}%</span>
+                    {evaluation.prediction.no_ask != null && (
+                      <span className="text-txt-secondary"> / NO {(evaluation.prediction.no_ask * 100).toFixed(1)}%</span>
+                    )}
+                    <span className="text-txt-secondary"> | </span>
+                    <span className={edge != null ? (isPositiveEdge ? 'text-profit font-semibold' : 'text-loss font-semibold') : 'text-txt-secondary'}>
+                      Edge: {edge != null ?
+                        `${edge >= 0 ? '+' : ''}${edge.toFixed(1)}%` :
+                        'N/A'}
+                    </span>
                   </div>
                 )}
 
-                {/* Show reason */}
+                {/* Show reason with better visibility */}
                 {evaluation.action.reason && (
-                  <div className="text-[11px] text-txt-primary/50 mt-0.5 pl-[52px]">
+                  <div className="text-[11px] text-txt-secondary mt-0.5 pl-[52px]">
                     → {evaluation.action.reason}
                   </div>
                 )}
