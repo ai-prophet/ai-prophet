@@ -1326,31 +1326,38 @@ function TimelineTab({
 
           return (
             <div key={`eval-${evaluation.id}-${idx}`} className="relative py-2">
-              {/* Timeline dot - smaller and no border */}
-              <div className={`absolute left-[-10px] top-[11px] w-1.5 h-1.5 rounded-full z-10 ${
+              {/* Timeline dot - clean and visible */}
+              <div className={`absolute left-[-11px] top-[10px] w-2 h-2 rounded-full z-10 ${
                 isHold ? 'bg-txt-secondary/60' : isBuy ? 'bg-profit' : isSell ? 'bg-loss' : 'bg-accent'
               }`} />
 
               <div className="text-[12px] leading-relaxed">
-                {/* Simplified single line with better spacing */}
+                {/* Main action line */}
                 <div className="flex items-baseline gap-2">
-                  <span className="text-txt-primary/70 font-medium tabular-nums">{timeStr}</span>
+                  <span className="text-txt-primary/70 font-medium tabular-nums min-w-[48px]">{timeStr}</span>
                   <span className={`font-semibold ${
                     isHold ? 'text-txt-primary/90' : isBuy ? 'text-profit' : isSell ? 'text-loss' : 'text-txt-primary'
                   }`}>
                     {actionText}
                   </span>
-                  {evaluation.prediction.edge != null && !isHold && (
-                    <span className="text-txt-primary/60 font-mono text-[11px]">
-                      {evaluation.prediction.edge >= 0 ? '+' : ''}{evaluation.prediction.edge.toFixed(1)}%
-                    </span>
-                  )}
                 </div>
 
-                {/* Show reason only - more readable */}
+                {/* Probability details - always show */}
+                {evaluation.prediction.p_yes != null && evaluation.prediction.yes_ask != null && (
+                  <div className="text-[11px] text-txt-primary/70 mt-0.5 pl-[52px] font-mono">
+                    Model: {(evaluation.prediction.p_yes * 100).toFixed(1)}% |
+                    Market: YES {(evaluation.prediction.yes_ask * 100).toFixed(1)}%
+                    {evaluation.prediction.no_ask != null && ` / NO ${(evaluation.prediction.no_ask * 100).toFixed(1)}%`} |
+                    Edge: {evaluation.prediction.edge != null ?
+                      `${evaluation.prediction.edge >= 0 ? '+' : ''}${evaluation.prediction.edge.toFixed(1)}%` :
+                      'N/A'}
+                  </div>
+                )}
+
+                {/* Show reason */}
                 {evaluation.action.reason && (
                   <div className="text-[11px] text-txt-primary/50 mt-0.5 pl-[52px]">
-                    {evaluation.action.reason}
+                    → {evaluation.action.reason}
                   </div>
                 )}
               </div>
