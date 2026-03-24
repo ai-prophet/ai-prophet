@@ -1266,17 +1266,17 @@ function TimelineTab({
           <div className="mb-2 text-[9px] text-txt-muted italic">Loading cycle evaluations...</div>
         )}
 
-        {cycleEvaluations.map((eval, idx) => {
-          const isHold = eval.action.type === 'hold';
-          const isBuy = eval.action.type === 'buy';
-          const isSell = eval.action.type === 'sell';
+        {cycleEvaluations.map((evaluation, idx) => {
+          const isHold = evaluation.action.type === 'hold';
+          const isBuy = evaluation.action.type === 'buy';
+          const isSell = evaluation.action.type === 'sell';
 
           // Parse timestamp
-          const timestamp = eval.timestamp ? new Date(eval.timestamp) : null;
+          const timestamp = evaluation.timestamp ? new Date(evaluation.timestamp) : null;
           const timeStr = timestamp ? timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
 
           return (
-            <div key={`eval-${eval.id}-${idx}`} className="relative py-1.5">
+            <div key={`eval-${evaluation.id}-${idx}`} className="relative py-1.5">
               {/* Timeline dot */}
               <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
                 isHold ? 'bg-txt-muted' : isBuy ? 'bg-success' : isSell ? 'bg-error' : 'bg-accent'
@@ -1287,20 +1287,20 @@ function TimelineTab({
                 <div className={`font-medium ${
                   isHold ? 'text-txt-muted' : isBuy ? 'text-success' : isSell ? 'text-error' : 'text-txt'
                 }`}>
-                  {timeStr} • {eval.action.description}
+                  {timeStr} • {evaluation.action.description}
                 </div>
 
                 {/* Details */}
                 <div className="text-[9px] text-txt-muted mt-0.5">
-                  {eval.prediction.p_yes != null && eval.prediction.yes_ask != null && (
+                  {evaluation.prediction.p_yes != null && evaluation.prediction.yes_ask != null && (
                     <div>
-                      Model: {(eval.prediction.p_yes * 100).toFixed(1)}% |
-                      Market: {(eval.prediction.yes_ask * 100).toFixed(1)}% |
-                      Edge: {eval.prediction.edge != null ? `${eval.prediction.edge.toFixed(1)}%` : 'N/A'}
+                      Model: {(evaluation.prediction.p_yes * 100).toFixed(1)}% |
+                      Market: {(evaluation.prediction.yes_ask * 100).toFixed(1)}% |
+                      Edge: {evaluation.prediction.edge != null ? `${evaluation.prediction.edge.toFixed(1)}%` : 'N/A'}
                     </div>
                   )}
-                  {eval.action.reason && (
-                    <div className="mt-0.5">→ {eval.action.reason}</div>
+                  {evaluation.action.reason && (
+                    <div className="mt-0.5">→ {evaluation.action.reason}</div>
                   )}
                 </div>
               </div>
