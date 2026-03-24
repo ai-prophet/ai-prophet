@@ -1999,7 +1999,8 @@ def get_cycle_evaluations(
                 bo.side as order_side,
                 bo.count as order_count,
                 bo.status as order_status,
-                bo.price_cents as order_price
+                bo.price_cents as order_price,
+                bo.filled_shares as order_filled
             FROM betting_predictions bp
             LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
             LEFT JOIN betting_orders bo ON bo.ticker = tm.ticker
@@ -2083,6 +2084,7 @@ def get_cycle_evaluations(
                 },
                 "order": {
                     "count": row.order_count,
+                    "filled": row.order_filled,
                     "price_cents": row.order_price,
                     "status": row.order_status,
                 } if row.order_id else None,

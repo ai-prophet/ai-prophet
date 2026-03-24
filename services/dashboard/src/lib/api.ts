@@ -438,6 +438,7 @@ export interface CycleEvaluation {
   };
   order: {
     count: number;
+    filled: number;
     price_cents: number;
     status: string;
   } | null;

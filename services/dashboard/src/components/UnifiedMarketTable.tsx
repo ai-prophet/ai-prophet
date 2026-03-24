@@ -1344,6 +1344,20 @@ function TimelineTab({
                   }`}>
                     {actionText}
                   </span>
+                  {/* Show order count and filled */}
+                  {evaluation.order && evaluation.order.count > 0 && (
+                    <span className="text-[11px] text-txt-secondary font-mono">
+                      {evaluation.order.filled != null && evaluation.order.filled !== evaluation.order.count ? (
+                        <span className={evaluation.order.filled === 0 ? 'text-txt-muted' : 'text-accent'}>
+                          {evaluation.order.filled}/{evaluation.order.count} filled
+                        </span>
+                      ) : evaluation.order.filled === evaluation.order.count ? (
+                        <span className="text-profit-dim">{evaluation.order.count} filled</span>
+                      ) : (
+                        <span className="text-txt-muted">{evaluation.order.count} ordered</span>
+                      )}
+                    </span>
+                  )}
                 </div>
 
                 {/* Probability details - more colorful with colored edge */}
