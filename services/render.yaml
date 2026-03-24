@@ -69,6 +69,7 @@ services:
       - fromGroup: kalshi-trading-shared
 
   # ── Trading Worker — Jibang ───────────────────────────────────
+  # Live trading enabled - restart to apply config
   - type: worker
     name: kalshi-trading-worker-jibang
     runtime: python
