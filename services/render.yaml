@@ -19,7 +19,7 @@ envVarGroups:
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
-        value: "false"
+        value: "true"
       - key: GEMINI_API_KEY_HAIFENG
         sync: false
       - key: GEMINI_API_KEY_JIBANG
@@ -32,7 +32,7 @@ envVarGroups:
         sync: false
 
 services:
-  # ── Trading Worker — Haifeng ──────────────────────────────────
+  # ── Trading Worker — Haifeng (DRY RUN) ────────────────────────
   - type: worker
     name: kalshi-trading-worker-haifeng
     runtime: python
@@ -58,6 +58,8 @@ services:
         value: "true"
       - key: WORKER_PEER_INSTANCES
         value: Jibang
+      - key: LIVE_BETTING_DRY_RUN
+        value: "true"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -68,8 +70,46 @@ services:
         sync: false
       - fromGroup: kalshi-trading-shared
 
-  # ── Trading Worker — Jibang ───────────────────────────────────
-  # Live trading enabled - restart to apply config
+  # ── Kalshi Sync Service — Haifeng ────────────────────────────
+  # Independent service to sync positions with Kalshi every 30 minutes
+  - type: worker
+    name: kalshi-sync-service-haifeng
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/kalshi_sync_service.py --instance Haifeng --interval 1800
+    envVars:
+      - key: SYNC_INTERVAL_SEC
+        value: "1800"  # 30 minutes
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── Kalshi Sync Service — Jibang ─────────────────────────────
+  # Independent service to sync positions with Kalshi every 30 minutes
+  - type: worker
+    name: kalshi-sync-service-jibang
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
+    startCommand: python services/kalshi_sync_service.py --instance Jibang --interval 1800
+    envVars:
+      - key: SYNC_INTERVAL_SEC
+        value: "1800"  # 30 minutes
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
+      - fromGroup: kalshi-trading-shared
+
+  # ── Trading Worker — Jibang (DRY RUN) ─────────────────────────
+  # DRY RUN MODE - No live trading
   - type: worker
     name: kalshi-trading-worker-jibang
     runtime: python
@@ -95,6 +135,8 @@ services:
         value: "false"
       - key: WORKER_PEER_INSTANCES
         value: Haifeng
+      - key: LIVE_BETTING_DRY_RUN
+        value: "true"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
