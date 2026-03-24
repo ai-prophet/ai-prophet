@@ -85,6 +85,20 @@ def predict(req: PredictRequest, x_api_key: str = Header(default="")):
 def _build_prompts(market_info: dict, include_market_prices: bool = False) -> tuple[str, str]:
     """Build system and user prompts for market prediction."""
     title = market_info.get("title", "")
+    open_time = market_info.get("open_time")
+
+    # Format open time for display if available
+    open_time_constraint = ""
+    if open_time:
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+            formatted_date = dt.strftime('%B %d, %Y at %H:%M UTC')
+            open_time_constraint = f"\n3. This market was created on {formatted_date} (open_time: {open_time}). You should ONLY predict on the event happening AFTER this date - do not consider events that occurred before the market was created"
+        except (ValueError, AttributeError):
+            open_time_constraint = f"\n3. This market was created at {open_time}. You should ONLY predict on the event happening AFTER this date - do not consider events that occurred before the market was created"
+    else:
+        open_time_constraint = "\n3. You should ONLY predict on the event happening AFTER the market creation date - do not consider events that occurred before the market was created"
 
     system = f"""You are an AI assistant specialized in analyzing and predicting real-world events.
 You have deep expertise in predicting the outcome of the event: "{title}"
@@ -95,7 +109,7 @@ You will be predicting the probability (as a float value from 0 to 1) of ONLY th
 
 IMPORTANT CONSTRAINTS:
 1. You MUST ONLY provide a probability for the exact outcome listed above
-2. Ensure your probability is between 0 and 1
+2. Ensure your probability is between 0 and 1{open_time_constraint}
 
 Your response MUST be in JSON format with the following structure:
 ```json

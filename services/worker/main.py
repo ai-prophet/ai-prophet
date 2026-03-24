@@ -706,6 +706,7 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
             "no_ask": no_ask,
             "last_price": last_price,
             "close_time": mkt.get("close_time"),
+            "open_time": mkt.get("open_time"),
             "volume_24h": mkt.get("volume_24h_fp", 0),
         }
     except Exception as e:
@@ -826,6 +827,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     "no_ask": no_ask,
                     "last_price": last_price,
                     "close_time": close_time_str,
+                    "open_time": mkt.get("open_time"),
                     "volume_24h": volume,
                     "_score": volume + proximity_bonus + urgency_bonus,
                 })
@@ -1456,6 +1458,7 @@ def run_cycle(args) -> None:
                 "category": category,
                 "yes_ask": yes_ask,
                 "no_ask": no_ask,
+                "open_time": market.get("open_time"),
             },
         })
 
