@@ -937,6 +937,13 @@ function ExpandedPanel({
   const [loadingRuns, setLoadingRuns] = useState(false);
   const modelRunsCacheRef = useRef<Map<string, ModelRun[]>>(new Map());
 
+  // Cycle evaluations state (moved up from TimelineTab)
+  const [cycleEvaluations, setCycleEvaluations] = useState<CycleEvaluation[]>([]);
+  const [totalCycleEvaluations, setTotalCycleEvaluations] = useState(0);
+  const [loadingEvaluations, setLoadingEvaluations] = useState(false);
+  const [evaluationsOffset, setEvaluationsOffset] = useState(0);
+  const EVALUATIONS_BATCH_SIZE = 10;
+
   useEffect(() => {
     const cacheKey = `runs:${instanceCacheKey}:${row.market_id}`;
     const cachedRuns = modelRunsCacheRef.current.get(cacheKey);
@@ -960,12 +967,55 @@ function ExpandedPanel({
     return () => { cancelled = true; };
   }, [apiClient, instanceCacheKey, row.market_id]);
 
+  // Fetch cycle evaluations
+  const fetchCycleEvaluations = useCallback((offset: number, append = false) => {
+    // Extract ticker from market_id (format: "kalshi:TICKER")
+    const ticker = row.market_id?.startsWith('kalshi:')
+      ? row.market_id.substring(7)
+      : row.ticker || row.event_ticker || '';
+
+    if (!ticker) return;
+
+    setLoadingEvaluations(true);
+
+    apiClient.getCycleEvaluations(ticker, EVALUATIONS_BATCH_SIZE, offset)
+      .then((data) => {
+        if (append) {
+          setCycleEvaluations(prev => [...prev, ...(data.evaluations || [])]);
+        } else {
+          setCycleEvaluations(data.evaluations || []);
+        }
+        setTotalCycleEvaluations(data.total || 0);
+        setEvaluationsOffset(offset + EVALUATIONS_BATCH_SIZE);
+      })
+      .catch((error) => {
+        console.error('[Timeline] Failed to fetch cycle evaluations:', error);
+        if (!append) {
+          setCycleEvaluations([]);
+        }
+      })
+      .finally(() => {
+        setLoadingEvaluations(false);
+      });
+  }, [apiClient, row.market_id, row.ticker, row.event_ticker]);
+
+  // Fetch initial evaluations when timeline tab is selected
+  useEffect(() => {
+    if (activeTab === "timeline" && cycleEvaluations.length === 0 && !loadingEvaluations) {
+      fetchCycleEvaluations(0);
+    }
+  }, [activeTab, cycleEvaluations.length, loadingEvaluations, fetchCycleEvaluations]);
+
   const timelineCount = useMemo(() => {
+    // Use cycle evaluations count if available, otherwise fall back to old calculation
+    if (totalCycleEvaluations > 0) {
+      return totalCycleEvaluations;
+    }
     const chronTrades = [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const chronRuns = [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
     return tradesWithRuns.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
-  }, [row.trades, modelRuns]);
+  }, [row.trades, modelRuns, totalCycleEvaluations]);
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
     { key: "trades", label: "Trades", count: row.trade_count },
@@ -1016,8 +1066,10 @@ function ExpandedPanel({
             row={row}
             modelRuns={modelRuns}
             loadingRuns={loadingRuns}
-            apiClient={apiClient}
-            instanceCacheKey={instanceCacheKey}
+            cycleEvaluations={cycleEvaluations}
+            loadingEvaluations={loadingEvaluations}
+            hasMore={cycleEvaluations.length < totalCycleEvaluations}
+            onLoadMore={() => fetchCycleEvaluations(evaluationsOffset, true)}
           />
         )}
         {activeTab === "trades" && <TradesTab row={row} />}
@@ -1089,39 +1141,20 @@ function TimelineTab({
   row,
   modelRuns,
   loadingRuns,
-  apiClient,
-  instanceCacheKey,
+  cycleEvaluations,
+  loadingEvaluations,
+  hasMore,
+  onLoadMore,
 }: {
   row: UnifiedMarketRow;
   modelRuns: ModelRun[] | null;
   loadingRuns: boolean;
-  apiClient?: ApiClient;
-  instanceCacheKey?: string;
+  cycleEvaluations: CycleEvaluation[];
+  loadingEvaluations: boolean;
+  hasMore: boolean;
+  onLoadMore: () => void;
 }) {
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
-  const [cycleEvaluations, setCycleEvaluations] = useState<CycleEvaluation[]>([]);
-  const [loadingEvaluations, setLoadingEvaluations] = useState(true);
-
-  // Fetch cycle evaluations for this market
-  useEffect(() => {
-    if (!row.ticker) return;
-
-    // Use provided apiClient or create a default one
-    const client = apiClient || api;
-
-    setLoadingEvaluations(true);
-    client.getCycleEvaluations(row.ticker, 200, 0)
-      .then((data) => {
-        setCycleEvaluations(data.evaluations || []);
-      })
-      .catch((error) => {
-        console.error('Failed to fetch cycle evaluations:', error);
-        setCycleEvaluations([]);
-      })
-      .finally(() => {
-        setLoadingEvaluations(false);
-      });
-  }, [apiClient, row.ticker, instanceCacheKey]);
 
   // Show trades in chronological order (oldest first)
   const chronTrades = useMemo(
@@ -1314,6 +1347,19 @@ function TimelineTab({
             </div>
           );
         })}
+
+        {/* Show more button */}
+        {hasMore && (
+          <div className="mt-3 flex justify-center">
+            <button
+              onClick={onLoadMore}
+              disabled={loadingEvaluations}
+              className="px-3 py-1 text-[10px] font-medium text-txt-secondary hover:text-txt bg-t-bg-secondary/50 hover:bg-t-bg-secondary rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loadingEvaluations ? 'Loading...' : 'Show more'}
+            </button>
+          </div>
+        )}
       </div>
     );
   }
