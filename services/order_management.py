@@ -80,6 +80,95 @@ def cancel_stale_orders(
     return cancelled_count
 
 
+def cancel_partially_filled_orders(
+    db_engine: Engine,
+    adapter,
+    instance_name: str,
+    ticker: str,
+) -> int:
+    """Cancel unfilled portions of partially filled PENDING orders for a specific ticker.
+
+    This prevents double-ordering when rebalancing. If an order for 50 shares is only
+    partially filled with 20 shares, we cancel the remaining 30 before placing a new order.
+
+    Args:
+        db_engine: Database engine
+        adapter: Exchange adapter (KalshiAdapter)
+        instance_name: Instance name to filter orders
+        ticker: Specific ticker to cancel orders for
+
+    Returns:
+        Number of orders cancelled
+    """
+    from ai_prophet_core.betting.db import get_session
+    from ai_prophet_core.betting.db_schema import BettingOrder
+
+    cancelled_count = 0
+
+    with get_session(db_engine) as session:
+        pending_orders = (
+            session.query(BettingOrder)
+            .filter(
+                BettingOrder.instance_name == instance_name,
+                BettingOrder.status == "PENDING",
+                BettingOrder.ticker == ticker,
+            )
+            .all()
+        )
+
+        for order in pending_orders:
+            filled = order.filled_shares or 0
+            requested = order.count
+            unfilled = requested - filled
+
+            # Log whether this is fully unfilled or partially filled
+            if filled > 0 and unfilled > 0:
+                logger.info(
+                    "[ORDER_MGMT] Cancelling partially filled order %s: %d/%d filled, cancelling %d unfilled for %s",
+                    order.order_id[:8],
+                    int(filled),
+                    requested,
+                    int(unfilled),
+                    ticker,
+                )
+            elif unfilled > 0:
+                logger.info(
+                    "[ORDER_MGMT] Cancelling unfilled order %s: 0/%d filled for %s",
+                    order.order_id[:8],
+                    requested,
+                    ticker,
+                )
+
+            try:
+                # Try to cancel on exchange
+                if order.exchange_order_id and unfilled > 0:
+                    try:
+                        adapter.cancel_order(order.exchange_order_id)
+                    except Exception as e:
+                        logger.warning(
+                            "[ORDER_MGMT] Failed to cancel order %s on exchange (may already be filled/cancelled): %s",
+                            order.order_id[:8],
+                            e,
+                        )
+
+                # Mark as cancelled in database
+                order.status = "CANCELLED"
+                cancelled_count += 1
+
+            except Exception as e:
+                logger.error("[ORDER_MGMT] Error cancelling order %s: %s", order.order_id[:8], e)
+
+        if cancelled_count > 0:
+            session.commit()
+            logger.info(
+                "[ORDER_MGMT] Cancelled %d pending order(s) for %s before rebalancing",
+                cancelled_count,
+                ticker,
+            )
+
+    return cancelled_count
+
+
 def reconcile_positions_with_kalshi(
     db_engine: Engine,
     adapter,

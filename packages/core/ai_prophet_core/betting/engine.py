@@ -385,6 +385,27 @@ class BettingEngine:
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
 
+        # --- Cancel any pending orders for this ticker before rebalancing ---
+        # This prevents double-ordering from partially filled or unfilled orders
+        if self._engine is not None and not self.dry_run:
+            try:
+                import sys, os
+                _services = os.path.join(os.path.dirname(__file__), "../../../../services")
+                if _services not in sys.path:
+                    sys.path.insert(0, _services)
+                from order_management import cancel_partially_filled_orders
+
+                cancelled = cancel_partially_filled_orders(
+                    self._engine, adapter, self.instance_name, ticker
+                )
+                if cancelled > 0:
+                    logger.info(
+                        "[BETTING] Cancelled %d pending order(s) for %s before placing new order",
+                        cancelled, ticker
+                    )
+            except Exception as e:
+                logger.warning("[BETTING] Failed to cancel pending orders for %s: %s", ticker, e)
+
         # --- Live ledger state: single DB query for ground-truth position + cash ---
         # Both NET management and the cash check use this so neither is ever stale,
         # even when multiple markets are processed in the same cycle.
