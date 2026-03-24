@@ -3,13 +3,79 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+UTC = timezone.utc
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_pending_order_status(
+    db_engine: Engine,
+    adapter,
+    instance_name: str,
+) -> int:
+    """Check status of pending orders with Kalshi and update DB accordingly.
+
+    Args:
+        db_engine: Database engine
+        adapter: Exchange adapter (KalshiAdapter)
+        instance_name: Instance name to filter orders
+
+    Returns:
+        Number of orders updated
+    """
+    from ai_prophet_core.betting.db import get_session
+    from ai_prophet_core.betting.db_schema import BettingOrder
+
+    updated_count = 0
+
+    with get_session(db_engine) as session:
+        pending_orders = (
+            session.query(BettingOrder)
+            .filter(
+                BettingOrder.instance_name == instance_name,
+                BettingOrder.status == "PENDING",
+            )
+            .all()
+        )
+
+        for order in pending_orders:
+            if not order.exchange_order_id:
+                continue
+
+            try:
+                # Get current order status from Kalshi
+                kalshi_order = adapter.get_order(order.exchange_order_id)
+                if kalshi_order:
+                    # Update DB with actual status
+                    if kalshi_order.status.value != "PENDING":
+                        order.status = kalshi_order.status.value
+                        order.filled_shares = float(kalshi_order.filled_shares)
+                        order.fill_price = float(kalshi_order.fill_price)
+                        updated_count += 1
+                        logger.info(
+                            "[ORDER_MGMT] Updated order %s status: PENDING -> %s (filled: %d shares)",
+                            order.order_id[:8],
+                            kalshi_order.status.value,
+                            int(order.filled_shares),
+                        )
+            except Exception as e:
+                logger.warning(
+                    "[ORDER_MGMT] Failed to check order %s status: %s",
+                    order.order_id[:8],
+                    e,
+                )
+
+        if updated_count > 0:
+            session.commit()
+            logger.info("[ORDER_MGMT] Updated %d pending order statuses from Kalshi", updated_count)
+
+    return updated_count
 
 
 def cancel_stale_orders(
@@ -174,6 +240,7 @@ def reconcile_positions_with_kalshi(
     adapter,
     instance_name: str,
     tolerance_contracts: int = 5,
+    sync_pending_orders: bool = True,
 ) -> dict[str, tuple[int, int]]:
     """Compare database positions with Kalshi reality and report discrepancies.
 
@@ -182,6 +249,7 @@ def reconcile_positions_with_kalshi(
         adapter: Exchange adapter (KalshiAdapter)
         instance_name: Instance name to filter orders
         tolerance_contracts: Number of contracts difference to tolerate before alerting
+        sync_pending_orders: If True, check and update status of pending orders from Kalshi
 
     Returns:
         Dict of ticker -> (db_qty, kalshi_qty) for positions with drift > tolerance
@@ -189,15 +257,20 @@ def reconcile_positions_with_kalshi(
     from ai_prophet_core.betting.db import get_session
     from ai_prophet_core.betting.db_schema import BettingOrder
 
+    # First, sync pending order statuses with Kalshi if requested
+    if sync_pending_orders:
+        _sync_pending_order_status(db_engine, adapter, instance_name)
+
     # Get database positions by replaying orders
     from position_replay import replay_orders_by_ticker
 
     with get_session(db_engine) as session:
+        # Only count FILLED orders for position calculation
         orders = (
             session.query(BettingOrder)
             .filter(
                 BettingOrder.instance_name == instance_name,
-                BettingOrder.status.in_(["FILLED", "PENDING", "DRY_RUN"]),
+                BettingOrder.status == "FILLED",
             )
             .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
             .all()

@@ -831,8 +831,8 @@ function MarketRow({
           {pos ? (
             <span className="flex flex-col items-center gap-0.5">
               <span className="flex items-center gap-1.5">
-                <span className="font-mono text-txt-primary">
-                  {row.target_shares ?? pos.quantity}
+                <span className="font-mono text-txt-primary" title={`Filled position: ${pos.quantity} contracts`}>
+                  {pos.quantity}
                 </span>
                 <span
                   className={`inline-block px-1.5 py-px rounded text-[9px] font-bold tracking-wider ${
@@ -844,12 +844,30 @@ function MarketRow({
                   {pos.contract.toUpperCase()}
                 </span>
               </span>
-              {(row.filled_shares != null || row.pending_shares != null) && (
-                <span className="text-[9px] font-mono text-txt-muted">
-                  {row.filled_shares ?? 0} filled
-                  {row.pending_shares != null && row.pending_shares > 0 && (
-                    <>, {row.pending_shares} pending</>
-                  )}
+              {row.pending_shares != null && row.pending_shares > 0 && (
+                <span className="text-[9px] font-mono text-yellow-400" title="Orders placed but not yet filled">
+                  +{row.pending_shares} pending
+                </span>
+              )}
+              {row.target_shares != null && row.target_shares !== pos.quantity && (
+                <span className={`text-[8px] font-mono ${row.target_shares < pos.quantity ? "text-loss" : "text-profit"}`}
+                  title={`Rebalancing: Target ${row.target_shares} - Current ${pos.quantity} = ${row.target_shares > pos.quantity ? "Buy" : "Sell"} ${Math.abs(row.target_shares - pos.quantity)}`}>
+                  → {row.target_shares} ({row.target_shares > pos.quantity ? "+" : "-"}{Math.abs(row.target_shares - pos.quantity)})
+                </span>
+              )}
+            </span>
+          ) : row.edge && Math.abs(row.edge) > 0.01 ? (
+            <span className="flex flex-col items-center gap-0.5">
+              <span className="font-mono text-txt-muted">0</span>
+              {row.pending_shares != null && row.pending_shares > 0 && (
+                <span className="text-[9px] font-mono text-yellow-400" title="Orders placed but not yet filled">
+                  +{row.pending_shares} pending
+                </span>
+              )}
+              {row.target_shares != null && (
+                <span className="text-[8px] font-mono text-txt-muted"
+                  title={`Target position based on edge: ${row.target_shares}`}>
+                  target: {row.target_shares}
                 </span>
               )}
             </span>
@@ -1140,21 +1158,69 @@ function TimelineTab({
     return Array.from(unique).sort((a, b) => a - b);
   }, [tradesWithRuns, unmatchedRuns]);
 
-  // Build skip gap markers between consecutive predictions and since the last one
+  // Build skip gap markers between consecutive predictions based on CYCLE_SKIPPED events
   const skipGaps = useMemo(() => {
-    const gaps: { afterMs: number; skippedMs: number }[] = [];
-    const checkpoints = [...predTimes, Date.now()];
-    for (let i = 0; i + 1 < checkpoints.length; i++) {
-      const gap = checkpoints[i + 1] - checkpoints[i];
-      if (gap > SKIP_THRESHOLD_MS) {
-        gaps.push({ afterMs: checkpoints[i], skippedMs: gap });
+    const gaps: { afterMs: number; skippedCycles: number; actualCount: boolean }[] = [];
+
+    // Count CYCLE_SKIPPED runs between predictions
+    if (modelRuns) {
+      const sortedRuns = [...modelRuns].sort((a, b) =>
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+
+      let skipCount = 0;
+      let lastPredTime: number | null = null;
+
+      for (const run of sortedRuns) {
+        const runTime = new Date(run.timestamp).getTime();
+
+        if (run.decision === "CYCLE_SKIPPED") {
+          skipCount++;
+        } else if (skipCount > 0) {
+          // Found a non-skip run after skips
+          if (lastPredTime) {
+            gaps.push({
+              afterMs: lastPredTime,
+              skippedCycles: skipCount,
+              actualCount: true
+            });
+          }
+          skipCount = 0;
+          lastPredTime = runTime;
+        } else {
+          lastPredTime = runTime;
+        }
+      }
+
+      // Handle trailing skips (up to current time)
+      if (skipCount > 0 && lastPredTime) {
+        gaps.push({
+          afterMs: lastPredTime,
+          skippedCycles: skipCount,
+          actualCount: true
+        });
+      }
+    } else {
+      // Fallback to time-based estimation if no model runs available
+      const checkpoints = [...predTimes, Date.now()];
+      for (let i = 0; i + 1 < checkpoints.length; i++) {
+        const gap = checkpoints[i + 1] - checkpoints[i];
+        if (gap > SKIP_THRESHOLD_MS) {
+          const estimatedCycles = Math.floor(gap / CYCLE_INTERVAL_MS);
+          gaps.push({
+            afterMs: checkpoints[i],
+            skippedCycles: estimatedCycles,
+            actualCount: false
+          });
+        }
       }
     }
+
     return gaps;
-  }, [predTimes]);
+  }, [predTimes, modelRuns]);
 
   const skipGapsByAfterMs = useMemo(() => {
-    const map = new Map<number, Array<{ afterMs: number; skippedMs: number }>>();
+    const map = new Map<number, Array<{ afterMs: number; skippedCycles: number; actualCount: boolean }>>();
     for (const gap of skipGaps) {
       const existing = map.get(gap.afterMs) ?? [];
       existing.push(gap);
@@ -1285,15 +1351,14 @@ function TimelineTab({
                 );
               })()}
               {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const skippedCycles = Math.floor(gap.skippedMs / CYCLE_INTERVAL_MS);
-                const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
                 const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
                 return (
                   <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
                     <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
                     <div className="w-[100px] flex-shrink-0" />
                     <div className="text-[9px] text-txt-muted italic">
-                      ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
+                      {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
+                      {isOngoing && " (monitoring continues)"}
                     </div>
                   </div>
                 );
@@ -1370,15 +1435,14 @@ function TimelineTab({
               </div>
 
               {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const skippedCycles = Math.floor(gap.skippedMs / CYCLE_INTERVAL_MS);
-                const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
                 const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
                 return (
                   <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
                     <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
                     <div className="w-[100px] flex-shrink-0" />
                     <div className="text-[9px] text-txt-muted italic">
-                      ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
+                      {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
+                      {isOngoing && " (monitoring continues)"}
                     </div>
                   </div>
                 );
@@ -1523,15 +1587,14 @@ function TimelineTab({
             </div>
 
             {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-              const skippedCycles = Math.floor(gap.skippedMs / CYCLE_INTERVAL_MS);
-              const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
               const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
               return (
                 <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
                   <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
                   <div className="w-[100px] flex-shrink-0" />
                   <div className="text-[9px] text-txt-muted italic">
-                    ~{skippedCycles} cycle{skippedCycles !== 1 ? "s" : ""} skipped ({hrs}h) — price flat{isOngoing ? ", no new predictions" : ""}
+                    {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
+                    {isOngoing && " (monitoring continues)"}
                   </div>
                 </div>
               );

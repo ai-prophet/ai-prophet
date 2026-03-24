@@ -202,6 +202,21 @@ class BettingEngine:
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
                 continue
 
+            # Check for HOLD_NOPROFIT signal
+            if signal.side == "hold" and signal.metadata and signal.metadata.get("reason") == "HOLD_NOPROFIT":
+                logger.info(
+                    "[BETTING] %s on %s: p_yes=%.3f → HOLD_NOPROFIT (market outside [3%%, 97%%] range)",
+                    source, market_id, p_yes,
+                )
+                results.append(BetResult(
+                    market_id=market_id,
+                    signal=signal,
+                    order_placed=False,
+                    status="HOLD_NOPROFIT",
+                    message="Market outside profitable range [3%, 97%]"
+                ))
+                continue
+
             # 4. Persist signal
             signal_id = self._save_signal(prediction_id, signal)
 
@@ -318,6 +333,11 @@ class BettingEngine:
         call needed — DRY_RUN orders never affect the real Kalshi balance).
         For LIVE mode: fetches real balance from the adapter (Kalshi already
         deducts for real orders, so we use it directly without subtraction).
+
+        IMPORTANT: Only counts FILLED orders (and DRY_RUN in dry-run mode) for positions.
+        PENDING orders are NOT included in position calculation to avoid discrepancies
+        with partially filled or unfilled orders. Pending orders are cancelled before
+        placing new orders.
         """
         if self._engine is None:
             return None, 0, Decimal(str(self.starting_cash))
@@ -327,12 +347,13 @@ class BettingEngine:
             replay_orders_by_ticker, summarize_replayed_positions = _get_position_replay()
 
             with get_session(self._engine) as session:
-                # Include PENDING orders to prevent double-ordering on unfilled orders.
-                # PENDING orders are treated as if they will fill at the limit price.
+                # Only include FILLED orders (and DRY_RUN in dry-run mode) for position calculation
+                # PENDING orders are not included as they may not fill or may only partially fill
+                status_filter = ["FILLED", "DRY_RUN"] if self.dry_run else ["FILLED"]
                 orders = (
                     session.query(BettingOrder)
                     .filter(BettingOrder.instance_name == self.instance_name)
-                    .filter(BettingOrder.status.in_(["FILLED", "PENDING", "DRY_RUN"]))
+                    .filter(BettingOrder.status.in_(status_filter))
                     .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
                     .all()
                 )

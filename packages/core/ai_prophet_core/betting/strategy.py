@@ -169,7 +169,15 @@ class DefaultBettingStrategy(BettingStrategy):
 
         cost = desired_shares * price
 
-        return BetSignal(side=side, shares=desired_shares, price=price, cost=cost)
+        # Include edge in metadata for tracking entry edge
+        metadata = {
+            "edge": p_yes - yes_ask,  # Current edge (positive for YES, negative for NO)
+            "p_yes": p_yes,
+            "yes_ask": yes_ask,
+            "no_ask": no_ask
+        }
+
+        return BetSignal(side=side, shares=desired_shares, price=price, cost=cost, metadata=metadata)
 
 
 class RebalancingStrategy(BettingStrategy):
@@ -187,6 +195,9 @@ class RebalancingStrategy(BettingStrategy):
 
     Using the real portfolio position instead of in-memory state means the
     strategy survives process restarts and handles partial fills correctly.
+
+    IMPORTANT: The strategy only considers FILLED orders when calculating current position.
+    Pending orders are cancelled before placing new orders to prevent double-ordering.
     """
 
     name = "rebalancing"
@@ -200,6 +211,8 @@ class RebalancingStrategy(BettingStrategy):
 
         Positive = holding YES contracts, negative = holding NO contracts.
         Uses fractional shares (0-1 scale) matching target units.
+
+        NOTE: Only counts FILLED positions, not pending orders.
         """
         port = self.portfolio
         if not port or not port.market_position_side or port.market_position_shares <= 0:
@@ -217,6 +230,31 @@ class RebalancingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
+        # Profitable range filter: Skip markets outside [3%, 97%] range
+        # These have poor risk/reward (e.g., paying 97c to make 3c)
+        MIN_PROFITABLE_PRICE = 0.03
+        MAX_PROFITABLE_PRICE = 0.97
+
+        # Check if market prices are in profitable range
+        if yes_ask < MIN_PROFITABLE_PRICE or yes_ask > MAX_PROFITABLE_PRICE:
+            # Return special signal to indicate HOLD_NOPROFIT
+            return BetSignal(
+                side="hold",
+                shares=0,
+                price=0,
+                cost=0,
+                metadata={"reason": "HOLD_NOPROFIT", "yes_ask": yes_ask}
+            )
+        if no_ask < MIN_PROFITABLE_PRICE or no_ask > MAX_PROFITABLE_PRICE:
+            # Return special signal to indicate HOLD_NOPROFIT
+            return BetSignal(
+                side="hold",
+                shares=0,
+                price=0,
+                cost=0,
+                metadata={"reason": "HOLD_NOPROFIT", "no_ask": no_ask}
+            )
+
         spread = yes_ask + no_ask
         if spread > self.max_spread:
             return None
@@ -286,6 +324,10 @@ class RebalancingStrategy(BettingStrategy):
             price=price,
             cost=cost,
             metadata={
+                "edge": p_yes - yes_ask,  # Current edge at time of signal
+                "p_yes": p_yes,
+                "yes_ask": yes_ask,
+                "no_ask": no_ask,
                 "target": round(target, 6),
                 "current_pos": round(current_pos, 6),
                 "delta": round(delta, 6),

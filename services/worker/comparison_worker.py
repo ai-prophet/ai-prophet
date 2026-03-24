@@ -349,6 +349,8 @@ def _build_ledger_state(db_engine) -> dict | None:
         from ai_prophet_core.betting.db_schema import BettingOrder
 
         with get_session(db_engine) as session:
+            # Only count FILLED and DRY_RUN orders, not PENDING
+            # This ensures consistency with the main worker's ledger state
             orders = (
                 session.query(BettingOrder)
                 .filter(BettingOrder.instance_name == INSTANCE_NAME)
