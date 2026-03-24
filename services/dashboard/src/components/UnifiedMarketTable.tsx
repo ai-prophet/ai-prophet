@@ -1299,15 +1299,22 @@ function TimelineTab({
     return map;
   }, [skipGaps]);
 
-  // If we have cycle evaluations, use those instead of the old events
-  if (cycleEvaluations.length > 0) {
-    return (
-      <div className="relative pl-4 max-h-[400px] overflow-y-auto">
-        <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border-light" />
+  // Show both cycle evaluations AND old timeline together
+  return (
+    <div className="relative pl-4 max-h-[400px] overflow-y-auto">
+      <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
 
-        {loadingEvaluations && (
-          <div className="mb-2 text-[9px] text-txt-muted italic">Loading cycle evaluations...</div>
-        )}
+      {loadingEvaluations && (
+        <div className="mb-2 text-[9px] text-txt-muted italic">Loading cycle evaluations...</div>
+      )}
+      {loadingRuns && !loadingEvaluations && (
+        <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
+      )}
+
+      {/* Cycle Evaluations Section */}
+      {cycleEvaluations.length > 0 && (
+        <>
+          <div className="text-[10px] font-semibold text-txt-secondary mb-2 mt-1">Cycle Evaluations</div>
 
         {cycleEvaluations.map((evaluation, idx) => {
           const isHold = evaluation.action.type === 'hold';
@@ -1389,34 +1396,29 @@ function TimelineTab({
           );
         })}
 
-        {/* Show more button - more prominent */}
-        {hasMore && (
-          <div className="mt-4 flex justify-center">
-            <button
-              onClick={onLoadMore}
-              disabled={loadingEvaluations}
-              className="px-4 py-1.5 text-[11px] font-medium text-txt-primary/80 bg-t-bg-secondary/70 hover:bg-t-bg-secondary hover:text-txt-primary rounded-md transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed border border-t-border/50 hover:border-t-border"
-            >
-              {loadingEvaluations ? 'Loading...' : `Show more (${totalCycleEvaluations - cycleEvaluations.length} remaining)`}
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // Fall back to old display if no cycle evaluations
-  if (!loadingRuns && events.length === 0) {
-    return <div className="text-[10px] text-txt-muted">No activity for this market</div>;
-  }
-
-  return (
-    <div className="relative pl-4 max-h-[400px] overflow-y-auto">
-      <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
-
-      {loadingRuns && (
-        <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
+          {/* Show more button - more prominent */}
+          {hasMore && (
+            <div className="mt-3 flex justify-center">
+              <button
+                onClick={onLoadMore}
+                disabled={loadingEvaluations}
+                className="px-3 py-1 text-[10px] font-medium text-txt-secondary bg-t-bg-secondary/50 hover:bg-t-bg-secondary hover:text-txt-primary rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loadingEvaluations ? 'Loading...' : `Show more (${totalCycleEvaluations - cycleEvaluations.length} remaining)`}
+              </button>
+            </div>
+          )}
+        </>
       )}
+
+      {/* Old Timeline Section - Trades and Model Predictions */}
+      {events.length > 0 && (
+        <>
+          {cycleEvaluations.length > 0 && (
+            <div className="text-[10px] font-semibold text-txt-secondary mb-2 mt-4 pt-3 border-t border-t-border/50">
+              Historical Timeline
+            </div>
+          )}
 
       {groupedEvents.map((event, eventIdx) => {
         const currentRunTs = event.type === "prediction"
@@ -1780,12 +1782,12 @@ function TimelineTab({
         );
       })}
 
-      {/* Current state */}
-      <div className="relative flex items-start gap-3 py-1.5 mt-1 border-t border-t-border/30">
-        <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-txt-secondary border-2 border-t-bg z-10" />
-        <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-          NOW
-        </div>
+          {/* Current state */}
+          <div className="relative flex items-start gap-3 py-1.5 mt-1 border-t border-t-border/30">
+            <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-txt-secondary border-2 border-t-bg z-10" />
+            <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+              NOW
+            </div>
         <div className="flex items-center gap-3 text-[10px] font-mono">
           {row.position && row.position.quantity > 0 ? (
             (() => {
@@ -1819,6 +1821,13 @@ function TimelineTab({
           )}
         </div>
       </div>
+        </>
+      )}
+
+      {/* Show "No activity" only if both are empty */}
+      {!cycleEvaluations.length && !events.length && !loadingEvaluations && !loadingRuns && (
+        <div className="text-[10px] text-txt-muted">No activity for this market</div>
+      )}
     </div>
   );
 }
