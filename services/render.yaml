@@ -19,7 +19,7 @@ envVarGroups:
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: GEMINI_API_KEY_HAIFENG
         sync: false
       - key: GEMINI_API_KEY_JIBANG
