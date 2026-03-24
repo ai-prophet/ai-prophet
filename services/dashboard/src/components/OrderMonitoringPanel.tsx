@@ -92,7 +92,7 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
             <span className="text-lg">⚠️</span>
             <span>
               {orderData.stale_orders.length > 0 &&
-                `${orderData.stale_orders.length} stale order(s) detected. `}
+                `${orderData.stale_orders.length} stale order(s) detected (>60min). Will be cancelled and reordered next cycle. `}
               {alertData.has_critical_alerts && `${alertData.alert_count} system alert(s).`}
             </span>
           </div>
@@ -167,6 +167,11 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
                   >
                     {order.count} {order.side.toUpperCase()}
                   </span>
+                  {order.is_stale && (
+                    <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-orange-500/20 text-orange-400 border border-orange-500/40">
+                      WILL REORDER
+                    </span>
+                  )}
                   <span className="text-txt-muted">@ {order.price_cents}¢</span>
                 </div>
                 <div className="flex items-center gap-2">
