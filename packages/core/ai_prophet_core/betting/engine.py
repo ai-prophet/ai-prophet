@@ -445,7 +445,17 @@ class BettingEngine:
                 sell_price = yes_ask if held_side == "yes" else no_ask
                 sell_price_cents = max(1, min(99, round(sell_price * 100)))
 
-                if count <= held_count:
+                # SAFETY CHECK: Verify we actually have shares to sell
+                # The position replay might report incorrect quantities
+                if held_count <= 0:
+                    logger.warning(
+                        "[BETTING] OVERSELL PREVENTED for %s: tried to sell %d %s but have 0 shares",
+                        ticker, count, held_side.upper()
+                    )
+                    # Skip the sell, just buy the wanted side
+                    action = "BUY"
+                    effective_side = want_side.upper()
+                elif count <= held_count:
                     # Just sell some of the existing opposite position
                     action = "SELL"
                     effective_side = held_side.upper()
