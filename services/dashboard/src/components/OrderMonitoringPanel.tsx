@@ -5,8 +5,10 @@ import { useEffect, useState } from "react";
 interface PendingOrder {
   order_id: string;
   ticker: string;
+  market_title?: string;
   side: string;
   count: number;
+  filled_shares?: number;
   price_cents: number;
   created_at: string;
   age_minutes: number;
@@ -152,44 +154,61 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
             {orderData.pending_orders.slice(0, 10).map((order) => (
               <div
                 key={order.order_id}
-                className={`flex items-center justify-between p-2 rounded text-xs ${
+                className={`p-3 rounded text-xs ${
                   order.is_stale ? "bg-red-500/10 border border-red-500/30" : "bg-bg-secondary"
                 }`}
               >
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-txt-secondary">{order.ticker}</span>
-                  <span
-                    className={`px-1.5 py-0.5 rounded ${
-                      order.side === "yes"
-                        ? "bg-green-500/20 text-green-400"
-                        : "bg-red-500/20 text-red-400"
-                    }`}
-                  >
-                    {order.count} {order.side.toUpperCase()}
-                  </span>
-                  {order.is_stale && (
-                    <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-orange-500/20 text-orange-400 border border-orange-500/40">
-                      WILL REORDER
+                {/* Market Title */}
+                {order.market_title && (
+                  <div className="text-txt-primary text-[11px] font-medium mb-1.5 truncate">
+                    {order.market_title}
+                  </div>
+                )}
+
+                {/* Order Details Row */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-txt-secondary text-[10px]">{order.ticker}</span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded ${
+                        order.side === "yes"
+                          ? "bg-green-500/20 text-green-400"
+                          : "bg-red-500/20 text-red-400"
+                      }`}
+                    >
+                      {order.count} {order.side.toUpperCase()}
                     </span>
-                  )}
-                  <span className="text-txt-muted">@ {order.price_cents}¢</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`${
-                      order.is_stale ? "text-red-400 font-medium" : "text-txt-muted"
-                    }`}
-                  >
-                    {order.age_minutes < 60
-                      ? `${Math.floor(order.age_minutes)}m`
-                      : `${(order.age_minutes / 60).toFixed(1)}h`}
-                  </span>
-                  {order.is_stale && (
-                    <span className="text-[10px] px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">
-                      STALE
+                    {order.is_stale && (
+                      <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-orange-500/20 text-orange-400 border border-orange-500/40">
+                        WILL REORDER
+                      </span>
+                    )}
+                    <span className="text-txt-muted">@ {order.price_cents}¢</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`${
+                        order.is_stale ? "text-red-400 font-medium" : "text-txt-muted"
+                      }`}
+                    >
+                      {order.age_minutes < 60
+                        ? `${Math.floor(order.age_minutes)}m`
+                        : `${(order.age_minutes / 60).toFixed(1)}h`}
                     </span>
-                  )}
+                    {order.is_stale && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">
+                        STALE
+                      </span>
+                    )}
+                  </div>
                 </div>
+
+                {/* Partial Fill Info */}
+                {order.filled_shares && order.filled_shares > 0 && (
+                  <div className="mt-1.5 text-[10px] text-blue-400">
+                    ⓘ Partial fill: {order.filled_shares}/{order.count} shares filled
+                  </div>
+                )}
               </div>
             ))}
           </div>

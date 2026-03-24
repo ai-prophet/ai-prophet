@@ -2245,15 +2245,32 @@ def get_order_monitoring(instance_name: str | None = Query(None)) -> dict[str, A
             .all()
         )
 
+        # Get market titles for context
+        market_titles = {}
+        for order in pending_orders:
+            if order.ticker not in market_titles:
+                market = (
+                    session.query(TradingMarket)
+                    .filter(TradingMarket.ticker == order.ticker)
+                    .first()
+                )
+                if market:
+                    market_titles[order.ticker] = market.title or order.ticker
+                else:
+                    market_titles[order.ticker] = order.ticker
+
         # Format pending orders with age
         pending_list = []
         for order in pending_orders:
             age_minutes = (now - order.created_at).total_seconds() / 60
+            filled = order.filled_shares or 0
             pending_list.append({
                 "order_id": order.order_id,
                 "ticker": order.ticker,
+                "market_title": market_titles.get(order.ticker, order.ticker),
                 "side": order.side,
                 "count": order.count,
+                "filled_shares": filled,
                 "price_cents": order.price_cents,
                 "created_at": order.created_at.isoformat(),
                 "age_minutes": round(age_minutes, 1),
