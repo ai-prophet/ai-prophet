@@ -20,7 +20,7 @@ import type {
   ModelRun,
   CycleEvaluation,
 } from "@/lib/api";
-import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl } from "@/lib/api";
+import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
 // ── Shared helpers ──────────────────────────────────────────
@@ -1104,12 +1104,19 @@ function TimelineTab({
 
   // Fetch cycle evaluations for this market
   useEffect(() => {
-    if (!apiClient || !row.ticker) return;
+    if (!row.ticker) return;
+
+    // Use provided apiClient or create a default one
+    const client = apiClient || api;
 
     setLoadingEvaluations(true);
-    apiClient.getCycleEvaluations(row.ticker, 200, 0)
+    client.getCycleEvaluations(row.ticker, 200, 0)
       .then((data) => {
         setCycleEvaluations(data.evaluations || []);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch cycle evaluations:', error);
+        setCycleEvaluations([]);
       })
       .finally(() => {
         setLoadingEvaluations(false);
