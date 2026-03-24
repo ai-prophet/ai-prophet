@@ -2180,20 +2180,56 @@ def main() -> None:
                 hours_to_wait = ((max_cycle_end_aware - next_hour).total_seconds() / 3600) + 1
                 next_hour = next_hour + timedelta(hours=int(hours_to_wait))
                 seconds_until_next_hour = (next_hour - now).total_seconds()
-                logger.info(
-                    "Sync: peers still running, waiting until %s (%.0f seconds)",
-                    next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
-                )
+                # Show local time too
+                try:
+                    import zoneinfo
+                    local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+                    next_hour_local = next_hour.astimezone(local_tz)
+                    logger.info(
+                        "Sync: peers still running, waiting until %s UTC / %s PST (%.0f seconds)",
+                        next_hour.strftime("%H:%M"),
+                        next_hour_local.strftime("%H:%M"),
+                        seconds_until_next_hour
+                    )
+                except:
+                    logger.info(
+                        "Sync: peers still running, waiting until %s UTC (%.0f seconds)",
+                        next_hour.strftime("%H:%M"), seconds_until_next_hour
+                    )
             else:
-                logger.info(
-                    "Next cycle will run at the top of the hour: %s (%.0f seconds)",
-                    next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
-                )
+                # Show local time too
+                try:
+                    import zoneinfo
+                    local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+                    next_hour_local = next_hour.astimezone(local_tz)
+                    logger.info(
+                        "Next cycle will run at the top of the hour: %s UTC / %s PST (%.0f seconds)",
+                        next_hour.strftime("%H:%M"),
+                        next_hour_local.strftime("%H:%M"),
+                        seconds_until_next_hour
+                    )
+                except:
+                    logger.info(
+                        "Next cycle will run at the top of the hour: %s UTC (%.0f seconds)",
+                        next_hour.strftime("%H:%M"), seconds_until_next_hour
+                    )
         else:
-            logger.info(
-                "Next cycle will run at the top of the hour: %s (%.0f seconds)",
-                next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
-            )
+            # Show local time too
+            try:
+                import zoneinfo
+                local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+                next_hour_local = next_hour.astimezone(local_tz)
+                logger.info(
+                    "Next cycle will run at the top of the hour: %s UTC / %s PST (%.0f seconds)",
+                    next_hour.strftime("%H:%M"),
+                    next_hour_local.strftime("%H:%M"),
+                    seconds_until_next_hour
+                )
+            except:
+                logger.info(
+                    "Next cycle will run at the top of the hour: %s UTC (%.0f seconds)",
+                    next_hour.strftime("%H:%M"), seconds_until_next_hour
+                )
 
         # Sleep until the next hour, checking for shutdown every second
         for _ in range(int(seconds_until_next_hour)):

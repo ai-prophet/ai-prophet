@@ -594,10 +594,22 @@ def main() -> None:
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         seconds_until_next_hour = int((next_hour - now).total_seconds())
 
-        logger.info(
-            "Next cycle will run at the top of the hour: %s (%d seconds)",
-            next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
-        )
+        # Show local time too
+        try:
+            import zoneinfo
+            local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+            next_hour_local = next_hour.astimezone(local_tz)
+            logger.info(
+                "Next cycle will run at the top of the hour: %s UTC / %s PST (%d seconds)",
+                next_hour.strftime("%H:%M"),
+                next_hour_local.strftime("%H:%M"),
+                seconds_until_next_hour
+            )
+        except:
+            logger.info(
+                "Next cycle will run at the top of the hour: %s UTC (%d seconds)",
+                next_hour.strftime("%H:%M"), seconds_until_next_hour
+            )
 
         # Sleep until the next hour, checking for shutdown every second
         for _ in range(seconds_until_next_hour):
