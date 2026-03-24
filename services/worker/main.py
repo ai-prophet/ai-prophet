@@ -610,20 +610,25 @@ def _fetch_raw_market(adapter, ticker: str) -> dict | None:
 
 
 def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
-    """Fetch the resolution result from Kalshi and update the DB."""
+    """Fetch the resolution result from Kalshi and update the DB, then settle all open positions."""
     try:
         from ai_prophet_core.betting.db import get_session as _gs
-        from db_models import TradingMarket as _TM
+        from db_models import TradingMarket as _TM, TradingPosition as _TP, BettingOrder as _BO
 
         mkt = _fetch_raw_market(adapter, ticker)
         if mkt is None:
             return
 
         result = mkt.get("result", "")  # "yes", "no", or ""
+        if not result:
+            logger.warning("  Market %s closed but no resolution result yet", ticker)
+            return
+
         last_price = 1.0 if result == "yes" else 0.0
 
         market_id = f"kalshi:{ticker}"
         with _gs(db_engine) as session:
+            # 1. Update market prices to settlement value
             row = session.query(_TM).filter_by(
                 instance_name=INSTANCE_NAME, market_id=market_id,
             ).first()
@@ -634,7 +639,61 @@ def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
                 row.no_ask = 1.0 - last_price
                 row.no_bid = 1.0 - last_price
                 row.updated_at = datetime.now(UTC)
-                logger.info("  Marked %s as resolved → %s (last_price=%.1f)", ticker, result or "unknown", last_price)
+
+            # 2. Settle all open positions for this market (for ALL instances, not just current)
+            positions = session.query(_TP).filter_by(market_id=market_id).all()
+            settled_count = 0
+            total_realized_pnl = 0.0
+
+            for pos in positions:
+                if pos.quantity <= 0:
+                    continue  # Already closed
+
+                # Save original quantity before we zero it
+                original_qty = pos.quantity
+
+                # Calculate settlement P&L
+                # YES positions settle at $1.00, NO positions settle at $0.00
+                settlement_price = last_price if pos.contract == "yes" else (1.0 - last_price)
+                pnl_per_share = settlement_price - pos.avg_price
+                settlement_pnl = pnl_per_share * original_qty
+
+                # Update position: close quantity and realize P&L
+                pos.realized_pnl = (pos.realized_pnl or 0.0) + settlement_pnl
+                pos.unrealized_pnl = 0.0
+                pos.quantity = 0.0
+                pos.realized_trades += 1
+                pos.updated_at = datetime.now(UTC)
+
+                settled_count += 1
+                total_realized_pnl += settlement_pnl
+
+                # 3. Log a settlement order in betting_orders for audit trail
+                settlement_order = _BO(
+                    instance_name=pos.instance_name,
+                    market_id=market_id,
+                    ticker=ticker,
+                    side="sell",  # Settlement is like selling at final price
+                    contract=pos.contract,
+                    price=settlement_price,
+                    quantity=original_qty,
+                    status="SETTLED",
+                    filled_quantity=original_qty,
+                    fill_price=settlement_price,
+                    created_at=datetime.now(UTC),
+                )
+                session.add(settlement_order)
+
+            session.commit()
+
+            if settled_count > 0:
+                logger.info(
+                    "  Settled %s → %s (price=%.2f): %d positions closed, total P&L: $%.2f",
+                    ticker, result, last_price, settled_count, total_realized_pnl
+                )
+            else:
+                logger.info("  Marked %s as resolved → %s (last_price=%.1f), no open positions to settle",
+                           ticker, result or "unknown", last_price)
     except Exception as e:
         logger.warning("  Failed to mark %s resolved: %s", ticker, e)
 
