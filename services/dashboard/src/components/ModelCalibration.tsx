@@ -107,7 +107,7 @@ export function ModelCalibration({
       </div>
 
       {/* Summary stat cards */}
-      <div className="grid grid-cols-4 gap-2 p-3 border-b border-t-border/50">
+      <div className="grid grid-cols-5 gap-2 p-3 border-b border-t-border/50">
         <StatCard
           label="Realized P&L"
           value={fmtDollar(summary.total_pnl)}
@@ -135,6 +135,22 @@ export function ModelCalibration({
           sub="on deployed capital"
           valueClass={
             summary.total_pnl > 0 ? "text-profit" : summary.total_pnl < 0 ? "text-loss" : "text-txt-primary"
+          }
+        />
+        <StatCard
+          label="Brier Score"
+          value={summary.brier_score !== undefined ? summary.brier_score.toFixed(3) : "—"}
+          sub={
+            summary.market_baseline_brier !== undefined
+              ? `vs ${summary.market_baseline_brier.toFixed(3)} market`
+              : undefined
+          }
+          valueClass={
+            summary.brier_score !== undefined && summary.market_baseline_brier !== undefined
+              ? summary.brier_score < summary.market_baseline_brier
+                ? "text-profit"
+                : "text-loss"
+              : "text-txt-primary"
           }
         />
       </div>

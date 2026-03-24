@@ -1510,17 +1510,70 @@ def get_resolved_markets(
         loss_count = sum(1 for r in with_pos if r["pnl"] < 0)
         win_rate = round(win_count / len(with_pos) * 100, 1) if with_pos else 0.0
 
+        # Compute Brier scores for resolved markets
+        brier_score: float | None = None
+        market_baseline_brier: float | None = None
+
+        if markets:
+            resolved_market_ids = {m.market_id: m.last_price for m in markets}
+            predictions = (
+                _instance_query(session, BettingPrediction, resolved_instance)
+                .filter(BettingPrediction.market_id.in_(list(resolved_market_ids.keys())))
+                .all()
+            )
+
+            # Deduplicate: latest prediction per market per source
+            latest_by_market: dict[tuple[str, str], BettingPrediction] = {}
+            for p in predictions:
+                key = (p.market_id, p.source)
+                if key not in latest_by_market or p.created_at > latest_by_market[key].created_at:
+                    latest_by_market[key] = p
+
+            # Model Brier score
+            model_brier_sum = 0.0
+            model_count = 0
+            for p in latest_by_market.values():
+                outcome = resolved_market_ids.get(p.market_id)
+                if outcome is not None:
+                    model_brier_sum += (p.p_yes - outcome) ** 2
+                    model_count += 1
+
+            # Market baseline Brier score (yes_ask)
+            seen_markets: set[str] = set()
+            market_brier_sum = 0.0
+            market_count = 0
+            for p in latest_by_market.values():
+                if p.market_id in seen_markets:
+                    continue
+                seen_markets.add(p.market_id)
+                outcome = resolved_market_ids.get(p.market_id)
+                if outcome is not None:
+                    market_brier_sum += (p.yes_ask - outcome) ** 2
+                    market_count += 1
+
+            if model_count > 0:
+                brier_score = round(model_brier_sum / model_count, 6)
+            if market_count > 0:
+                market_baseline_brier = round(market_brier_sum / market_count, 6)
+
+        summary: dict[str, Any] = {
+            "total_pnl": total_pnl,
+            "total_markets": len(rows),
+            "markets_with_position": len(with_pos),
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "total_capital": total_capital,
+            "win_rate": win_rate,
+        }
+
+        if brier_score is not None:
+            summary["brier_score"] = brier_score
+        if market_baseline_brier is not None:
+            summary["market_baseline_brier"] = market_baseline_brier
+
         return {
             "markets": rows,
-            "summary": {
-                "total_pnl": total_pnl,
-                "total_markets": len(rows),
-                "markets_with_position": len(with_pos),
-                "win_count": win_count,
-                "loss_count": loss_count,
-                "total_capital": total_capital,
-                "win_rate": win_rate,
-            },
+            "summary": summary,
         }
 
 

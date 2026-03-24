@@ -342,6 +342,8 @@ export interface ResolvedMarketsSummary {
   loss_count: number;
   total_capital: number;
   win_rate: number;
+  brier_score?: number;
+  market_baseline_brier?: number;
 }
 
 export interface ResolvedMarketsData {
