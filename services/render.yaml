@@ -39,7 +39,7 @@ services:
     region: oregon
     plan: starter
     rootDir: .
-    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
     startCommand: python services/worker/main.py
     envVars:
       - key: TRADING_INSTANCE_NAME
@@ -76,7 +76,7 @@ services:
     region: oregon
     plan: starter
     rootDir: .
-    buildCommand: pip install -r services/worker/requirements.txt && pip install -e packages/core
+    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
     startCommand: python services/worker/main.py
     envVars:
       - key: TRADING_INSTANCE_NAME
