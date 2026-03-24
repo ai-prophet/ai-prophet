@@ -1960,6 +1960,154 @@ def clear_all_alerts(req: AlertClearAllRequest) -> dict[str, Any]:
     return {"ok": True, "cleared": cleared, "instance_name": resolved_instance}
 
 
+# ── GET /cycle-evaluations ────────────────────────────────────────
+
+
+@app.get("/cycle-evaluations")
+def get_cycle_evaluations(
+    ticker: str | None = Query(None, description="Filter by market ticker"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    instance_name: str | None = Query(None),
+) -> dict[str, Any]:
+    """Get all cycle evaluations including holds, buys, and sells.
+
+    Shows every time the comparison worker evaluated a market,
+    what it predicted, and what decision was made.
+    """
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+
+    with get_session(engine) as session:
+        evaluations = []
+
+        # Get ALL predictions - each one represents a cycle evaluation
+        # If there's no associated order, it was a HOLD decision
+        query = text("""
+            SELECT
+                bp.id as pred_id,
+                bp.market_id,
+                bp.p_yes,
+                bp.yes_ask,
+                bp.no_ask,
+                bp.source as model_name,
+                bp.created_at as eval_time,
+                tm.ticker as market_ticker,
+                tm.title as market_title,
+                bo.id as order_id,
+                bo.action as order_action,
+                bo.side as order_side,
+                bo.count as order_count,
+                bo.status as order_status,
+                bo.price_cents as order_price
+            FROM betting_predictions bp
+            LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
+            LEFT JOIN betting_orders bo ON bo.ticker = tm.ticker
+                AND bo.instance_name = bp.instance_name
+                AND bo.created_at BETWEEN bp.created_at - INTERVAL '1 minute' AND bp.created_at + INTERVAL '1 minute'
+            WHERE bp.instance_name = :instance
+            AND (:ticker IS NULL OR tm.ticker = :ticker)
+            ORDER BY bp.created_at DESC
+            LIMIT :limit OFFSET :offset
+        """)
+
+        result = session.execute(
+            query,
+            {
+                "instance": resolved_instance,
+                "ticker": ticker,
+                "limit": limit,
+                "offset": offset
+            }
+        )
+
+        for row in result:
+            market_ticker = row.market_ticker
+
+            # Calculate edge from p_yes and market prices
+            edge = None
+            if row.p_yes is not None and row.yes_ask is not None:
+                # Edge = prediction - market ask price
+                edge = (row.p_yes - row.yes_ask) * 100  # Convert to percentage
+
+            # Determine the action taken based on whether an order exists
+            if row.order_id:
+                # An order was placed
+                if row.order_status == "FILLED":
+                    action_taken = f"{row.order_action} {row.order_count} {row.order_side}"
+                    action_type = row.order_action.lower()
+                elif row.order_status == "DRY_RUN":
+                    action_taken = f"{row.order_action} {row.order_count} {row.order_side} (dry run)"
+                    action_type = "dry_run"
+                else:
+                    action_taken = f"{row.order_action} {row.order_count} {row.order_side} (pending)"
+                    action_type = "pending"
+            else:
+                # No order = HOLD decision
+                action_taken = "HOLD"
+                action_type = "hold"
+
+            # Determine reason for action/inaction
+            edge_info = None
+            if edge is not None:
+                if action_type == "hold":
+                    # Explain why it was held
+                    if abs(edge) < 3:  # Assuming 3% threshold
+                        edge_info = f"Edge {edge:.1f}% < 3% threshold"
+                    elif row.p_yes > 0.95 or row.p_yes < 0.05:
+                        edge_info = f"Edge {edge:.1f}% (extreme probability)"
+                    else:
+                        edge_info = f"Edge {edge:.1f}% (position/capital limit)"
+                else:
+                    edge_info = f"Edge {edge:.1f}% → {action_type}"
+
+            evaluations.append({
+                "id": row.pred_id,
+                "ticker": market_ticker,
+                "market_id": row.market_id,
+                "market_title": row.market_title,
+                "timestamp": row.eval_time.isoformat() if row.eval_time else None,
+                "model": row.model_name,
+                "prediction": {
+                    "p_yes": float(row.p_yes) if row.p_yes else None,
+                    "edge": edge,
+                    "yes_ask": float(row.yes_ask) if row.yes_ask else None,
+                    "no_ask": float(row.no_ask) if row.no_ask else None,
+                },
+                "action": {
+                    "type": action_type,
+                    "description": action_taken,
+                    "reason": edge_info,
+                },
+                "order": {
+                    "count": row.order_count,
+                    "price_cents": row.order_price,
+                    "status": row.order_status,
+                } if row.order_id else None,
+            })
+
+        # Get total count for pagination
+        count_query = text("""
+            SELECT COUNT(*)
+            FROM betting_predictions bp
+            LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
+            WHERE bp.instance_name = :instance
+            AND (:ticker IS NULL OR tm.ticker = :ticker)
+        """)
+
+        total = session.execute(
+            count_query,
+            {"instance": resolved_instance, "ticker": ticker}
+        ).scalar() or 0
+
+        return {
+            "evaluations": evaluations,
+            "total": total,
+            "has_more": offset + limit < total,
+            "ticker": ticker,
+        }
+
+
 # ── GET /predictions/{market_id} ─────────────────────────────────
 
 

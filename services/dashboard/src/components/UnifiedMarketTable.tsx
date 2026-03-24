@@ -18,6 +18,7 @@ import type {
   UnifiedMarketRow,
   PriceHistoryPoint,
   ModelRun,
+  CycleEvaluation,
 } from "@/lib/api";
 import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
@@ -1011,7 +1012,13 @@ function ExpandedPanel({
       {/* Tab content */}
       <div className="px-4 py-3">
         {activeTab === "timeline" && (
-          <TimelineTab row={row} modelRuns={modelRuns} loadingRuns={loadingRuns} />
+          <TimelineTab
+            row={row}
+            modelRuns={modelRuns}
+            loadingRuns={loadingRuns}
+            apiClient={apiClient}
+            instanceCacheKey={instanceCacheKey}
+          />
         )}
         {activeTab === "trades" && <TradesTab row={row} />}
         {activeTab === "models" && (
@@ -1082,12 +1089,32 @@ function TimelineTab({
   row,
   modelRuns,
   loadingRuns,
+  apiClient,
+  instanceCacheKey,
 }: {
   row: UnifiedMarketRow;
   modelRuns: ModelRun[] | null;
   loadingRuns: boolean;
+  apiClient?: ApiClient;
+  instanceCacheKey?: string;
 }) {
   const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
+  const [cycleEvaluations, setCycleEvaluations] = useState<CycleEvaluation[]>([]);
+  const [loadingEvaluations, setLoadingEvaluations] = useState(true);
+
+  // Fetch cycle evaluations for this market
+  useEffect(() => {
+    if (!apiClient || !row.ticker) return;
+
+    setLoadingEvaluations(true);
+    apiClient.getCycleEvaluations(row.ticker, 200, 0)
+      .then((data) => {
+        setCycleEvaluations(data.evaluations || []);
+      })
+      .finally(() => {
+        setLoadingEvaluations(false);
+      });
+  }, [apiClient, row.ticker, instanceCacheKey]);
 
   // Show trades in chronological order (oldest first)
   const chronTrades = useMemo(

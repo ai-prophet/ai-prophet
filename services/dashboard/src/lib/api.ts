@@ -418,6 +418,38 @@ export interface ComparisonModelsData {
   timestamp: string;
 }
 
+export interface CycleEvaluation {
+  id: number;
+  ticker: string | null;
+  market_id: string;
+  market_title: string | null;
+  timestamp: string | null;
+  model: string | null;
+  prediction: {
+    p_yes: number | null;
+    edge: number | null;
+    yes_ask: number | null;
+    no_ask: number | null;
+  };
+  action: {
+    type: "buy" | "sell" | "hold" | "dry_run" | "pending";
+    description: string;
+    reason: string | null;
+  };
+  order: {
+    count: number;
+    price_cents: number;
+    status: string;
+  } | null;
+}
+
+export interface CycleEvaluationsData {
+  evaluations: CycleEvaluation[];
+  total: number;
+  has_more: boolean;
+  ticker: string | null;
+}
+
 // ── Unified market row ──────────────────────────────────────
 
 export interface UnifiedMarketRow {
@@ -902,6 +934,14 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
         console.warn("Failed to fetch comparison models:", e);
         return null;
       }),
+    getCycleEvaluations: (ticker?: string, limit = 100, offset = 0) => {
+      let url = `/cycle-evaluations?limit=${limit}&offset=${offset}`;
+      if (ticker) url += `&ticker=${encodeURIComponent(ticker)}`;
+      return fetchJSON<CycleEvaluationsData>(normalizedBaseUrl, buildPath(url)).catch((e) => {
+        console.warn("Failed to fetch cycle evaluations:", e);
+        return { evaluations: [], total: 0, has_more: false, ticker: ticker || null };
+      });
+    },
   };
 }
 
