@@ -191,6 +191,7 @@ export interface HealthData {
   last_cycle_end: string | null;
   effective_last_cycle_end?: string | null;
   poll_interval_sec: number;
+  cycle_running?: boolean;
   mode: string;
   betting_enabled: boolean;
   instance_name?: string;

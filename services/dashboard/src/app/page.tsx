@@ -1085,21 +1085,21 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
   const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
   const min = Math.floor(remainingSec / 60);
   const sec = remainingSec % 60;
-  const isOverdue = remainingSec === 0;
+  const isCycleRunning = health.cycle_running || remainingSec === 0;
 
   return (
     <span
       className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-        isOverdue
-          ? "text-warn bg-warn-dim animate-pulse"
+        isCycleRunning
+          ? "text-accent bg-accent-dim animate-pulse"
           : remainingSec < 60
             ? "text-accent bg-accent-dim"
             : "text-txt-muted"
       }`}
       title={`Last cycle ended: ${health.last_cycle_end}`}
     >
-      {isOverdue
-        ? "Cycle running..."
+      {isCycleRunning
+        ? "● Cycle running..."
         : `Next cycle: ${min}:${sec.toString().padStart(2, "0")}`}
     </span>
   );

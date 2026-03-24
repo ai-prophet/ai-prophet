@@ -268,6 +268,23 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
             if ce_row:
                 last_cycle_end = ce_row.created_at.isoformat()
 
+            # 3a. Check if cycle is currently running
+            # (cycle_start more recent than cycle_end)
+            cycle_running = False
+            cs_row = (
+                _heartbeat_query(session, resolved_instance)
+                .filter(
+                    SystemLog.message == "cycle_start",
+                )
+                .order_by(SystemLog.created_at.desc())
+                .first()
+            )
+            if cs_row and ce_row:
+                cycle_running = cs_row.created_at > ce_row.created_at
+            elif cs_row and not ce_row:
+                # Has cycle_start but no cycle_end yet
+                cycle_running = True
+
             # 4. Effective last cycle_end across ALL instances
             effective_last_cycle_end = last_cycle_end
             ce_rows = (
@@ -304,6 +321,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
         "last_cycle_end": last_cycle_end,
         "effective_last_cycle_end": effective_last_cycle_end,
         "poll_interval_sec": poll_interval,
+        "cycle_running": cycle_running if 'cycle_running' in locals() else False,
         "mode": "dry_run" if dry_run else "live",
         "betting_enabled": enabled,
         "instance_name": resolved_instance,
