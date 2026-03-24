@@ -531,17 +531,20 @@ export function buildUnifiedMarketRows(
 
     const predicted = mkt.aggregated_p_yes ?? mkt.model_prediction?.p_yes ?? null;
 
-    // Calculate entry edge from first trade's prediction (not current market edge)
+    // Calculate edge from most recent trade's prediction
     let edge: number | null = null;
-    if (sortedTrades.length > 0 && sortedTrades[0].prediction) {
-      const firstTrade = sortedTrades[0];
-      const pred = firstTrade.prediction;
+    if (sortedTrades.length > 0) {
+      // Get the most recent trade (last in chronologically sorted array)
+      const mostRecentTrade = sortedTrades[sortedTrades.length - 1];
+      const pred = mostRecentTrade.prediction;
       // Edge is always YES-framed: p_yes - yes_ask
       if (pred) {
         edge = pred.p_yes - pred.yes_ask;
       }
-    } else if (predicted != null && mkt.yes_ask != null) {
-      // Fallback to current edge if no trades
+    }
+
+    // Fallback to current edge if no trades or no prediction on most recent trade
+    if (edge === null && predicted != null && mkt.yes_ask != null) {
       edge = predicted - mkt.yes_ask;
     }
 
