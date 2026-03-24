@@ -829,17 +829,29 @@ function MarketRow({
         {/* Position */}
         <td className="px-3 py-2 text-center">
           {pos ? (
-            <span className="flex items-center justify-center gap-1.5">
-              <span
-                className={`inline-block px-1.5 py-px rounded text-[9px] font-bold tracking-wider ${
-                  pos.contract.toLowerCase() === "yes"
-                    ? "bg-profit-dim text-profit"
-                    : "bg-loss-dim text-loss"
-                }`}
-              >
-                {pos.contract.toUpperCase()}
+            <span className="flex flex-col items-center gap-0.5">
+              <span className="flex items-center gap-1.5">
+                <span className="font-mono text-txt-primary">
+                  {row.target_shares ?? pos.quantity}
+                </span>
+                <span
+                  className={`inline-block px-1.5 py-px rounded text-[9px] font-bold tracking-wider ${
+                    pos.contract.toLowerCase() === "yes"
+                      ? "bg-profit-dim text-profit"
+                      : "bg-loss-dim text-loss"
+                  }`}
+                >
+                  {pos.contract.toUpperCase()}
+                </span>
               </span>
-              <span className="font-mono text-txt-primary">{pos.quantity}</span>
+              {(row.filled_shares != null || row.pending_shares != null) && (
+                <span className="text-[9px] font-mono text-txt-muted">
+                  {row.filled_shares ?? 0} filled
+                  {row.pending_shares != null && row.pending_shares > 0 && (
+                    <>, {row.pending_shares} pending</>
+                  )}
+                </span>
+              )}
             </span>
           ) : (
             <span className="text-txt-muted">--</span>
@@ -1000,7 +1012,8 @@ function ExpandedPanel({
 
 // ── Tab 1: Activity Timeline ────────────────────────────────
 
-const SKIP_THRESHOLD_MS = 25 * 60 * 1000; // 25 min — 1.5× the ~15-min poll interval
+const CYCLE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — worker poll interval
+const SKIP_THRESHOLD_MS = 90 * 60 * 1000; // 90 min — 1.5× the 1-hour poll interval
 const SAME_ACTION_WINDOW_MS = 2 * 60 * 1000; // 2 min — trades within same cycle
 
 type TimelineTradeItem = {
@@ -1272,7 +1285,7 @@ function TimelineTab({
                 );
               })()}
               {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+                const skippedCycles = Math.floor(gap.skippedMs / CYCLE_INTERVAL_MS);
                 const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
                 const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
                 return (
@@ -1357,7 +1370,7 @@ function TimelineTab({
               </div>
 
               {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+                const skippedCycles = Math.floor(gap.skippedMs / CYCLE_INTERVAL_MS);
                 const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
                 const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
                 return (
@@ -1510,7 +1523,7 @@ function TimelineTab({
             </div>
 
             {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-              const skippedCycles = Math.floor(gap.skippedMs / SKIP_THRESHOLD_MS);
+              const skippedCycles = Math.floor(gap.skippedMs / CYCLE_INTERVAL_MS);
               const hrs = Math.round(gap.skippedMs / 36e5 * 10) / 10;
               const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
               return (

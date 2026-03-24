@@ -267,6 +267,10 @@ export default function Dashboard() {
 
       // Apply Tier 1 immediately so the page renders
       const cached = dataCacheRef.current[instanceKey];
+      // Filter out "Large edge detected" alerts
+      const filteredAlerts = al.alerts.filter(
+        (alert) => !alert.message.toLowerCase().includes("large edge detected")
+      );
       const tier1Snapshot: DashboardSnapshot = {
         trades: t,
         markets: m,
@@ -277,7 +281,7 @@ export default function Dashboard() {
         balance: b,
         analytics: cached?.analytics ?? null,
         resolvedMarkets: cached?.resolvedMarkets ?? null,
-        alerts: al.alerts,
+        alerts: filteredAlerts,
         lastUpdate: formatLastUpdateTime(),
       };
       dataCacheRef.current[instanceKey] = tier1Snapshot;
@@ -865,6 +869,7 @@ export default function Dashboard() {
               <OrderMonitoringPanel
                 instance={selectedInstance.instanceName || selectedInstance.key}
                 apiUrl={selectedInstance.apiUrl}
+                onMarketClick={focusMarket}
               />
             )}
             {supportTab === "activity" && <LiveActivity logs={logs} />}

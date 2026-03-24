@@ -113,6 +113,15 @@ export interface ModelPrediction {
   models?: Record<string, { p_yes: number; confidence: number }> | null;
 }
 
+export interface PendingOrder {
+  order_id: string;
+  side: string;
+  count: number;
+  filled_shares: number;
+  price_cents: number;
+  created_at: string;
+}
+
 export interface Market {
   id: number;
   market_id: string;
@@ -131,6 +140,7 @@ export interface Market {
   model_prediction: ModelPrediction | null;
   model_predictions?: ModelPrediction[];
   aggregated_p_yes?: number | null;
+  pending_orders?: PendingOrder[];
 }
 
 export interface Position {
@@ -439,6 +449,12 @@ export interface UnifiedMarketRow {
   trade_count: number;
   last_trade_time: string | null;
 
+  // Position breakdown
+  target_shares: number | null;
+  filled_shares: number | null;
+  pending_shares: number | null;
+  pending_orders: PendingOrder[];
+
   has_position: boolean;
   has_prediction: boolean;
   has_trades: boolean;
@@ -455,12 +471,20 @@ export function liveNetPnl(row: UnifiedMarketRow): number | null {
   }, 0);
   const pos = row.position;
   if (!pos) return cashFlow;
+
+  // Use target shares if available, otherwise fall back to actual position quantity
+  const effectiveQty = row.target_shares ?? pos.quantity;
+
   const currentBid =
     pos.contract.toLowerCase() === "yes"
       ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
       : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
   if (currentBid == null) return cashFlow;
-  return cashFlow + pos.quantity * currentBid;
+
+  // Calculate P&L using target shares at entry price
+  // P&L = (current_bid - avg_entry) * target_shares
+  const unrealizedPnl = (currentBid - pos.avg_price) * effectiveQty;
+  return unrealizedPnl;
 }
 
 export function buildUnifiedMarketRows(
@@ -532,6 +556,31 @@ export function buildUnifiedMarketRows(
       };
     }
 
+    // Calculate position breakdown
+    const pendingOrders = mkt.pending_orders ?? [];
+    let target_shares: number | null = null;
+    let filled_shares: number | null = null;
+    let pending_shares: number | null = null;
+
+    if (edge != null && Math.abs(edge) > 0.01) {
+      // Target shares = edge magnitude in percentage points (e.g., 29pp edge = 29 shares)
+      target_shares = Math.round(Math.abs(edge) * 100);
+    }
+
+    // Calculate filled shares from BUY trades
+    const buyTrades = sortedTrades.filter((t) => t.action?.toUpperCase() === "BUY");
+    if (buyTrades.length > 0) {
+      filled_shares = buyTrades.reduce((sum, t) => sum + (t.filled_shares || t.count), 0);
+    }
+
+    // Calculate pending shares from pending orders
+    if (pendingOrders.length > 0) {
+      pending_shares = pendingOrders.reduce((sum, order) => {
+        const remaining = order.count - order.filled_shares;
+        return sum + remaining;
+      }, 0);
+    }
+
     rows.push({
       market_id: mkt.market_id,
       ticker: mkt.ticker,
@@ -551,6 +600,10 @@ export function buildUnifiedMarketRows(
       trades: sortedTrades,
       trade_count: sortedTrades.length,
       last_trade_time: sortedTrades[0]?.created_at ?? null,
+      target_shares,
+      filled_shares,
+      pending_shares,
+      pending_orders: pendingOrders,
       has_position: pos != null,
       has_prediction: predicted != null,
       has_trades: sortedTrades.length > 0,
@@ -565,6 +618,13 @@ export function buildUnifiedMarketRows(
     const sortedTrades = [...mktTrades].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
+
+    // Calculate filled shares for orphan positions
+    const buyTrades = sortedTrades.filter((t) => t.action?.toUpperCase() === "BUY");
+    const filled_shares = buyTrades.length > 0
+      ? buyTrades.reduce((sum, t) => sum + (t.filled_shares || t.count), 0)
+      : null;
+
     rows.push({
       market_id: pos.market_id,
       ticker: pos.ticker ?? "",
@@ -590,6 +650,10 @@ export function buildUnifiedMarketRows(
       trades: sortedTrades,
       trade_count: sortedTrades.length,
       last_trade_time: sortedTrades[0]?.created_at ?? null,
+      target_shares: null,
+      filled_shares,
+      pending_shares: null,
+      pending_orders: [],
       has_position: true,
       has_prediction: false,
       has_trades: sortedTrades.length > 0,

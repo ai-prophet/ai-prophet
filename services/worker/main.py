@@ -471,6 +471,74 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
         logger.warning("Failed to update positions: %s", e)
 
 
+def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
+    """Sync all PENDING orders with Kalshi to get latest fill counts and statuses.
+
+    Returns: number of orders updated
+    """
+    if db_engine is None:
+        return 0
+
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from ai_prophet_core.betting.db_schema import BettingOrder
+
+        updated_count = 0
+
+        with get_session(db_engine) as session:
+            # Get all PENDING orders for this instance
+            pending_orders = (
+                session.query(BettingOrder)
+                .filter(BettingOrder.instance_name == instance_name)
+                .filter(BettingOrder.status == "PENDING")
+                .all()
+            )
+
+            logger.info("[SYNC] Syncing %d pending orders with Kalshi", len(pending_orders))
+
+            for order in pending_orders:
+                try:
+                    # Poll Kalshi for current order status
+                    result = adapter.get_order(order.order_id)
+
+                    if result is None:
+                        logger.warning("[SYNC] Could not fetch order %s from Kalshi", order.order_id)
+                        continue
+
+                    # Update order status and fill count
+                    old_status = order.status
+                    old_filled = order.filled_shares or 0
+
+                    order.status = result.status.value
+                    order.filled_shares = float(result.filled_shares) if result.filled_shares else 0
+
+                    if old_status != order.status or old_filled != order.filled_shares:
+                        logger.info(
+                            "[SYNC] Updated order %s: %s -> %s, filled: %s -> %s",
+                            order.order_id[:8],
+                            old_status,
+                            order.status,
+                            old_filled,
+                            order.filled_shares,
+                        )
+                        updated_count += 1
+
+                except Exception as e:
+                    logger.warning("[SYNC] Failed to sync order %s: %s", order.order_id, e)
+                    continue
+
+            session.commit()
+
+        if updated_count > 0:
+            logger.info("[SYNC] Updated %d orders from Kalshi", updated_count)
+
+        return updated_count
+
+    except Exception as e:
+        logger.error("[SYNC] Failed to sync pending orders: %s", e)
+        return 0
+
+
 def _load_order_ledger_state(
     db_engine,
     adapter,
@@ -1317,29 +1385,28 @@ def run_cycle(args) -> None:
             instance_name=INSTANCE_NAME,
         )
 
-    # Order management: Cancel stale orders and reconcile positions
+    # Order management: Sync pending orders FIRST, then cancel stale orders
     if db_engine is not None and not dry_run_override:
         try:
-            from order_management import cancel_stale_orders, reconcile_positions_with_kalshi
-
-            # Cancel orders pending > 1 hour
-            cancelled = cancel_stale_orders(db_engine, adapter, INSTANCE_NAME, stale_threshold_minutes=60)
-            if cancelled > 0:
-                logger.info("[CYCLE] Cancelled %d stale orders", cancelled)
-
-            # Check for position drift
-            drifts = reconcile_positions_with_kalshi(db_engine, adapter, INSTANCE_NAME, tolerance_contracts=5)
-            if drifts:
-                logger.error("[CYCLE] Position drifts detected: %s", drifts)
-                log_system_event(
-                    db_engine,
-                    "ALERT",
-                    f"Position drift detected: {drifts}",
-                    instance_name=INSTANCE_NAME,
-                )
+            # CRITICAL: Sync all pending orders with Kalshi to get latest fills/status
+            updated = sync_pending_orders(db_engine, adapter, INSTANCE_NAME)
+            if updated > 0:
+                logger.info("[CYCLE] Synced %d pending orders from Kalshi", updated)
 
         except Exception as e:
-            logger.error("[CYCLE] Order management failed: %s", e)
+            logger.error("[CYCLE] Order sync failed: %s", e)
+
+        # Optional: Cancel stale orders and reconcile positions (not yet implemented)
+        # try:
+        #     from order_management import cancel_stale_orders, reconcile_positions_with_kalshi
+        #     cancelled = cancel_stale_orders(db_engine, adapter, INSTANCE_NAME, stale_threshold_minutes=60)
+        #     if cancelled > 0:
+        #         logger.info("[CYCLE] Cancelled %d stale orders", cancelled)
+        #     drifts = reconcile_positions_with_kalshi(db_engine, adapter, INSTANCE_NAME, tolerance_contracts=5)
+        #     if drifts:
+        #         logger.error("[CYCLE] Position drifts detected: %s", drifts)
+        # except Exception as e:
+        #     logger.error("[CYCLE] Order management failed: %s", e)
 
     # 1. Gather sticky markets (already tracked in DB)
     tracked_tickers = (

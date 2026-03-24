@@ -650,6 +650,23 @@ def get_markets(
             .all()
         }
 
+        # Bulk-load pending orders for all markets
+        pending_orders_by_ticker: dict[str, list[dict]] = defaultdict(list)
+        pending_orders = (
+            _instance_query(session, BettingOrder, resolved_instance)
+            .filter(BettingOrder.status == "PENDING")
+            .all()
+        )
+        for order in pending_orders:
+            pending_orders_by_ticker[order.ticker].append({
+                "order_id": order.order_id,
+                "side": order.side,
+                "count": order.count,
+                "filled_shares": float(order.filled_shares) if order.filled_shares else 0,
+                "price_cents": order.price_cents,
+                "created_at": order.created_at.isoformat(),
+            })
+
         # Bulk-load all recent model runs for these markets (avoid N+1)
         market_ids_for_runs = [r.market_id for r in rows]
         all_recent_runs = (
@@ -737,6 +754,7 @@ def get_markets(
                 "model_prediction": model_prediction,
                 "model_predictions": model_predictions,
                 "aggregated_p_yes": aggregated_p_yes,
+                "pending_orders": pending_orders_by_ticker.get(row.ticker, []),
             })
         return results
     except Exception as e:

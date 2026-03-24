@@ -2,6 +2,22 @@
 
 import { useEffect, useState } from "react";
 
+function formatTimestamp(isoString: string): string {
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+
+  const month = date.toLocaleDateString('en-US', { month: 'short' });
+  const day = date.getDate();
+  const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return `${month} ${day}, ${time}`;
+}
+
 interface PendingOrder {
   order_id: string;
   ticker: string;
@@ -38,7 +54,15 @@ interface SystemAlerts {
   has_critical_alerts: boolean;
 }
 
-export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; apiUrl: string }) {
+export function OrderMonitoringPanel({
+  instance,
+  apiUrl,
+  onMarketClick,
+}: {
+  instance: string;
+  apiUrl: string;
+  onMarketClick?: (ticker: string) => void;
+}) {
   const [orderData, setOrderData] = useState<OrderMonitoring | null>(null);
   const [alertData, setAlertData] = useState<SystemAlerts | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,240 +91,186 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
 
   if (loading || !orderData || !alertData) {
     return (
-      <div className="p-4 bg-bg-primary border border-border rounded-lg">
-        <div className="text-txt-muted text-sm">Loading monitoring data...</div>
+      <div className="bg-t-panel border border-t-border rounded p-8 text-center text-txt-muted text-xs">
+        Loading monitoring data...
       </div>
     );
   }
 
-  const alertLevelColor = {
-    ok: "text-green-400 bg-green-400/10",
-    warning: "text-yellow-400 bg-yellow-400/10",
-    critical: "text-red-400 bg-red-400/10",
-  }[orderData.alert_level];
+  const hasPending = orderData.pending_orders.length > 0;
+  const hasCancelled = orderData.recent_cancellations.length > 0;
 
   return (
-    <div className="space-y-4">
-      {/* Alert Banner */}
-      {(orderData.alert_level !== "ok" || alertData.has_critical_alerts) && (
-        <div
-          className={`p-3 border rounded-lg ${
-            orderData.alert_level === "critical" || alertData.has_critical_alerts
-              ? "bg-red-500/10 border-red-500/30"
-              : "bg-yellow-500/10 border-yellow-500/30"
-          }`}
-        >
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <span className="text-lg">⚠️</span>
-            <span>
-              {orderData.stale_orders.length > 0 &&
-                `${orderData.stale_orders.length} stale order(s) detected (>60min). Will be cancelled and reordered next cycle. `}
-              {alertData.has_critical_alerts && `${alertData.alert_count} system alert(s).`}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard
-          label="Pending Orders"
-          value={orderData.pending_orders.length}
-          color="text-blue-400"
-        />
-        <StatCard
-          label="Stale Orders"
-          value={orderData.stale_orders.length}
-          color={orderData.stale_orders.length > 0 ? "text-red-400" : "text-green-400"}
-        />
-        <StatCard
-          label="System Alerts"
-          value={alertData.alert_count}
-          color={alertData.alert_count > 0 ? "text-red-400" : "text-green-400"}
-        />
-        <StatCard
-          label="Errors (24h)"
-          value={alertData.error_count}
-          color={alertData.error_count > 0 ? "text-yellow-400" : "text-green-400"}
-        />
-      </div>
-
-      {/* Order Status Breakdown */}
-      <div className="p-4 bg-bg-primary border border-border rounded-lg">
-        <div className="text-sm font-medium text-txt-secondary mb-3">Order Status</div>
-        <div className="flex flex-wrap gap-3">
-          {Object.entries(orderData.status_breakdown).map(([status, count]) => (
-            <div key={status} className="flex items-center gap-2">
-              <span
-                className={`px-2 py-0.5 text-[10px] font-mono rounded ${getStatusColor(
-                  status
-                )}`}
-              >
-                {status}
-              </span>
-              <span className="text-sm text-txt-muted">{count}</span>
-            </div>
-          ))}
+    <div className="bg-t-panel border border-t-border rounded">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-t-border">
+        <h3 className="text-xs font-medium text-txt-secondary uppercase tracking-widest">
+          Order Monitoring
+        </h3>
+        <div className="flex items-center gap-2 text-[9px] font-mono">
+          {orderData.pending_orders.length > 0 && (
+            <span className="text-accent">{orderData.pending_orders.length}P</span>
+          )}
+          {orderData.stale_orders.length > 0 && (
+            <span className="text-loss">{orderData.stale_orders.length}S</span>
+          )}
         </div>
       </div>
 
-      {/* Pending Orders Table */}
-      {orderData.pending_orders.length > 0 && (
-        <div className="p-4 bg-bg-primary border border-border rounded-lg">
-          <div className="text-sm font-medium text-txt-secondary mb-3">
-            Pending Orders ({orderData.pending_orders.length})
+      {/* Orders list */}
+      <div className="max-h-[320px] overflow-y-auto">
+        {!hasPending && !hasCancelled ? (
+          <div className="p-6 text-center text-txt-muted text-[10px]">
+            No pending orders or recent cancellations
           </div>
-          <div className="space-y-2">
-            {orderData.pending_orders.slice(0, 10).map((order) => (
-              <a
-                key={order.order_id}
-                href={`https://kalshi.com/markets/${order.ticker}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`block p-3 rounded text-xs transition-all hover:scale-[1.01] hover:shadow-md cursor-pointer ${
-                  order.is_stale
-                    ? "bg-red-500/10 border border-red-500/30 hover:bg-red-500/15"
-                    : "bg-bg-secondary hover:bg-bg-secondary/80 border border-transparent hover:border-border"
-                }`}
-              >
-                {/* Market Title */}
-                {order.market_title && (
-                  <div className="text-txt-primary text-[11px] font-medium mb-1.5 truncate">
-                    {order.market_title}
-                  </div>
-                )}
-
-                {/* Order Details Row */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-txt-secondary text-[10px]">{order.ticker}</span>
-                    <span
-                      className={`px-1.5 py-0.5 rounded ${
-                        order.side === "yes"
-                          ? "bg-green-500/20 text-green-400"
-                          : "bg-red-500/20 text-red-400"
-                      }`}
-                    >
-                      {order.count} {order.side.toUpperCase()}
-                    </span>
-                    {order.is_stale && (
-                      <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-orange-500/20 text-orange-400 border border-orange-500/40">
-                        WILL REORDER
-                      </span>
-                    )}
-                    <span className="text-txt-muted">@ {order.price_cents}¢</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`${
-                        order.is_stale ? "text-red-400 font-medium" : "text-txt-muted"
-                      }`}
-                    >
-                      {order.age_minutes < 60
-                        ? `${Math.floor(order.age_minutes)}m`
-                        : `${(order.age_minutes / 60).toFixed(1)}h`}
-                    </span>
-                    {order.is_stale && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded">
-                        STALE
-                      </span>
-                    )}
-                    <span className="text-txt-muted text-[10px] ml-1">↗</span>
-                  </div>
+        ) : (
+          <div>
+            {/* Pending orders section */}
+            {hasPending && (
+              <div>
+                <div className="px-3 py-1.5 text-[8px] font-bold uppercase tracking-wider text-txt-muted bg-t-bg">
+                  Pending ({orderData.pending_orders.length})
                 </div>
+                <div className="divide-y divide-t-border/30">
+                  {orderData.pending_orders.map((order, idx) => (
+                    <div
+                      key={order.order_id || idx}
+                      className="flex items-start gap-2 px-3 py-2"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => onMarketClick?.(order.ticker)}
+                          className="w-full text-left transition-colors hover:bg-t-panel-hover rounded-sm -mx-1 px-1 py-0.5"
+                        >
+                          <div className="flex items-center justify-between mb-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-px rounded border ${
+                                  order.is_stale
+                                    ? "bg-loss/15 text-loss border-loss/20"
+                                    : "bg-accent/15 text-accent border-accent/20"
+                                }`}
+                              >
+                                {order.is_stale ? "STALE" : "PENDING"}
+                              </span>
+                              <span className="text-[9px] font-mono text-txt-muted">
+                                {order.ticker}
+                              </span>
+                            </div>
+                            <span className="text-[9px] text-txt-muted">
+                              {formatTimestamp(order.created_at)}
+                            </span>
+                          </div>
 
-                {/* Partial Fill Info */}
-                {order.filled_shares && order.filled_shares > 0 && (
-                  <div className="mt-1.5 text-[10px] text-blue-400">
-                    ⓘ Partial fill: {order.filled_shares}/{order.count} shares filled
-                  </div>
-                )}
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
+                          {order.market_title && (
+                            <p className="text-[10px] text-txt-primary leading-snug mb-0.5">
+                              {order.market_title}
+                            </p>
+                          )}
 
-      {/* Recent Cancellations */}
-      {orderData.recent_cancellations.length > 0 && (
-        <div className="p-4 bg-bg-primary border border-border rounded-lg">
-          <div className="text-sm font-medium text-txt-secondary mb-3">
-            Recent Cancellations (24h)
-          </div>
-          <div className="space-y-1.5 max-h-40 overflow-y-auto">
-            {orderData.recent_cancellations.slice(0, 5).map((order) => (
-              <a
-                key={order.order_id}
-                href={`https://kalshi.com/markets/${order.ticker}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between text-xs p-2 rounded bg-bg-secondary hover:bg-bg-secondary/80 border border-transparent hover:border-border transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-txt-muted">{order.ticker}</span>
-                  <span
-                    className={`px-1.5 py-0.5 text-[10px] rounded ${
-                      order.side === "yes"
-                        ? "bg-green-500/20 text-green-400"
-                        : "bg-red-500/20 text-red-400"
-                    }`}
-                  >
-                    {order.count} {order.side.toUpperCase()}
-                  </span>
-                </div>
-                <span className="text-txt-muted text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
-                  ↗
-                </span>
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span
+                              className={`text-[9px] px-1 py-px rounded ${
+                                order.side === "yes"
+                                  ? "bg-profit/20 text-profit"
+                                  : "bg-loss/20 text-loss"
+                              }`}
+                            >
+                              {order.count} {order.side.toUpperCase()}
+                            </span>
+                            <span className="text-[9px] text-txt-muted">
+                              @ {order.price_cents}¢
+                            </span>
+                            {order.age_minutes != null && (
+                              <span className={`text-[9px] ${order.is_stale ? "text-loss" : "text-txt-muted"}`}>
+                                {order.age_minutes < 60
+                                  ? `${Math.floor(order.age_minutes)}m`
+                                  : `${(order.age_minutes / 60).toFixed(1)}h`}
+                              </span>
+                            )}
+                          </div>
 
-      {/* System Alerts */}
-      {alertData.alerts.length > 0 && (
-        <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
-          <div className="text-sm font-medium text-red-400 mb-3">
-            🚨 Critical Alerts ({alertData.alert_count})
-          </div>
-          <div className="space-y-2 max-h-60 overflow-y-auto">
-            {alertData.alerts.map((alert) => (
-              <div key={alert.id} className="p-2 bg-bg-secondary rounded text-xs">
-                <div className="text-txt-secondary">{alert.message}</div>
-                <div className="text-txt-muted mt-1">
-                  {alert.component} • {new Date(alert.created_at).toLocaleTimeString()}
+                          {order.filled_shares && order.filled_shares > 0 && (
+                            <span className="text-[9px] text-accent mt-0.5 inline-block">
+                              Partial: {order.filled_shares}/{order.count}
+                            </span>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+            )}
+
+            {/* Cancelled orders section */}
+            {hasCancelled && (
+              <div>
+                <div className="px-3 py-1.5 text-[8px] font-bold uppercase tracking-wider text-txt-muted bg-t-bg">
+                  Cancelled ({orderData.recent_cancellations.length})
+                </div>
+                <div className="divide-y divide-t-border/30">
+                  {orderData.recent_cancellations.slice(0, 5).map((order: any, idx: number) => (
+                    <div
+                      key={order.order_id || idx}
+                      className="flex items-start gap-2 px-3 py-2"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => onMarketClick?.(order.ticker)}
+                          className="w-full text-left transition-colors hover:bg-t-panel-hover rounded-sm -mx-1 px-1 py-0.5"
+                        >
+                          <div className="flex items-center justify-between mb-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-px rounded border bg-txt-muted/15 text-txt-muted border-txt-muted/20">
+                                CANCELLED
+                              </span>
+                              <span className="text-[9px] font-mono text-txt-muted">
+                                {order.ticker}
+                              </span>
+                            </div>
+                            {order.created_at && (
+                              <span className="text-[9px] text-txt-muted">
+                                {formatTimestamp(order.created_at)}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span
+                              className={`text-[9px] px-1 py-px rounded ${
+                                order.side === "yes"
+                                  ? "bg-profit/20 text-profit"
+                                  : "bg-loss/20 text-loss"
+                              }`}
+                            >
+                              {order.count} {order.side.toUpperCase()}
+                            </span>
+                            {order.price_cents && (
+                              <span className="text-[9px] text-txt-muted">
+                                @ {order.price_cents}¢
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
+        )}
+      </div>
+
+      {/* Footer with count */}
+      {(hasPending || hasCancelled) && (orderData.pending_orders.length + orderData.recent_cancellations.length > 5) && (
+        <div className="px-3 py-1.5 border-t border-t-border text-center text-[9px] text-txt-muted">
+          {orderData.pending_orders.length} pending, {orderData.recent_cancellations.length} cancelled
         </div>
       )}
     </div>
   );
-}
-
-function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div className="p-3 bg-bg-primary border border-border rounded-lg">
-      <div className="text-[10px] text-txt-muted uppercase tracking-wide mb-1">{label}</div>
-      <div className={`text-2xl font-bold ${color}`}>{value}</div>
-    </div>
-  );
-}
-
-function getStatusColor(status: string): string {
-  switch (status.toUpperCase()) {
-    case "FILLED":
-      return "bg-green-500/20 text-green-400";
-    case "PENDING":
-      return "bg-blue-500/20 text-blue-400";
-    case "CANCELLED":
-      return "bg-gray-500/20 text-gray-400";
-    case "ERROR":
-      return "bg-red-500/20 text-red-400";
-    case "DRY_RUN":
-      return "bg-purple-500/20 text-purple-400";
-    default:
-      return "bg-gray-500/20 text-gray-400";
-  }
 }
