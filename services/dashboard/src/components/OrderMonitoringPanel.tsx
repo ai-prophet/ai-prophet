@@ -152,10 +152,15 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
           </div>
           <div className="space-y-2">
             {orderData.pending_orders.slice(0, 10).map((order) => (
-              <div
+              <a
                 key={order.order_id}
-                className={`p-3 rounded text-xs ${
-                  order.is_stale ? "bg-red-500/10 border border-red-500/30" : "bg-bg-secondary"
+                href={`https://kalshi.com/markets/${order.ticker}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`block p-3 rounded text-xs transition-all hover:scale-[1.01] hover:shadow-md cursor-pointer ${
+                  order.is_stale
+                    ? "bg-red-500/10 border border-red-500/30 hover:bg-red-500/15"
+                    : "bg-bg-secondary hover:bg-bg-secondary/80 border border-transparent hover:border-border"
                 }`}
               >
                 {/* Market Title */}
@@ -200,6 +205,7 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
                         STALE
                       </span>
                     )}
+                    <span className="text-txt-muted text-[10px] ml-1">↗</span>
                   </div>
                 </div>
 
@@ -209,7 +215,7 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
                     ⓘ Partial fill: {order.filled_shares}/{order.count} shares filled
                   </div>
                 )}
-              </div>
+              </a>
             ))}
           </div>
         </div>
@@ -223,12 +229,29 @@ export function OrderMonitoringPanel({ instance, apiUrl }: { instance: string; a
           </div>
           <div className="space-y-1.5 max-h-40 overflow-y-auto">
             {orderData.recent_cancellations.slice(0, 5).map((order) => (
-              <div key={order.order_id} className="flex items-center justify-between text-xs">
-                <span className="font-mono text-txt-muted">{order.ticker}</span>
-                <span className="text-txt-muted">
-                  {order.count} {order.side.toUpperCase()}
+              <a
+                key={order.order_id}
+                href={`https://kalshi.com/markets/${order.ticker}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between text-xs p-2 rounded bg-bg-secondary hover:bg-bg-secondary/80 border border-transparent hover:border-border transition-all cursor-pointer group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-txt-muted">{order.ticker}</span>
+                  <span
+                    className={`px-1.5 py-0.5 text-[10px] rounded ${
+                      order.side === "yes"
+                        ? "bg-green-500/20 text-green-400"
+                        : "bg-red-500/20 text-red-400"
+                    }`}
+                  >
+                    {order.count} {order.side.toUpperCase()}
+                  </span>
+                </div>
+                <span className="text-txt-muted text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
+                  ↗
                 </span>
-              </div>
+              </a>
             ))}
           </div>
         </div>
