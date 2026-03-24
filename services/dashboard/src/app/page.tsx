@@ -1079,11 +1079,13 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     return () => clearInterval(t);
   }, []);
 
+  // Only show countdown when cycle is running or there's actual cycle timing data
+  // If effective_last_cycle_end is null, worker is disabled/inactive
   const cycleEndStr = health?.effective_last_cycle_end ?? health?.last_cycle_end;
   if (!cycleEndStr || !health?.poll_interval_sec) {
     return (
       <span className="text-[10px] text-txt-muted font-mono">
-        Next cycle: --:--
+        Worker inactive
       </span>
     );
   }
@@ -1093,22 +1095,31 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
   const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
   const min = Math.floor(remainingSec / 60);
   const sec = remainingSec % 60;
-  const isCycleRunning = health.cycle_running || remainingSec === 0;
 
+  // Show "Cycle running..." when cycle_running flag is true
+  // Don't start countdown while cycle is still running
+  if (health.cycle_running) {
+    return (
+      <span
+        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-accent bg-accent-dim animate-pulse"
+        title="Worker cycle in progress"
+      >
+        ● Cycle running...
+      </span>
+    );
+  }
+
+  // Show countdown only after cycle has finished
   return (
     <span
       className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-        isCycleRunning
-          ? "text-accent bg-accent-dim animate-pulse"
-          : remainingSec < 60
-            ? "text-accent bg-accent-dim"
-            : "text-txt-muted"
+        remainingSec < 60
+          ? "text-accent bg-accent-dim"
+          : "text-txt-muted"
       }`}
-      title={`Last cycle ended: ${health.last_cycle_end}`}
+      title={`Last cycle ended: ${health.last_cycle_end || "unknown"}`}
     >
-      {isCycleRunning
-        ? "● Cycle running..."
-        : `Next cycle: ${min}:${sec.toString().padStart(2, "0")}`}
+      Next cycle: {min}:{sec.toString().padStart(2, "0")}
     </span>
   );
 }

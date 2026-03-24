@@ -313,13 +313,17 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     enabled = _instance_bool_setting("LIVE_BETTING_ENABLED", resolved_instance, False)
     worker_models = _instance_list_setting("WORKER_MODELS", resolved_instance)
 
+    # Only show cycle timing when there's actual worker activity
+    # If no heartbeat or last_cycle_end, return null to hide countdown
+    show_cycle_timing = last_heartbeat is not None or last_cycle_end is not None
+
     return {
         "status": "ok" if db_ok else "degraded",
         "database": "connected" if db_ok else "disconnected",
         "worker": worker_status,
         "last_heartbeat": last_heartbeat,
-        "last_cycle_end": last_cycle_end,
-        "effective_last_cycle_end": effective_last_cycle_end,
+        "last_cycle_end": last_cycle_end if show_cycle_timing else None,
+        "effective_last_cycle_end": effective_last_cycle_end if show_cycle_timing else None,
         "poll_interval_sec": poll_interval,
         "cycle_running": cycle_running if 'cycle_running' in locals() else False,
         "mode": "dry_run" if dry_run else "live",
