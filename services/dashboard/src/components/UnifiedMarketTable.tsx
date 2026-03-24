@@ -1067,6 +1067,7 @@ function ExpandedPanel({
             modelRuns={modelRuns}
             loadingRuns={loadingRuns}
             cycleEvaluations={cycleEvaluations}
+            totalCycleEvaluations={totalCycleEvaluations}
             loadingEvaluations={loadingEvaluations}
             hasMore={cycleEvaluations.length < totalCycleEvaluations}
             onLoadMore={() => fetchCycleEvaluations(evaluationsOffset, true)}
@@ -1142,6 +1143,7 @@ function TimelineTab({
   modelRuns,
   loadingRuns,
   cycleEvaluations,
+  totalCycleEvaluations,
   loadingEvaluations,
   hasMore,
   onLoadMore,
@@ -1150,6 +1152,7 @@ function TimelineTab({
   modelRuns: ModelRun[] | null;
   loadingRuns: boolean;
   cycleEvaluations: CycleEvaluation[];
+  totalCycleEvaluations: number;
   loadingEvaluations: boolean;
   hasMore: boolean;
   onLoadMore: () => void;
@@ -1300,7 +1303,7 @@ function TimelineTab({
   if (cycleEvaluations.length > 0) {
     return (
       <div className="relative pl-4 max-h-[400px] overflow-y-auto">
-        <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
+        <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border-light" />
 
         {loadingEvaluations && (
           <div className="mb-2 text-[9px] text-txt-muted italic">Loading cycle evaluations...</div>
@@ -1308,55 +1311,62 @@ function TimelineTab({
 
         {cycleEvaluations.map((evaluation, idx) => {
           const isHold = evaluation.action.type === 'hold';
-          const isBuy = evaluation.action.type === 'buy';
-          const isSell = evaluation.action.type === 'sell';
+          const isBuy = evaluation.action.type === 'buy' || (evaluation.action.type === 'dry_run' && evaluation.action.description?.toLowerCase().includes('buy'));
+          const isSell = evaluation.action.type === 'sell' || (evaluation.action.type === 'dry_run' && evaluation.action.description?.toLowerCase().includes('sell'));
 
           // Parse timestamp
           const timestamp = evaluation.timestamp ? new Date(evaluation.timestamp) : null;
           const timeStr = timestamp ? timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
 
+          // Simplify the action text
+          let actionText = evaluation.action.description;
+          if (isHold) actionText = 'HOLD';
+          else if (isBuy && evaluation.action.description?.includes('(dry run)')) actionText = 'BUY (dry run)';
+          else if (isSell && evaluation.action.description?.includes('(dry run)')) actionText = 'SELL (dry run)';
+
           return (
-            <div key={`eval-${evaluation.id}-${idx}`} className="relative py-1.5">
-              {/* Timeline dot */}
-              <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
-                isHold ? 'bg-txt-muted' : isBuy ? 'bg-success' : isSell ? 'bg-error' : 'bg-accent'
+            <div key={`eval-${evaluation.id}-${idx}`} className="relative py-2">
+              {/* Timeline dot - smaller and no border */}
+              <div className={`absolute left-[-10px] top-[11px] w-1.5 h-1.5 rounded-full z-10 ${
+                isHold ? 'bg-txt-secondary/60' : isBuy ? 'bg-profit' : isSell ? 'bg-loss' : 'bg-accent'
               }`} />
 
-              <div className="text-[10px]">
-                {/* Action line */}
-                <div className={`font-medium ${
-                  isHold ? 'text-txt-muted' : isBuy ? 'text-success' : isSell ? 'text-error' : 'text-txt'
-                }`}>
-                  {timeStr} • {evaluation.action.description}
+              <div className="text-[12px] leading-relaxed">
+                {/* Simplified single line with better spacing */}
+                <div className="flex items-baseline gap-2">
+                  <span className="text-txt-primary/70 font-medium tabular-nums">{timeStr}</span>
+                  <span className={`font-semibold ${
+                    isHold ? 'text-txt-primary/90' : isBuy ? 'text-profit' : isSell ? 'text-loss' : 'text-txt-primary'
+                  }`}>
+                    {actionText}
+                  </span>
+                  {evaluation.prediction.edge != null && !isHold && (
+                    <span className="text-txt-primary/60 font-mono text-[11px]">
+                      {evaluation.prediction.edge >= 0 ? '+' : ''}{evaluation.prediction.edge.toFixed(1)}%
+                    </span>
+                  )}
                 </div>
 
-                {/* Details */}
-                <div className="text-[9px] text-txt-muted mt-0.5">
-                  {evaluation.prediction.p_yes != null && evaluation.prediction.yes_ask != null && (
-                    <div>
-                      Model: {(evaluation.prediction.p_yes * 100).toFixed(1)}% |
-                      Market: {(evaluation.prediction.yes_ask * 100).toFixed(1)}% |
-                      Edge: {evaluation.prediction.edge != null ? `${evaluation.prediction.edge.toFixed(1)}%` : 'N/A'}
-                    </div>
-                  )}
-                  {evaluation.action.reason && (
-                    <div className="mt-0.5">→ {evaluation.action.reason}</div>
-                  )}
-                </div>
+                {/* Show reason only - more readable */}
+                {evaluation.action.reason && (
+                  <div className="text-[11px] text-txt-primary/50 mt-0.5 pl-[52px]">
+                    {evaluation.action.reason}
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
 
-        {/* Show more button */}
+        {/* Show more button - more prominent */}
         {hasMore && (
-          <div className="mt-3 flex justify-center">
+          <div className="mt-4 flex justify-center">
             <button
               onClick={onLoadMore}
               disabled={loadingEvaluations}
-              className="px-3 py-1 text-[10px] font-medium text-txt-secondary hover:text-txt bg-t-bg-secondary/50 hover:bg-t-bg-secondary rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-4 py-1.5 text-[11px] font-medium text-txt-primary/80 bg-t-bg-secondary/70 hover:bg-t-bg-secondary hover:text-txt-primary rounded-md transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed border border-t-border/50 hover:border-t-border"
             >
-              {loadingEvaluations ? 'Loading...' : 'Show more'}
+              {loadingEvaluations ? 'Loading...' : `Show more (${totalCycleEvaluations - cycleEvaluations.length} remaining)`}
             </button>
           </div>
         )}

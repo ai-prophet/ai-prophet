@@ -2052,10 +2052,12 @@ def get_cycle_evaluations(
             if edge is not None:
                 if action_type == "hold":
                     # Explain why it was held
-                    if abs(edge) < 3:  # Assuming 3% threshold
-                        edge_info = f"Edge {edge:.1f}% < 3% threshold"
-                    elif row.p_yes > 0.95 or row.p_yes < 0.05:
-                        edge_info = f"Edge {edge:.1f}% (extreme probability)"
+                    # We don't bet when MARKET probability is < 3% or > 97%
+                    yes_ask_pct = row.yes_ask * 100 if row.yes_ask else None
+                    if yes_ask_pct and (yes_ask_pct < 3 or yes_ask_pct > 97):
+                        edge_info = f"Market {yes_ask_pct:.1f}% outside [3%, 97%] range"
+                    elif abs(edge) < 3:  # Also check if edge is too small
+                        edge_info = f"Edge {edge:.1f}% too small"
                     else:
                         edge_info = f"Edge {edge:.1f}% (position/capital limit)"
                 else:
