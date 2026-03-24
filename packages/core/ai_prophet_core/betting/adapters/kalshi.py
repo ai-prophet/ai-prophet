@@ -129,7 +129,7 @@ class KalshiAdapter(ExchangeAdapter):
         ticker = request.exchange_ticker
         side = request.side.lower()
         action = request.action.lower()
-        count = int(request.shares)
+        count = round(float(request.shares))
 
         if count <= 0:
             return OrderResult(
