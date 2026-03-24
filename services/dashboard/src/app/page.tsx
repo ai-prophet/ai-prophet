@@ -863,7 +863,7 @@ export default function Dashboard() {
             )}
             {supportTab === "monitoring" && (
               <OrderMonitoringPanel
-                instance={selectedInstance.instanceName}
+                instance={selectedInstance.instanceName || selectedInstance.key}
                 apiUrl={selectedInstance.apiUrl}
               />
             )}
