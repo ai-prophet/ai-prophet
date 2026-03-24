@@ -17,7 +17,7 @@ Environment variables:
     KALSHI_BASE_URL           — Kalshi API base URL
     LIVE_BETTING_ENABLED      — Master kill switch (default: false)
     LIVE_BETTING_DRY_RUN      — Dry-run mode (default: true)
-    WORKER_POLL_INTERVAL_SEC  — Seconds between cycles (default: 3600)
+    WORKER_POLL_INTERVAL_SEC  — (Deprecated) Workers now run at the top of each hour
     WORKER_MODELS             — Comma-separated model specs (default: gemini:gemini-3.1-pro-preview)
                                  Providers: openai, anthropic, gemini
                                  Examples: gemini:gemini-3.1-pro-preview, anthropic:claude-sonnet-4-5-20250929
@@ -2150,8 +2150,14 @@ def main() -> None:
             logger.info("--once flag set, exiting after single cycle.")
             break
 
-        # Compute sleep time from the latest cycle_end across all synced instances.
-        # This ensures the next cycle starts together when all peers have finished.
+        # Calculate time until the next top of the hour
+        now = datetime.now(UTC)
+
+        # Find the next hour boundary
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        seconds_until_next_hour = (next_hour - now).total_seconds()
+
+        # For peer synchronization, check if we need to wait for other instances
         db_engine_for_sync = None
         try:
             from ai_prophet_core.betting.db import create_db_engine
@@ -2166,20 +2172,31 @@ def main() -> None:
             except Exception:
                 pass
 
-        now = datetime.now(UTC)
+        # If peers are still running and would finish after the next hour, wait longer
         if max_cycle_end is not None:
             max_cycle_end_aware = max_cycle_end.replace(tzinfo=UTC) if max_cycle_end.tzinfo is None else max_cycle_end
-            elapsed = (now - max_cycle_end_aware).total_seconds()
-            sleep_seconds = max(0, poll_interval - elapsed)
-            logger.info(
-                "Sync: latest cycle_end across %s was %.0fs ago; sleeping %.0fs until next cycle",
-                all_sync_instances, elapsed, sleep_seconds,
-            )
+            if max_cycle_end_aware > next_hour:
+                # Wait until the hour after peers finish
+                hours_to_wait = ((max_cycle_end_aware - next_hour).total_seconds() / 3600) + 1
+                next_hour = next_hour + timedelta(hours=int(hours_to_wait))
+                seconds_until_next_hour = (next_hour - now).total_seconds()
+                logger.info(
+                    "Sync: peers still running, waiting until %s (%.0f seconds)",
+                    next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
+                )
+            else:
+                logger.info(
+                    "Next cycle will run at the top of the hour: %s (%.0f seconds)",
+                    next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
+                )
         else:
-            sleep_seconds = poll_interval
-            logger.info("Sleeping %ds until next cycle...", sleep_seconds)
+            logger.info(
+                "Next cycle will run at the top of the hour: %s (%.0f seconds)",
+                next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
+            )
 
-        for _ in range(int(sleep_seconds)):
+        # Sleep until the next hour, checking for shutdown every second
+        for _ in range(int(seconds_until_next_hour)):
             if _shutdown_requested:
                 break
             time.sleep(1)

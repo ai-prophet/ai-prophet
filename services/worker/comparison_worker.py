@@ -19,7 +19,7 @@ Environment variables:
     COMPARISON_MODEL             — Model spec (e.g. openai:gpt-5.4:market)
     COMPARISON_SOURCE_INSTANCE   — Instance to mirror markets from (default: Haifeng)
     COMPARISON_STARTING_CASH     — Starting virtual balance (default: WORKER_STARTING_CASH or 10000)
-    COMPARISON_POLL_INTERVAL_SEC — Seconds between cycles (default: WORKER_POLL_INTERVAL_SEC or 3600)
+    COMPARISON_POLL_INTERVAL_SEC — (Deprecated) Workers now run at the top of each hour
     PREDICTOR_SERVICE_URL        — Cloud Run predictor URL (required)
     PREDICTOR_API_KEY            — Predictor service API key
     KALSHI_API_KEY_ID            — Kalshi credentials (needed by BettingEngine even in dry-run)
@@ -36,7 +36,7 @@ import os
 import signal
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import requests
@@ -589,8 +589,18 @@ def main() -> None:
         if args.once or _shutdown_requested:
             break
 
-        logger.info("Sleeping %ds until next cycle...", POLL_INTERVAL)
-        for _ in range(POLL_INTERVAL):
+        # Calculate time until the next top of the hour
+        now = datetime.now(UTC)
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        seconds_until_next_hour = int((next_hour - now).total_seconds())
+
+        logger.info(
+            "Next cycle will run at the top of the hour: %s (%d seconds)",
+            next_hour.strftime("%H:%M UTC"), seconds_until_next_hour
+        )
+
+        # Sleep until the next hour, checking for shutdown every second
+        for _ in range(seconds_until_next_hour):
             if _shutdown_requested:
                 break
             time.sleep(1)
