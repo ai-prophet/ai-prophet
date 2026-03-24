@@ -21,4 +21,4 @@ steps:
       - '--concurrency=80'
       - '--min-instances=1'
       - '--max-instances=5'
-      - '--set-env-vars=XAI_API_KEY=$$XAI_API_KEY'
+      - '--set-env-vars=XAI_API_KEY=$$XAI_API_KEY,GOOGLE_API_KEY_HAIFENG=$$GEMINI_API_KEY_HAIFENG,GOOGLE_API_KEY_JIBANG=$$GEMINI_API_KEY_JIBANG,OPENAI_API_KEY=$$OPENAI_API_KEY,ANTHROPIC_API_KEY=$$ANTHROPIC_API_KEY'
