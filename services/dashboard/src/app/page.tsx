@@ -31,6 +31,7 @@ import { RiskMetrics } from "@/components/RiskMetrics";
 import { ModelCalibration } from "@/components/ModelCalibration";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { UnifiedMarketTable } from "@/components/UnifiedMarketTable";
+import { OrderMonitoringPanel } from "@/components/OrderMonitoringPanel";
 
 const REFRESH_INTERVAL = 5_000;
 const INSTANCE_STORAGE_KEY = "dashboard-instance-key";
@@ -80,7 +81,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
   const [scrollToMarketId, setScrollToMarketId] = useState<string | null>(null);
-  const [supportTab, setSupportTab] = useState<"risk" | "alerts" | "activity">("risk");
+  const [supportTab, setSupportTab] = useState<"risk" | "alerts" | "activity" | "monitoring">("risk");
   const [marketViewTab, setMarketViewTab] = useState<"activity" | "heatmap">("activity");
   const dataCacheRef = useRef<Record<string, DashboardSnapshot>>({});
   const activeRequestRef = useRef(0);
@@ -827,6 +828,7 @@ export default function Dashboard() {
               {[
                 { key: "risk" as const, label: "Risk & Performance", count: undefined },
                 { key: "alerts" as const, label: "Alerts", count: alerts.length > 0 ? alerts.length : undefined },
+                { key: "monitoring" as const, label: "Order Monitoring", count: undefined },
                 { key: "activity" as const, label: "System Activity", count: undefined },
               ].map((tab) => (
                 <button
@@ -857,6 +859,12 @@ export default function Dashboard() {
                 onClearAll={clearAllAlerts}
                 clearingAlertKey={clearingAlertKey}
                 clearingAll={clearingAll}
+              />
+            )}
+            {supportTab === "monitoring" && (
+              <OrderMonitoringPanel
+                instance={selectedInstance.instanceName}
+                apiUrl={selectedInstance.apiUrl}
               />
             )}
             {supportTab === "activity" && <LiveActivity logs={logs} />}

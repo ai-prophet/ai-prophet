@@ -1317,6 +1317,30 @@ def run_cycle(args) -> None:
             instance_name=INSTANCE_NAME,
         )
 
+    # Order management: Cancel stale orders and reconcile positions
+    if db_engine is not None and not dry_run_override:
+        try:
+            from order_management import cancel_stale_orders, reconcile_positions_with_kalshi
+
+            # Cancel orders pending > 1 hour
+            cancelled = cancel_stale_orders(db_engine, adapter, INSTANCE_NAME, stale_threshold_minutes=60)
+            if cancelled > 0:
+                logger.info("[CYCLE] Cancelled %d stale orders", cancelled)
+
+            # Check for position drift
+            drifts = reconcile_positions_with_kalshi(db_engine, adapter, INSTANCE_NAME, tolerance_contracts=5)
+            if drifts:
+                logger.error("[CYCLE] Position drifts detected: %s", drifts)
+                log_system_event(
+                    db_engine,
+                    "ALERT",
+                    f"Position drift detected: {drifts}",
+                    instance_name=INSTANCE_NAME,
+                )
+
+        except Exception as e:
+            logger.error("[CYCLE] Order management failed: %s", e)
+
     # 1. Gather sticky markets (already tracked in DB)
     tracked_tickers = (
         get_tracked_tickers(db_engine, INSTANCE_NAME)

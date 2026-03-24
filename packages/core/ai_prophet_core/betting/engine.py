@@ -327,10 +327,12 @@ class BettingEngine:
             replay_orders_by_ticker, summarize_replayed_positions = _get_position_replay()
 
             with get_session(self._engine) as session:
+                # Include PENDING orders to prevent double-ordering on unfilled orders.
+                # PENDING orders are treated as if they will fill at the limit price.
                 orders = (
                     session.query(BettingOrder)
                     .filter(BettingOrder.instance_name == self.instance_name)
-                    .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                    .filter(BettingOrder.status.in_(["FILLED", "PENDING", "DRY_RUN"]))
                     .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
                     .all()
                 )

@@ -2182,3 +2182,190 @@ def clear_all_data(instance_name: str | None = Query(None)) -> dict[str, Any]:
         "deleted": deleted,
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+
+# ── GET /order-monitoring ─────────────────────────────────────────
+
+
+@app.get("/order-monitoring")
+def get_order_monitoring(instance_name: str | None = Query(None)) -> dict[str, Any]:
+    """Get order monitoring data for edge case detection.
+
+    Returns:
+    - Pending orders with age
+    - Stale orders (pending > 1 hour)
+    - Recent cancellations
+    - Order status breakdown
+    """
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+
+    now = datetime.now(UTC)
+    one_hour_ago = now - timedelta(hours=1)
+
+    with get_session(engine) as session:
+        # Get all pending orders
+        pending_orders = (
+            _instance_query(session, BettingOrder, resolved_instance)
+            .filter(BettingOrder.status == "PENDING")
+            .order_by(BettingOrder.created_at.desc())
+            .all()
+        )
+
+        # Get stale orders (pending > 1 hour)
+        stale_orders = (
+            _instance_query(session, BettingOrder, resolved_instance)
+            .filter(
+                BettingOrder.status == "PENDING",
+                BettingOrder.created_at < one_hour_ago,
+            )
+            .all()
+        )
+
+        # Get recently cancelled orders (last 24h)
+        cancelled_orders = (
+            _instance_query(session, BettingOrder, resolved_instance)
+            .filter(
+                BettingOrder.status == "CANCELLED",
+                BettingOrder.created_at >= now - timedelta(hours=24),
+            )
+            .order_by(BettingOrder.created_at.desc())
+            .limit(20)
+            .all()
+        )
+
+        # Order status breakdown
+        status_counts = (
+            _instance_query(session, BettingOrder, resolved_instance)
+            .with_entities(
+                BettingOrder.status,
+                func.count(BettingOrder.id).label("count"),
+            )
+            .group_by(BettingOrder.status)
+            .all()
+        )
+
+        # Format pending orders with age
+        pending_list = []
+        for order in pending_orders:
+            age_minutes = (now - order.created_at).total_seconds() / 60
+            pending_list.append({
+                "order_id": order.order_id,
+                "ticker": order.ticker,
+                "side": order.side,
+                "count": order.count,
+                "price_cents": order.price_cents,
+                "created_at": order.created_at.isoformat(),
+                "age_minutes": round(age_minutes, 1),
+                "is_stale": age_minutes > 60,
+            })
+
+        # Format stale orders
+        stale_list = []
+        for order in stale_orders:
+            age_minutes = (now - order.created_at).total_seconds() / 60
+            stale_list.append({
+                "order_id": order.order_id,
+                "ticker": order.ticker,
+                "side": order.side,
+                "count": order.count,
+                "created_at": order.created_at.isoformat(),
+                "age_hours": round(age_minutes / 60, 1),
+            })
+
+        # Format recent cancellations
+        cancelled_list = []
+        for order in cancelled_orders:
+            cancelled_list.append({
+                "order_id": order.order_id,
+                "ticker": order.ticker,
+                "side": order.side,
+                "count": order.count,
+                "created_at": order.created_at.isoformat(),
+            })
+
+        # Format status breakdown
+        status_breakdown = {status: count for status, count in status_counts}
+
+    return {
+        "instance_name": resolved_instance,
+        "pending_orders": pending_list,
+        "stale_orders": stale_list,
+        "recent_cancellations": cancelled_list,
+        "status_breakdown": status_breakdown,
+        "alert_level": "critical" if len(stale_list) > 5 else "warning" if len(stale_list) > 0 else "ok",
+        "timestamp": now.isoformat(),
+    }
+
+
+# ── GET /system-alerts ────────────────────────────────────────────
+
+
+@app.get("/system-alerts")
+def get_system_alerts(instance_name: str | None = Query(None), hours: int = Query(24)) -> dict[str, Any]:
+    """Get recent system alerts and warnings.
+
+    Includes:
+    - Position drift alerts
+    - Order management warnings
+    - System errors
+    """
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+    with get_session(engine) as session:
+        # Get ALERT level logs
+        alerts = (
+            _instance_query(session, SystemLog, resolved_instance)
+            .filter(
+                SystemLog.level == "ALERT",
+                SystemLog.created_at >= cutoff,
+            )
+            .order_by(SystemLog.created_at.desc())
+            .limit(50)
+            .all()
+        )
+
+        # Get ERROR level logs
+        errors = (
+            _instance_query(session, SystemLog, resolved_instance)
+            .filter(
+                SystemLog.level == "ERROR",
+                SystemLog.created_at >= cutoff,
+            )
+            .order_by(SystemLog.created_at.desc())
+            .limit(50)
+            .all()
+        )
+
+        # Format alerts
+        alert_list = []
+        for log in alerts:
+            alert_list.append({
+                "id": log.id,
+                "message": log.message,
+                "component": log.component,
+                "created_at": log.created_at.isoformat(),
+            })
+
+        # Format errors
+        error_list = []
+        for log in errors:
+            error_list.append({
+                "id": log.id,
+                "message": log.message,
+                "component": log.component,
+                "created_at": log.created_at.isoformat(),
+            })
+
+    return {
+        "instance_name": resolved_instance,
+        "alerts": alert_list,
+        "errors": error_list,
+        "alert_count": len(alert_list),
+        "error_count": len(error_list),
+        "has_critical_alerts": len(alert_list) > 0,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
