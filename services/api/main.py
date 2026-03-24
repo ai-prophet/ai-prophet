@@ -494,38 +494,128 @@ def get_trades(
 @app.delete("/trades/dry-runs")
 def delete_dry_run_trades(
     instance_name: str | None = Query(None),
+    cleanup_positions: bool = Query(True, description="Also delete positions created by dry run trades"),
 ) -> dict[str, Any]:
     """Delete all dry run trades (orders with dry_run=true).
 
-    Returns count of deleted trades.
+    Also optionally deletes positions created by those trades to prevent phantom positions.
+
+    Returns count of deleted trades and positions.
     """
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     try:
         with get_session(engine) as session:
-            # Count dry run trades first
-            count_query = (
+            # Get tickers that have dry run trades
+            dry_run_orders = (
                 _instance_query(session, BettingOrder, resolved_instance)
                 .filter(BettingOrder.dry_run == True)
+                .all()
             )
-            dry_run_count = count_query.count()
 
-            if dry_run_count == 0:
+            if not dry_run_orders:
                 return {
-                    "deleted": 0,
+                    "deleted_trades": 0,
+                    "deleted_positions": 0,
                     "message": "No dry run trades found"
                 }
 
+            dry_run_tickers = {order.ticker for order in dry_run_orders}
+            dry_run_count = len(dry_run_orders)
+
+            # Delete positions first (if requested)
+            deleted_positions = 0
+            if cleanup_positions and dry_run_tickers:
+                # Find positions for these tickers
+                dry_run_market_ids = {f"kalshi:{ticker}" for ticker in dry_run_tickers}
+                pos_delete_query = (
+                    _instance_query(session, TradingPosition, resolved_instance)
+                    .filter(TradingPosition.market_id.in_(dry_run_market_ids))
+                )
+                deleted_positions = pos_delete_query.delete(synchronize_session=False)
+
             # Delete dry run trades
-            deleted = count_query.delete(synchronize_session=False)
+            delete_query = (
+                _instance_query(session, BettingOrder, resolved_instance)
+                .filter(BettingOrder.dry_run == True)
+            )
+            deleted_trades = delete_query.delete(synchronize_session=False)
+            session.commit()
+
+            return {
+                "deleted_trades": deleted_trades,
+                "deleted_positions": deleted_positions,
+                "tickers_affected": list(dry_run_tickers),
+                "message": f"Successfully deleted {deleted_trades} dry run trades and {deleted_positions} positions"
+            }
+    except Exception as e:
+        logger.error("DELETE /trades/dry-runs error: %s", e)
+        return {
+            "deleted_trades": 0,
+            "deleted_positions": 0,
+            "error": str(e)
+        }
+
+
+# ── DELETE /positions/orphaned ───────────────────────────────────
+
+
+@app.delete("/positions/orphaned")
+def delete_orphaned_positions(
+    instance_name: str | None = Query(None),
+) -> dict[str, Any]:
+    """Delete positions that have no corresponding filled orders.
+
+    This cleans up phantom positions left behind when dry run trades are deleted.
+
+    Returns count of deleted positions.
+    """
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+    try:
+        with get_session(engine) as session:
+            # Get all positions
+            positions = _instance_query(session, TradingPosition, resolved_instance).all()
+
+            # Get all tickers with filled orders
+            filled_tickers = set()
+            filled_orders = (
+                _instance_query(session, BettingOrder, resolved_instance)
+                .filter(BettingOrder.status == "FILLED")
+                .all()
+            )
+            for order in filled_orders:
+                filled_tickers.add(f"kalshi:{order.ticker}")
+
+            # Find orphaned positions (positions without any filled orders)
+            orphaned_ids = []
+            orphaned_tickers = []
+            for pos in positions:
+                if pos.market_id not in filled_tickers:
+                    orphaned_ids.append(pos.id)
+                    orphaned_tickers.append(pos.market_id.replace("kalshi:", ""))
+
+            if not orphaned_ids:
+                return {
+                    "deleted": 0,
+                    "message": "No orphaned positions found"
+                }
+
+            # Delete orphaned positions
+            deleted = (
+                _instance_query(session, TradingPosition, resolved_instance)
+                .filter(TradingPosition.id.in_(orphaned_ids))
+                .delete(synchronize_session=False)
+            )
             session.commit()
 
             return {
                 "deleted": deleted,
-                "message": f"Successfully deleted {deleted} dry run trades"
+                "tickers_cleaned": orphaned_tickers,
+                "message": f"Successfully deleted {deleted} orphaned positions"
             }
     except Exception as e:
-        logger.error("DELETE /trades/dry-runs error: %s", e)
+        logger.error("DELETE /positions/orphaned error: %s", e)
         return {
             "deleted": 0,
             "error": str(e)
