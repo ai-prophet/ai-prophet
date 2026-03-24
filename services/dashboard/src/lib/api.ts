@@ -506,7 +506,19 @@ export function buildUnifiedMarketRows(
     );
 
     const predicted = mkt.aggregated_p_yes ?? mkt.model_prediction?.p_yes ?? null;
-    const edge = predicted != null && mkt.yes_ask != null ? predicted - mkt.yes_ask : null;
+
+    // Calculate entry edge from first trade's prediction (not current market edge)
+    let edge: number | null = null;
+    if (sortedTrades.length > 0 && sortedTrades[0].prediction) {
+      const firstTrade = sortedTrades[0];
+      const pred = firstTrade.prediction;
+      // Edge is always YES-framed: p_yes - yes_ask
+      edge = pred.p_yes - pred.yes_ask;
+    } else if (predicted != null && mkt.yes_ask != null) {
+      // Fallback to current edge if no trades
+      edge = predicted - mkt.yes_ask;
+    }
+
     const modelPreds = mkt.model_predictions?.filter((p) => p.model_name !== "aggregated") ?? [];
 
     let positionData: UnifiedMarketRow["position"] = null;
