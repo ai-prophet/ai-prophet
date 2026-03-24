@@ -191,7 +191,7 @@ export function OrderMonitoringPanel({
                             )}
                           </div>
 
-                          {order.filled_shares && order.filled_shares > 0 && (
+                          {order.filled_shares != null && order.filled_shares > 0 && (
                             <span className="text-[9px] text-accent mt-0.5 inline-block">
                               Partial: {order.filled_shares}/{order.count}
                             </span>

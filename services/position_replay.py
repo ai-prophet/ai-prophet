@@ -13,9 +13,11 @@ def normalize_order(order: Any) -> tuple[str, str, float, float]:
     """Return normalized (action, side, shares, price) for a betting order row."""
     action = (getattr(order, "action", "BUY") or "BUY").upper()
     side = (getattr(order, "side", "yes") or "yes").lower()
+
+    # CRITICAL: Only use filled_shares for position calculation
+    # Never fall back to count - that's the requested amount, not what was actually filled
+    # For PENDING orders with filled_shares=0, this correctly returns 0 shares
     shares = float(getattr(order, "filled_shares", 0) or 0)
-    if shares <= 0:
-        shares = float(getattr(order, "count", 0) or 0)
 
     price = float(getattr(order, "fill_price", 0) or 0)
     if price <= 0:

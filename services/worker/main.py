@@ -474,6 +474,9 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
 def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
     """Sync all PENDING orders with Kalshi to get latest fill counts and statuses.
 
+    CRITICAL: Also re-verify CANCELLED orders that show partial fills, as these
+    may have incorrect filled_shares values that cause position discrepancies.
+
     Returns: number of orders updated
     """
     if db_engine is None:
@@ -482,21 +485,31 @@ def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
     try:
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
+        from sqlalchemy import or_, and_
 
         updated_count = 0
 
         with get_session(db_engine) as session:
-            # Get all PENDING orders for this instance
-            pending_orders = (
+            # Get all PENDING orders AND CANCELLED orders with non-zero filled_shares
+            # CANCELLED orders with partial fills need verification as they may be wrong
+            orders_to_sync = (
                 session.query(BettingOrder)
                 .filter(BettingOrder.instance_name == instance_name)
-                .filter(BettingOrder.status == "PENDING")
+                .filter(
+                    or_(
+                        BettingOrder.status == "PENDING",
+                        and_(
+                            BettingOrder.status == "CANCELLED",
+                            BettingOrder.filled_shares > 0
+                        )
+                    )
+                )
                 .all()
             )
 
-            logger.info("[SYNC] Syncing %d pending orders with Kalshi", len(pending_orders))
+            logger.info("[SYNC] Syncing %d orders with Kalshi (PENDING + partially-filled CANCELLED)", len(orders_to_sync))
 
-            for order in pending_orders:
+            for order in orders_to_sync:
                 try:
                     # Poll Kalshi for current order status
                     result = adapter.get_order(order.order_id)
@@ -512,7 +525,22 @@ def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
                     order.status = result.status.value
                     order.filled_shares = float(result.filled_shares) if result.filled_shares else 0
 
+                    # Update fill_price if we have fills but no price
+                    if order.filled_shares > 0 and (order.fill_price is None or order.fill_price == 0):
+                        if hasattr(result, 'fill_price') and result.fill_price:
+                            order.fill_price = float(result.fill_price)
+                        elif hasattr(result, 'avg_fill_price') and result.avg_fill_price:
+                            order.fill_price = float(result.avg_fill_price)
+
                     if old_status != order.status or old_filled != order.filled_shares:
+                        # Log critical discrepancies prominently
+                        if old_status == "CANCELLED" and abs(old_filled - order.filled_shares) > 0.1:
+                            logger.warning(
+                                "[SYNC] CRITICAL: CANCELLED order %s had wrong fill count! "
+                                "DB showed %s filled but Kalshi says %s filled. Ticker: %s",
+                                order.order_id[:8], old_filled, order.filled_shares, order.ticker
+                            )
+
                         logger.info(
                             "[SYNC] Updated order %s: %s -> %s, filled: %s -> %s",
                             order.order_id[:8],
