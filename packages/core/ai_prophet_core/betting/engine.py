@@ -213,7 +213,7 @@ class BettingEngine:
                     signal=signal,
                     order_placed=False,
                     status="HOLD_NOPROFIT",
-                    message="Market outside profitable range [3%, 97%]"
+                    error="Market outside profitable range [3%, 97%]"
                 ))
                 continue
 
