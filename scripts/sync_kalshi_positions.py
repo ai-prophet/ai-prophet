@@ -15,7 +15,7 @@ import os
 import sys
 import requests
 
-API_URL = os.getenv("API_URL", "https://ai-prophet-api-shared-441548451945.us-west1.run.app")
+API_URL = os.getenv("API_URL", "https://kalshi-trading-api.onrender.com")
 
 
 def sync_from_kalshi(instance_name: str):
