@@ -488,6 +488,50 @@ def get_trades(
         return {"trades": [], "total": 0, "has_more": False}
 
 
+# ── DELETE /trades/dry-runs ───────────────────────────────────────
+
+
+@app.delete("/trades/dry-runs")
+def delete_dry_run_trades(
+    instance_name: str | None = Query(None),
+) -> dict[str, Any]:
+    """Delete all dry run trades (orders with dry_run=true).
+
+    Returns count of deleted trades.
+    """
+    resolved_instance = _instance_name(instance_name)
+    engine = get_db()
+    try:
+        with get_session(engine) as session:
+            # Count dry run trades first
+            count_query = (
+                _instance_query(session, BettingOrder, resolved_instance)
+                .filter(BettingOrder.dry_run == True)
+            )
+            dry_run_count = count_query.count()
+
+            if dry_run_count == 0:
+                return {
+                    "deleted": 0,
+                    "message": "No dry run trades found"
+                }
+
+            # Delete dry run trades
+            deleted = count_query.delete(synchronize_session=False)
+            session.commit()
+
+            return {
+                "deleted": deleted,
+                "message": f"Successfully deleted {deleted} dry run trades"
+            }
+    except Exception as e:
+        logger.error("DELETE /trades/dry-runs error: %s", e)
+        return {
+            "deleted": 0,
+            "error": str(e)
+        }
+
+
 # ── GET /markets ──────────────────────────────────────────────────
 
 
