@@ -70,8 +70,14 @@ function isOnOrAfterDisplayCutoff(timestamp: string | null | undefined): boolean
   return new Date(timestamp).getTime() >= DISPLAY_CUTOFF_MS;
 }
 
+function shouldDisplayTrade(trade: Trade): boolean {
+  const status = trade.status?.toUpperCase() ?? "";
+  if (status === "PENDING") return true;
+  return isOnOrAfterDisplayCutoff(trade.created_at);
+}
+
 function filterTradesForDisplay(trades: Trade[]): Trade[] {
-  return trades.filter((trade) => isOnOrAfterDisplayCutoff(trade.created_at));
+  return trades.filter(shouldDisplayTrade);
 }
 
 function isSyntheticBackfillTrade(trade: Trade): boolean {
