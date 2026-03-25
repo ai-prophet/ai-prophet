@@ -298,6 +298,24 @@ def run_sync_loop(
         instance_name,
     )
 
+    # Wait for the next :30 boundary before starting (unless --once flag)
+    if not run_once:
+        now = datetime.now(UTC)
+        if now.minute < 30:
+            next_sync = now.replace(minute=30, second=0, microsecond=0)
+        else:
+            next_sync = now.replace(minute=30, second=0, microsecond=0) + timedelta(hours=1)
+
+        seconds_until_next_sync = int((next_sync - now).total_seconds())
+
+        logger.info(
+            "[SYNC] Waiting until next :30 boundary: %s UTC (%.0f seconds)",
+            next_sync.strftime("%H:%M"), seconds_until_next_sync
+        )
+
+        if seconds_until_next_sync > 0 and not _shutdown_requested:
+            time.sleep(seconds_until_next_sync)
+
     cycle_count = 0
     while not _shutdown_requested:
         cycle_count += 1

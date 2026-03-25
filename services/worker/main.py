@@ -2126,6 +2126,33 @@ def main() -> None:
     )
     logger.info("Mode: STANDALONE (direct Kalshi API + LLM predictions)")
 
+    # Wait for the next hour boundary before starting (unless --once flag is set)
+    if not args.once:
+        now = datetime.now(UTC)
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        seconds_until_next_hour = (next_hour - now).total_seconds()
+
+        logger.info(
+            "Waiting until next hour boundary: %s UTC (%.0f seconds)",
+            next_hour.strftime("%H:%M"), seconds_until_next_hour
+        )
+
+        # Show local time too
+        try:
+            import zoneinfo
+            local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+            next_hour_local = next_hour.astimezone(local_tz)
+            logger.info(
+                "First cycle will run at: %s UTC / %s PST",
+                next_hour.strftime("%H:%M"),
+                next_hour_local.strftime("%H:%M")
+            )
+        except:
+            pass
+
+        if seconds_until_next_hour > 0 and not _shutdown_requested:
+            time.sleep(seconds_until_next_hour)
+
     while not _shutdown_requested:
         try:
             run_cycle(args)
