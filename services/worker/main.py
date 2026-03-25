@@ -512,10 +512,14 @@ def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
             for order in orders_to_sync:
                 try:
                     # Poll Kalshi for current order status
-                    result = adapter.get_order(order.order_id)
+                    exchange_order_id = order.exchange_order_id or order.order_id
+                    result = adapter.get_order(exchange_order_id)
 
                     if result is None:
-                        logger.warning("[SYNC] Could not fetch order %s from Kalshi", order.order_id)
+                        logger.warning(
+                            "[SYNC] Could not fetch order %s from Kalshi",
+                            exchange_order_id,
+                        )
                         continue
 
                     # Update order status and fill count
@@ -875,8 +879,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
     """Fetch active binary markets from Kalshi via the events endpoint.
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
-    pages, collects candidates closing within 15 days, then returns the top
-    ``max_markets`` ranked by volume and urgency.
+    pages, collects candidates closing within 15 days, then returns the first
+    ``max_markets`` that pass the discovery filters.
 
     Markets with prices outside the 90/10 band are excluded from discovery.
     """
@@ -951,28 +955,16 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                 yes_sub = mkt.get("yes_sub_title", "")
                 market_title = f"{event_title}: {yes_sub}" if yes_sub else event_title
 
-                volume = float(mkt.get("volume_24h_fp", 0) or 0)
-
                 # Apply spread filter early — skip illiquid markets
                 _ya = float(yes_ask) if yes_ask is not None else price
                 _na = float(no_ask) if no_ask is not None else (1.0 - price)
                 if _ya + _na > 1.03:
                     continue
+                # Require both sides to stay inside the 10c-90c range.
+                # Example: 95c/8c gets excluded because it is more extreme than 90-10.
                 if _ya < 0.10 or _ya > 0.90 or _na < 0.10 or _na > 0.90:
                     continue
 
-                # Urgency bonus: markets closing sooner rank higher
-                # 1.0 if closing today, 0.0 if closing in 15 days
-                urgency_bonus = 0.0
-                if close_time_str:
-                    try:
-                        close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-                        days_left = (close_dt - datetime.now(UTC)).total_seconds() / 86400
-                        urgency_bonus = max(0.0, 1.0 - (days_left / 15)) * volume * 0.5
-                    except (ValueError, AttributeError):
-                        pass
-
-                # Rank by volume with an urgency bonus for nearer expirations.
                 candidates.append({
                     "ticker": ticker,
                     "event_ticker": mkt.get("event_ticker", ""),
@@ -986,8 +978,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     "last_price": last_price,
                     "close_time": close_time_str,
                     "open_time": mkt.get("open_time"),
-                    "volume_24h": volume,
-                    "_score": volume + urgency_bonus,
+                    "volume_24h": float(mkt.get("volume_24h_fp", 0) or 0),
                 })
 
         if not cursor:
@@ -995,13 +986,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
 
         logger.debug("Page %d: %d candidates so far, fetching more...", page + 1, len(candidates))
 
-    # Rank: prefer higher volume, with a bonus for nearer expirations.
-    candidates.sort(key=lambda m: m["_score"], reverse=True)
     markets = candidates[:max_markets]
-
-    # Clean up internal scoring field
-    for m in markets:
-        m.pop("_score", None)
 
     logger.info(
         "Selected %d markets (from %d candidates, %d events, %d pages)",

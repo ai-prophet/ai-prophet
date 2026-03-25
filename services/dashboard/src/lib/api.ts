@@ -536,13 +536,27 @@ export function buildUnifiedMarketRows(
   const posMap = new Map<string, Position>();
   for (const pos of positions) posMap.set(pos.market_id, pos);
 
-  // Index trades by ticker
+  // Index all orders/trades by ticker for display history
   const tradesByTicker = new Map<string, Trade[]>();
   // Also index by prediction.market_id for fallback matching
   const tradesByMarketId = new Map<string, Trade[]>();
+  // Separately track filled-style trades for position math
+  const filledTradesByTicker = new Map<string, Trade[]>();
+  const filledTradesByMarketId = new Map<string, Trade[]>();
   const edgeTradesByTicker = new Map<string, Trade[]>();
   const edgeTradesByMarketId = new Map<string, Trade[]>();
   for (const t of trades) {
+    const existing = tradesByTicker.get(t.ticker);
+    if (existing) existing.push(t);
+    else tradesByTicker.set(t.ticker, [t]);
+
+    if (t.prediction?.market_id) {
+      const mid = t.prediction.market_id;
+      const ex = tradesByMarketId.get(mid);
+      if (ex) ex.push(t);
+      else tradesByMarketId.set(mid, [t]);
+    }
+
     if (t.status === "FILLED" || t.status === "DRY_RUN" || t.status === "PENDING") {
       const edgeExisting = edgeTradesByTicker.get(t.ticker);
       if (edgeExisting) edgeExisting.push(t);
@@ -557,15 +571,15 @@ export function buildUnifiedMarketRows(
     }
 
     if (t.status !== "FILLED" && t.status !== "DRY_RUN") continue;
-    const existing = tradesByTicker.get(t.ticker);
-    if (existing) existing.push(t);
-    else tradesByTicker.set(t.ticker, [t]);
+    const filledExisting = filledTradesByTicker.get(t.ticker);
+    if (filledExisting) filledExisting.push(t);
+    else filledTradesByTicker.set(t.ticker, [t]);
 
     if (t.prediction?.market_id) {
       const mid = t.prediction.market_id;
-      const ex2 = tradesByMarketId.get(mid);
+      const ex2 = filledTradesByMarketId.get(mid);
       if (ex2) ex2.push(t);
-      else tradesByMarketId.set(mid, [t]);
+      else filledTradesByMarketId.set(mid, [t]);
     }
   }
 
@@ -578,6 +592,9 @@ export function buildUnifiedMarketRows(
     const pos = posMap.get(mkt.market_id);
     const mktTrades = tradesByTicker.get(mkt.ticker)
       ?? tradesByMarketId.get(mkt.market_id)
+      ?? [];
+    const filledMktTrades = filledTradesByTicker.get(mkt.ticker)
+      ?? filledTradesByMarketId.get(mkt.market_id)
       ?? [];
     const mktEdgeTrades = edgeTradesByTicker.get(mkt.ticker)
       ?? edgeTradesByMarketId.get(mkt.market_id)
@@ -644,14 +661,14 @@ export function buildUnifiedMarketRows(
       if (latestResolvedTradeMs == null) return true;
       const createdMs = new Date(order.created_at).getTime();
       if (Number.isNaN(createdMs)) return true;
-      return createdMs > latestResolvedTradeMs;
+      return createdMs >= latestResolvedTradeMs;
     });
     let target_shares: number | null = null;
     let filled_shares: number | null = null;
     let pending_shares: number | null = null;
 
     // Calculate filled shares from BUY trades
-    const buyTrades = sortedTrades.filter((t) => t.action?.toUpperCase() === "BUY");
+    const buyTrades = filledMktTrades.filter((t) => t.action?.toUpperCase() === "BUY");
     if (buyTrades.length > 0) {
       filled_shares = buyTrades.reduce((sum, t) => sum + (t.filled_shares || t.count), 0);
     }
@@ -718,12 +735,13 @@ export function buildUnifiedMarketRows(
   for (const pos of positions) {
     if (seenMarketIds.has(pos.market_id)) continue;
     const mktTrades = (pos.ticker ? tradesByTicker.get(pos.ticker) : null) ?? [];
+    const filledMktTrades = (pos.ticker ? filledTradesByTicker.get(pos.ticker) : null) ?? [];
     const sortedTrades = [...mktTrades].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
 
     // Calculate filled shares for orphan positions
-    const buyTrades = sortedTrades.filter((t) => t.action?.toUpperCase() === "BUY");
+    const buyTrades = filledMktTrades.filter((t) => t.action?.toUpperCase() === "BUY");
     const filled_shares = buyTrades.length > 0
       ? buyTrades.reduce((sum, t) => sum + (t.filled_shares || t.count), 0)
       : null;

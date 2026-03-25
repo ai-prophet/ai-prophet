@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
   LineChart,
   Line,
@@ -103,6 +103,14 @@ function buildHoldExplanation(evaluation: CycleEvaluation): string {
     return `Holding because no order was placed this cycle despite edge ${edge.toFixed(1)}%.`;
   }
   return "Holding because no action was taken this cycle.";
+}
+
+function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
+  return (row.pending_orders ?? []).some((order) => (order.count - order.filled_shares) > 0);
+}
+
+function rowHasActivity(row: UnifiedMarketRow): boolean {
+  return row.has_trades || row.trade_count > 0 || (row.pending_shares != null && row.pending_shares > 0) || hasLivePendingExposure(row);
 }
 
 type SortKey =
@@ -261,8 +269,8 @@ export function UnifiedMarketTable({
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
       // FIRST PRIORITY: Markets with actual trades OR pending orders come before inactive markets
-      const aIsActive = a.has_trades || a.trade_count > 0 || (a.pending_shares && a.pending_shares > 0);
-      const bIsActive = b.has_trades || b.trade_count > 0 || (b.pending_shares && b.pending_shares > 0);
+      const aIsActive = rowHasActivity(a);
+      const bIsActive = rowHasActivity(b);
       if (aIsActive && !bIsActive) return -1;
       if (!aIsActive && bIsActive) return 1;
 
@@ -558,20 +566,12 @@ export function UnifiedMarketTable({
                 const hasMultipleModels = row.model_predictions.length > 1;
 
                 // Check if this is the first inactive market after active markets
-                const prevIsActive = index > 0 && (
-                  visible[index - 1].has_trades ||
-                  visible[index - 1].trade_count > 0 ||
-                  (visible[index - 1].pending_shares != null && visible[index - 1].pending_shares! > 0)
-                );
-                const currIsInactive = !(
-                  row.has_trades ||
-                  row.trade_count > 0 ||
-                  (row.pending_shares != null && row.pending_shares! > 0)
-                );
+                const prevIsActive = index > 0 && rowHasActivity(visible[index - 1]);
+                const currIsInactive = !rowHasActivity(row);
                 const isFirstInactive = index > 0 && prevIsActive && currIsInactive;
 
                 return (
-                  <>
+                  <Fragment key={row.market_id}>
                     {/* Add divider row between active and inactive markets */}
                     {isFirstInactive && (
                       <tr key={`divider-${row.market_id}`} className="bg-t-bg-secondary/30">
@@ -587,7 +587,6 @@ export function UnifiedMarketTable({
                       </tr>
                     )}
                     <MarketRow
-                      key={row.market_id}
                       row={row}
                       isExpanded={isExpanded}
                       hasMultipleModels={hasMultipleModels}
@@ -599,7 +598,7 @@ export function UnifiedMarketTable({
                         else rowRefs.current.delete(row.market_id);
                       }}
                     />
-                  </>
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -1029,6 +1028,12 @@ function ExpandedPanel({
   const [loadingEvaluations, setLoadingEvaluations] = useState(false);
   const [evaluationsOffset, setEvaluationsOffset] = useState(0);
   const EVALUATIONS_BATCH_SIZE = 10;
+  const cycleEvaluationsCacheRef = useRef<
+    Map<string, { evaluations: CycleEvaluation[]; total: number; offset: number }>
+  >(new Map());
+  const cycleEvaluationsRequestRef = useRef(0);
+
+  const cycleEvaluationsCacheKey = `evals:${instanceCacheKey}:${row.market_id}`;
 
   useEffect(() => {
     const cacheKey = `runs:${instanceCacheKey}:${row.market_id}`;
@@ -1053,6 +1058,22 @@ function ExpandedPanel({
     return () => { cancelled = true; };
   }, [apiClient, instanceCacheKey, row.market_id]);
 
+  useEffect(() => {
+    const cached = cycleEvaluationsCacheRef.current.get(cycleEvaluationsCacheKey);
+    if (cached) {
+      setCycleEvaluations(cached.evaluations);
+      setTotalCycleEvaluations(cached.total);
+      setEvaluationsOffset(cached.offset);
+      setLoadingEvaluations(false);
+      return;
+    }
+
+    setCycleEvaluations([]);
+    setTotalCycleEvaluations(0);
+    setEvaluationsOffset(0);
+    setLoadingEvaluations(false);
+  }, [cycleEvaluationsCacheKey]);
+
   // Fetch cycle evaluations
   const fetchCycleEvaluations = useCallback((offset: number, append = false) => {
     // Extract ticker from market_id (format: "kalshi:TICKER")
@@ -1062,46 +1083,63 @@ function ExpandedPanel({
 
     if (!ticker) return;
 
+    const requestId = ++cycleEvaluationsRequestRef.current;
     setLoadingEvaluations(true);
 
     apiClient.getCycleEvaluations(ticker, EVALUATIONS_BATCH_SIZE, offset)
       .then((data) => {
+        if (requestId !== cycleEvaluationsRequestRef.current) return;
+        const existingEvaluations = append
+          ? (cycleEvaluationsCacheRef.current.get(cycleEvaluationsCacheKey)?.evaluations ?? [])
+          : [];
+        const nextEvaluations = append
+          ? [...existingEvaluations, ...(data.evaluations || [])]
+          : (data.evaluations || []);
+
+        cycleEvaluationsCacheRef.current.set(cycleEvaluationsCacheKey, {
+          evaluations: nextEvaluations,
+          total: data.total || 0,
+          offset: offset + EVALUATIONS_BATCH_SIZE,
+        });
+
         if (append) {
           setCycleEvaluations(prev => [...prev, ...(data.evaluations || [])]);
         } else {
-          setCycleEvaluations(data.evaluations || []);
+          setCycleEvaluations(nextEvaluations);
         }
         setTotalCycleEvaluations(data.total || 0);
         setEvaluationsOffset(offset + EVALUATIONS_BATCH_SIZE);
       })
       .catch((error) => {
+        if (requestId !== cycleEvaluationsRequestRef.current) return;
         console.error('[Timeline] Failed to fetch cycle evaluations:', error);
         if (!append) {
           setCycleEvaluations([]);
         }
       })
       .finally(() => {
+        if (requestId !== cycleEvaluationsRequestRef.current) return;
         setLoadingEvaluations(false);
       });
-  }, [apiClient, row.market_id, row.ticker, row.event_ticker]);
+  }, [apiClient, row.market_id, row.ticker, row.event_ticker, cycleEvaluationsCacheKey]);
 
   // Fetch initial evaluations when timeline tab is selected
   useEffect(() => {
-    if (activeTab === "timeline" && cycleEvaluations.length === 0 && !loadingEvaluations) {
-      fetchCycleEvaluations(0);
-    }
-  }, [activeTab, cycleEvaluations.length, loadingEvaluations, fetchCycleEvaluations]);
+    if (activeTab !== "timeline" || loadingEvaluations) return;
+    if (cycleEvaluationsCacheRef.current.has(cycleEvaluationsCacheKey)) return;
+    fetchCycleEvaluations(0);
+  }, [activeTab, loadingEvaluations, fetchCycleEvaluations, cycleEvaluationsCacheKey]);
 
   const timelineCount = useMemo(() => {
-    // Use cycle evaluations count if available, otherwise fall back to old calculation
-    if (totalCycleEvaluations > 0) {
-      return totalCycleEvaluations;
+    // Once fetched for this market, count only the entries that would actually render.
+    if (cycleEvaluationsCacheRef.current.has(cycleEvaluationsCacheKey)) {
+      return countRenderableCycleEvaluations(cycleEvaluations, row);
     }
     const chronTrades = [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const chronRuns = [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
     return tradesWithRuns.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
-  }, [row.trades, modelRuns, totalCycleEvaluations]);
+  }, [row, modelRuns, cycleEvaluations, cycleEvaluationsCacheKey]);
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
     { key: "trades", label: "Trades", count: row.trade_count },
@@ -1222,6 +1260,36 @@ function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: M
       .filter((id): id is number => id != null)
   );
   return chronRuns.filter((run) => !matchedIds.has(run.id) && isHoldLikeDecision(run.decision));
+}
+
+function countRenderableCycleEvaluations(
+  cycleEvaluations: CycleEvaluation[],
+  row: UnifiedMarketRow,
+): number {
+  const hasCurrentPendingExposure = (row.pending_shares ?? 0) > 0;
+  const hasCurrentOpenPosition = (row.position?.quantity ?? 0) > 0;
+  const hasTradeHistory = row.trades.length > 0;
+  const hasActionableEvaluation = cycleEvaluations.some((evaluation) => {
+    const actionType = evaluation.action?.type?.toLowerCase();
+    return actionType != null && actionType !== "hold";
+  });
+
+  return cycleEvaluations.filter((evaluation) => {
+    const actionType = evaluation.action?.type?.toLowerCase();
+    const order = evaluation.order;
+    const filledCount = order ? (order.filled ?? order.count) : 0;
+
+    if (actionType !== "hold") {
+      if (!order) return true;
+      if (filledCount > 0) return true;
+      return hasCurrentPendingExposure;
+    }
+
+    if (!hasActionableEvaluation && !hasTradeHistory) return true;
+    if (hasCurrentPendingExposure) return true;
+    if (hasCurrentOpenPosition) return true;
+    return false;
+  }).length;
 }
 
 function TimelineTab({
@@ -2528,12 +2596,14 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
 
   // Cash flow per trade: BUY = negative (money out), SELL = positive (money back)
   const tradeRows = sortedTrades.map((trade) => {
-    const qty = trade.filled_shares || trade.count;
+    const status = trade.status?.toUpperCase() ?? "";
+    const isExecuted = status === "FILLED" || status === "DRY_RUN";
+    const qty = isExecuted ? (trade.filled_shares || trade.count) : (trade.filled_shares || 0);
     const price = trade.price_cents / 100;
     const isSell = trade.action?.toUpperCase() === "SELL";
     // BUY: you spend -qty×price. SELL: you receive +qty×price.
     const cashFlow = isSell ? qty * price : -(qty * price);
-    return { trade, qty, price, isSell, cashFlow };
+    return { trade, qty, displayQty: trade.count, price, isSell, cashFlow, isExecuted };
   });
 
   const totalCashFlow = tradeRows.reduce((sum, r) => sum + r.cashFlow, 0);
@@ -2565,7 +2635,7 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-t-border/20">
-          {tradeRows.map(({ trade, qty, price, isSell, cashFlow }) => (
+          {tradeRows.map(({ trade, qty, displayQty, price, isSell, cashFlow, isExecuted }) => (
             <tr key={trade.id} className="hover:bg-t-panel-hover/50">
               <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
                 {fmtTime(trade.created_at)}
@@ -2582,10 +2652,15 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
                   </span>
                 </span>
               </td>
-              <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{qty}</td>
+              <td className="px-2 py-1.5 text-right font-mono text-txt-primary">
+                {displayQty}
+                {!isExecuted && trade.filled_shares > 0 ? (
+                  <span className="ml-1 text-txt-muted">({trade.filled_shares} filled)</span>
+                ) : null}
+              </td>
               <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{Math.round(price * 100)}c</td>
-              <td className={`px-2 py-1.5 text-right font-mono font-medium ${pnlCls(cashFlow)}`}>
-                {cashFlow >= 0 ? "+" : ""}{fmtDollar(cashFlow)}
+              <td className={`px-2 py-1.5 text-right font-mono font-medium ${isExecuted ? pnlCls(cashFlow) : "text-txt-muted"}`}>
+                {isExecuted ? `${cashFlow >= 0 ? "+" : ""}${fmtDollar(cashFlow)}` : "--"}
               </td>
               <td className="px-2 py-1.5 text-center">
                 <StatusBadge status={trade.status} />
