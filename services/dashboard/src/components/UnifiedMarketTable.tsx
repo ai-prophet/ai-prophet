@@ -563,9 +563,9 @@ export function UnifiedMarketTable({
               <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
                 <Th k="title" sortKeys={sortKeys} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
                 <th className="px-3 py-2 text-left font-medium">Category</th>
-                <Th k="yes_ask" sortKeys={sortKeys} onClick={handleSort} align="right" info="Current live Yes / No ask prices on Kalshi">Live mkt price</Th>
+                <Th k="yes_ask" sortKeys={sortKeys} onClick={handleSort} align="right" info="Current live Yes / No ask prices on Kalshi">Live Mkt Price</Th>
                 <Th k="predicted" sortKeys={sortKeys} onClick={handleSort} align="right" info="Model probability (p_yes from the prediction model)">Model P</Th>
-                <Th k="edge" sortKeys={sortKeys} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
+                <Th k="edge" sortKeys={sortKeys} onClick={handleSort} align="right" info="Model edge at the last prediction step. Computed from the model probability and market ask at prediction time, not from the current live market price.">Edge</Th>
                 <Th k="position" sortKeys={sortKeys} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
                 <Th k="avg_price" sortKeys={sortKeys} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
                 <Th k="unrealized" sortKeys={sortKeys} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
