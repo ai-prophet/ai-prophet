@@ -1217,16 +1217,52 @@ function TimelineTab({
       return aTime - bTime; // Oldest first for position tracking
     });
 
-    // Track positions as we process events
+    // Track positions and last orders as we process events
     const positionsByMarket = new Map<string, { quantity: number; side: string }>();
+    const lastOrderByMarket = new Map<string, { evaluation: CycleEvaluation; idx: number; filled: boolean }>();
+
+    // First pass: mark superseded orders
+    const evaluationsWithSuperseding = sortedEvaluations.map((evaluation, idx) => {
+      const marketId = evaluation.market_id;
+      const order = evaluation.order;
+
+      // Look ahead to see if this unfilled order gets superseded
+      let wasSuperseded = false;
+      if (order && order.filled != null && order.filled < order.count) {
+        // Check if a later order for the same market supersedes this one
+        for (let j = idx + 1; j < sortedEvaluations.length; j++) {
+          const laterEval = sortedEvaluations[j];
+          if (laterEval.market_id === marketId && laterEval.order && laterEval.action?.type !== 'hold') {
+            wasSuperseded = true;
+            break;
+          }
+        }
+      }
+
+      return {
+        ...evaluation,
+        wasSuperseded,
+      } as any;
+    });
 
     // Process each evaluation and detect position adjustments
-    const evaluationEvents = sortedEvaluations.map((evaluation, idx) => {
+    const evaluationEvents = evaluationsWithSuperseding.map((evaluation, idx) => {
       const marketId = evaluation.market_id;
       const order = evaluation.order;
       const orderSide = evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase();
 
       let modifiedEvaluation = evaluation;
+
+      // Check if there was a previous unfilled order for this market
+      const lastOrder = lastOrderByMarket.get(marketId);
+      if (lastOrder && !lastOrder.filled && order && evaluation.action?.type !== 'hold') {
+        // Mark the previous order as superseded/cancelled
+        // We'll handle this by modifying the description of the current order
+        modifiedEvaluation = {
+          ...evaluation,
+          previousUnfilledOrder: lastOrder.evaluation.order,
+        } as any;
+      }
 
       // Check if this is a position adjustment
       if (order && marketId && orderSide && evaluation.action?.type === 'buy') {
@@ -1235,7 +1271,7 @@ function TimelineTab({
         if (currentPos && currentPos.side === orderSide) {
           // This is increasing an existing position - mark as adjustment
           modifiedEvaluation = {
-            ...evaluation,
+            ...modifiedEvaluation,
             action: {
               ...evaluation.action,
               type: "adjustment" as any,
@@ -1249,6 +1285,16 @@ function TimelineTab({
         positionsByMarket.set(marketId, {
           quantity: order.count,
           side: orderSide,
+        });
+      }
+
+      // Track this order for future superseding detection
+      if (order && marketId) {
+        const isFilled = order.filled != null && order.filled === order.count;
+        lastOrderByMarket.set(marketId, {
+          evaluation,
+          idx,
+          filled: isFilled,
         });
       }
 
@@ -1857,12 +1903,23 @@ function TimelineTab({
                               evaluation.order.filled === evaluation.order.count ? (
                                 '✓ filled'
                               ) : (
-                                `(${evaluation.order.filled}/${evaluation.order.count} filled)`
+                                // Check if this order has been superseded by looking ahead
+                                (evaluation as any).wasSuperseded ? (
+                                  `cancelled`
+                                ) : (
+                                  `(${evaluation.order.filled}/${evaluation.order.count} filled)`
+                                )
                               )
                             ) : (
                               'ordered'
                             )}
                           </span>
+                          {/* Show note about previous cancelled order */}
+                          {(evaluation as any).previousUnfilledOrder && (
+                            <span className="text-[9px] text-txt-muted italic">
+                              (replaces {(evaluation as any).previousUnfilledOrder.count} unfilled)
+                            </span>
+                          )}
                         </>
                       )}
 
@@ -2251,8 +2308,13 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
     return <div className="text-[10px] text-txt-muted">No trades for this market</div>;
   }
 
+  // Sort trades by created_at descending (newest first)
+  const sortedTrades = [...row.trades].sort((a, b) =>
+    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+
   // Cash flow per trade: BUY = negative (money out), SELL = positive (money back)
-  const tradeRows = row.trades.map((trade) => {
+  const tradeRows = sortedTrades.map((trade) => {
     const qty = trade.filled_shares || trade.count;
     const price = trade.price_cents / 100;
     const isSell = trade.action?.toUpperCase() === "SELL";
