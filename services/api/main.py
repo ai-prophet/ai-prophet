@@ -188,9 +188,22 @@ def _build_kalshi_adapter(instance_name: str):
     from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
     dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", instance_name, True)
+    api_key_id = _instance_setting("KALSHI_API_KEY_ID", instance_name, "")
+    private_key_base64 = _instance_setting("KALSHI_PRIVATE_KEY_B64", instance_name, "")
+
+    # Log which credentials are being used for debugging
+    suffix = instance_name.replace(" ", "_").upper()
+    using_instance_specific = (
+        f"KALSHI_API_KEY_ID_{suffix}" in os.environ
+    )
+    logger.info(
+        f"Building Kalshi adapter for {instance_name}: "
+        f"using {'instance-specific' if using_instance_specific else 'generic'} credentials"
+    )
+
     return KalshiAdapter(
-        api_key_id=_instance_setting("KALSHI_API_KEY_ID", instance_name, ""),
-        private_key_base64=_instance_setting("KALSHI_PRIVATE_KEY_B64", instance_name, ""),
+        api_key_id=api_key_id,
+        private_key_base64=private_key_base64,
         base_url=_instance_setting("KALSHI_BASE_URL", instance_name, "https://api.elections.kalshi.com"),
         dry_run=dry_run,
     )
@@ -2343,6 +2356,11 @@ def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any
         resolved_instance = _instance_name(instance_name)
         dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
 
+        # Check which credentials are being used
+        suffix = resolved_instance.replace(" ", "_").upper()
+        using_instance_specific = f"KALSHI_API_KEY_ID_{suffix}" in os.environ
+        credentials_type = "instance-specific" if using_instance_specific else "generic"
+
         if dry_run:
             starting_cash = float(_instance_setting("WORKER_STARTING_CASH", resolved_instance, "10000"))
             db_engine = get_db()
@@ -2359,6 +2377,8 @@ def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any
         return {
             "balance": balance,
             "dry_run": dry_run,
+            "instance": resolved_instance,
+            "credentials_type": credentials_type,
             "instance_name": resolved_instance,
             "timestamp": datetime.now(UTC).isoformat(),
         }

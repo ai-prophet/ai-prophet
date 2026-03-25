@@ -261,7 +261,7 @@ export default function Dashboard() {
         instanceApi.getPositions(200),
         instanceApi.getHealth(),
         instanceApi.getKalshiBalance().catch((e) => {
-          console.error("Failed to fetch balance:", e);
+          console.error(`Failed to fetch balance for ${instanceKey}:`, e);
           return null;
         }),
         instanceApi.getAlerts(),
@@ -344,6 +344,9 @@ export default function Dashboard() {
   }, [applySnapshot, instanceApi, selectedInstance.key, selectedInstance.label]);
 
   useEffect(() => {
+    // Cancel any pending requests when switching instances
+    activeRequestRef.current++;
+
     const cachedSnapshot = dataCacheRef.current[selectedInstance.key];
     if (cachedSnapshot) {
       // Apply cached data but clear balance to force fresh fetch
@@ -364,6 +367,8 @@ export default function Dashboard() {
     intervalRef.current = setInterval(fetchAll, REFRESH_INTERVAL);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      // Cancel any pending requests when unmounting or switching
+      activeRequestRef.current++;
     };
   }, [applySnapshot, clearSnapshot, fetchAll, selectedInstance.key]);
 

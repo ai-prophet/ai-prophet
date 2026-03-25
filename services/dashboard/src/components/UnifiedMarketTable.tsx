@@ -520,12 +520,12 @@ export function UnifiedMarketTable({
                 const prevIsActive = index > 0 && (
                   visible[index - 1].has_trades ||
                   visible[index - 1].trade_count > 0 ||
-                  (visible[index - 1].pending_shares && visible[index - 1].pending_shares > 0)
+                  (visible[index - 1].pending_shares != null && visible[index - 1].pending_shares! > 0)
                 );
                 const currIsInactive = !(
                   row.has_trades ||
                   row.trade_count > 0 ||
-                  (row.pending_shares && row.pending_shares > 0)
+                  (row.pending_shares != null && row.pending_shares! > 0)
                 );
                 const isFirstInactive = index > 0 && prevIsActive && currIsInactive;
 

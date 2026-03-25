@@ -606,7 +606,7 @@ export function buildUnifiedMarketRows(
     const hasActiveOrders = pendingOrders.length > 0;
     const hasPositiveEdge = edge != null && edge > 0.01;
 
-    if (hasPositiveEdge && hasActiveOrders) {
+    if (hasPositiveEdge && hasActiveOrders && edge != null) {
       // Target shares = edge magnitude in percentage points (e.g., 29pp edge = 29 shares)
       target_shares = Math.round(Math.abs(edge) * 100);
     }
