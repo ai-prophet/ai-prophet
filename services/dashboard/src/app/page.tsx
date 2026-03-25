@@ -343,9 +343,16 @@ export default function Dashboard() {
   useEffect(() => {
     const cachedSnapshot = dataCacheRef.current[selectedInstance.key];
     if (cachedSnapshot) {
-      applySnapshot(cachedSnapshot);
+      // Apply cached data but clear balance to force fresh fetch
+      applySnapshot({
+        ...cachedSnapshot,
+        balance: null,  // Clear balance to show loading state
+        pnl: null,      // Clear P&L as well since it's instance-specific
+      });
+    } else {
+      // No cache - clear everything
+      clearSnapshot();
     }
-    // No clearSnapshot() — keep stale data visible until fresh data arrives
     setError("");
     fetchAll();
     intervalRef.current = setInterval(fetchAll, REFRESH_INTERVAL);
