@@ -201,8 +201,10 @@ export interface HealthData {
   last_heartbeat: string | null;
   last_cycle_end: string | null;
   effective_last_cycle_end?: string | null;
+  last_sync_end?: string | null;
   poll_interval_sec: number;
   cycle_running?: boolean;
+  sync_running?: boolean;
   mode: string;
   betting_enabled: boolean;
   instance_name?: string;

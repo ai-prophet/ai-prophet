@@ -388,13 +388,19 @@ def run_sync_loop(
 
         try:
             logger.info("[SYNC] Starting sync cycle #%d", cycle_count)
+            log_sync_event(
+                db_engine,
+                "HEARTBEAT",
+                "sync_start",
+                instance_name,
+            )
             results = sync_with_kalshi(db_engine, adapter, instance_name, dry_run)
 
             # Log heartbeat
             log_sync_event(
                 db_engine,
                 "HEARTBEAT",
-                f"Cycle #{cycle_count} complete",
+                "sync_end",
                 instance_name,
             )
 

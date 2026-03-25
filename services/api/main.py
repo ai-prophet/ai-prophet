@@ -40,7 +40,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
 from instance_config import DEFAULT_INSTANCE_NAME, get_instance_env, normalize_instance_name
 from position_replay import InventoryPosition, normalize_order
 
@@ -305,6 +305,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     worker_status = "unknown"
     last_cycle_end = None
     effective_last_cycle_end = None
+    last_sync_end = None
     poll_interval = _worker_poll_interval(resolved_instance)
     stale_threshold_sec = _worker_stale_threshold_sec(resolved_instance)
 
@@ -375,6 +376,42 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
                     latest_per[r.instance_name] = r.created_at
             if latest_per:
                 effective_last_cycle_end = max(latest_per.values()).isoformat()
+
+            # 4a. Sync heartbeat status for the independent Kalshi sync service
+            sync_start_row = (
+                session.query(SystemLog)
+                .filter(
+                    SystemLog.instance_name == resolved_instance,
+                    SystemLog.level == "HEARTBEAT",
+                    SystemLog.component == "kalshi_sync",
+                    SystemLog.message == "sync_start",
+                )
+                .order_by(SystemLog.created_at.desc())
+                .first()
+            )
+            sync_end_row = (
+                session.query(SystemLog)
+                .filter(
+                    SystemLog.instance_name == resolved_instance,
+                    SystemLog.level == "HEARTBEAT",
+                    SystemLog.component == "kalshi_sync",
+                )
+                .filter(
+                    or_(
+                        SystemLog.message == "sync_end",
+                        SystemLog.message.like("Cycle #% complete"),
+                    )
+                )
+                .order_by(SystemLog.created_at.desc())
+                .first()
+            )
+            sync_running = False
+            if sync_end_row:
+                last_sync_end = sync_end_row.created_at.isoformat()
+            if sync_start_row and sync_end_row:
+                sync_running = sync_start_row.created_at > sync_end_row.created_at
+            elif sync_start_row and not sync_end_row:
+                sync_running = True
     except Exception:
         pass
 
@@ -393,8 +430,10 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
         "last_heartbeat": last_heartbeat,
         "last_cycle_end": last_cycle_end if show_cycle_timing else None,
         "effective_last_cycle_end": effective_last_cycle_end if show_cycle_timing else None,
+        "last_sync_end": last_sync_end,
         "poll_interval_sec": poll_interval,
         "cycle_running": cycle_running if 'cycle_running' in locals() else False,
+        "sync_running": sync_running if 'sync_running' in locals() else False,
         "mode": "dry_run" if dry_run else "live",
         "betting_enabled": enabled,
         "instance_name": resolved_instance,

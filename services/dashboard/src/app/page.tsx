@@ -1131,10 +1131,10 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     return () => clearInterval(t);
   }, []);
 
-  // Only show countdown when cycle is running or there's actual cycle timing data
-  // If effective_last_cycle_end is null, worker is disabled/inactive
+  // Only show status when there's actual worker or sync timing data.
   const cycleEndStr = health?.effective_last_cycle_end ?? health?.last_cycle_end;
-  if (!cycleEndStr || !health?.poll_interval_sec) {
+  const syncEndStr = health?.last_sync_end ?? null;
+  if ((!cycleEndStr && !syncEndStr) || !health?.poll_interval_sec) {
     return (
       <span className="text-[10px] text-txt-muted font-mono">
         Worker inactive
@@ -1142,17 +1142,29 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     );
   }
 
-  // Calculate next hour boundary (workers run at top of hour)
+  // Worker runs at the top of each hour.
   const nowDate = new Date(now);
   const nextHour = new Date(nowDate);
-  nextHour.setHours(nowDate.getHours() + 1, 0, 0, 0);  // Next hour, 0 minutes, 0 seconds
+  nextHour.setHours(nowDate.getHours() + 1, 0, 0, 0);
   const nextCycleMs = nextHour.getTime();
-  const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
-  const min = Math.floor(remainingSec / 60);
-  const sec = remainingSec % 60;
+  const cycleRemainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
 
-  // Show "Cycle running..." when cycle_running flag is true
-  // Don't start countdown while cycle is still running
+  // Sync worker runs at :30 past each hour.
+  const nextSync = new Date(nowDate);
+  if (nowDate.getMinutes() < 30) {
+    nextSync.setMinutes(30, 0, 0);
+  } else {
+    nextSync.setHours(nowDate.getHours() + 1, 30, 0, 0);
+  }
+  const nextSyncMs = nextSync.getTime();
+  const syncRemainingSec = Math.max(0, Math.floor((nextSyncMs - now) / 1000));
+
+  const formatCountdown = (remainingSec: number) => {
+    const min = Math.floor(remainingSec / 60);
+    const sec = remainingSec % 60;
+    return `${min}:${sec.toString().padStart(2, "0")}`;
+  };
+
   if (health.cycle_running) {
     return (
       <span
@@ -1164,7 +1176,21 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     );
   }
 
-  // Show countdown only after cycle has finished
+  if (health.sync_running) {
+    return (
+      <span
+        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-sky-300 bg-sky-500/10 animate-pulse"
+        title={`Last sync ended: ${health.last_sync_end || "unknown"}`}
+      >
+        Syncing with Kalshi...
+      </span>
+    );
+  }
+
+  const showSyncCountdown = !!syncEndStr && syncRemainingSec < cycleRemainingSec;
+  const label = showSyncCountdown ? "Next sync" : "Next cycle";
+  const remainingSec = showSyncCountdown ? syncRemainingSec : cycleRemainingSec;
+
   return (
     <span
       className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
@@ -1172,9 +1198,13 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
           ? "text-accent bg-accent-dim"
           : "text-txt-muted"
       }`}
-      title={`Last cycle ended: ${health.last_cycle_end || "unknown"}`}
+      title={
+        showSyncCountdown
+          ? `Last sync ended: ${health.last_sync_end || "unknown"}`
+          : `Last cycle ended: ${health.last_cycle_end || "unknown"}`
+      }
     >
-      Next cycle: {min}:{sec.toString().padStart(2, "0")}
+      {label}: {formatCountdown(remainingSec)}
     </span>
   );
 }
