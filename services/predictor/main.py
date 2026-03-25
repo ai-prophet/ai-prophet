@@ -50,6 +50,7 @@ class PredictRequest(BaseModel):
     model_spec: str  # e.g. "gemini:gemini-3.1-pro-preview:market"
     market_info: dict  # {title, subtitle?, category?, yes_ask, no_ask}
     instance_name: str | None = None
+    api_keys: dict = {}  # Provider API keys passed per request
 
 
 class PredictResponse(BaseModel):
@@ -73,7 +74,7 @@ def predict(req: PredictRequest, x_api_key: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     try:
-        result = run_prediction(req.model_spec, req.market_info, req.instance_name)
+        result = run_prediction(req.model_spec, req.market_info, req.instance_name, req.api_keys)
         return PredictResponse(**result)
     except Exception as e:
         logger.error("Prediction failed for %s: %s", req.model_spec, e)
@@ -189,31 +190,32 @@ _gemini_http_client = None
 _grok_client = None
 
 
-def _get_openai_client():
-    global _openai_client
-    if _openai_client is None:
-        import openai
-        _openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    return _openai_client
+def _get_openai_client(api_key: str | None = None):
+    # Use provided API key or fall back to environment variable
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise ValueError("OpenAI API key required (pass in request or set OPENAI_API_KEY env var)")
+    import openai
+    return openai.OpenAI(api_key=key)
 
 
-def _get_grok_client():
-    global _grok_client
-    if _grok_client is None:
-        import openai
-        _grok_client = openai.OpenAI(
-            api_key=os.getenv("XAI_API_KEY", ""),
-            base_url="https://api.x.ai/v1",
-        )
-    return _grok_client
+def _get_grok_client(api_key: str | None = None):
+    key = api_key or os.getenv("XAI_API_KEY")
+    if not key:
+        raise ValueError("xAI/Grok API key required (pass in request or set XAI_API_KEY env var)")
+    import openai
+    return openai.OpenAI(
+        api_key=key,
+        base_url="https://api.x.ai/v1",
+    )
 
 
-def _get_anthropic_client():
-    global _anthropic_client
-    if _anthropic_client is None:
-        import anthropic
-        _anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    return _anthropic_client
+def _get_anthropic_client(api_key: str | None = None):
+    key = api_key or os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        raise ValueError("Anthropic API key required (pass in request or set ANTHROPIC_API_KEY env var)")
+    import anthropic
+    return anthropic.Anthropic(api_key=key)
 
 
 def _get_gemini_http_client():
@@ -225,8 +227,8 @@ def _get_gemini_http_client():
 
 # ── Provider prediction functions ─────────────────────────────────
 
-def _predict_openai(model_name: str, market_info: dict, include_market: bool) -> dict:
-    client = _get_openai_client()
+def _predict_openai(model_name: str, market_info: dict, include_market: bool, api_keys: dict) -> dict:
+    client = _get_openai_client(api_keys.get("openai"))
     system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
     # Newer OpenAI models (gpt-5.x, o-series) use max_completion_tokens and
     # don't support response_format=json_object — detect by model name prefix.
@@ -246,8 +248,8 @@ def _predict_openai(model_name: str, market_info: dict, include_market: bool) ->
     return _parse_prediction(response.choices[0].message.content)
 
 
-def _predict_grok(model_name: str, market_info: dict, include_market: bool) -> dict:
-    client = _get_grok_client()
+def _predict_grok(model_name: str, market_info: dict, include_market: bool, api_keys: dict) -> dict:
+    client = _get_grok_client(api_keys.get("xai"))
     system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
     response = client.chat.completions.create(
         model=model_name,
@@ -262,8 +264,8 @@ def _predict_grok(model_name: str, market_info: dict, include_market: bool) -> d
     return _parse_prediction(response.choices[0].message.content)
 
 
-def _predict_anthropic(model_name: str, market_info: dict, include_market: bool) -> dict:
-    client = _get_anthropic_client()
+def _predict_anthropic(model_name: str, market_info: dict, include_market: bool, api_keys: dict) -> dict:
+    client = _get_anthropic_client(api_keys.get("anthropic"))
     system_prompt, user_prompt = _build_prompts(market_info, include_market_prices=include_market)
     response = client.messages.create(
         model=model_name,
@@ -288,13 +290,15 @@ def _predict_gemini(
     market_info: dict,
     include_market: bool,
     instance_name: str | None,
+    api_keys: dict,
 ) -> dict:
-    api_key = _instance_gemini_key(instance_name)
+    # Try to get API key from request first, then fall back to instance-based env vars
+    api_key = api_keys.get("gemini") or api_keys.get("google") or _instance_gemini_key(instance_name)
     if not api_key:
         normalized = normalize_instance_name(instance_name)
         suffix = env_suffix(normalized)
         raise ValueError(
-            f"GOOGLE_API_KEY_{suffix} or GEMINI_API_KEY_{suffix} env var required"
+            f"Google/Gemini API key required (pass in request or set GOOGLE_API_KEY_{suffix} env var)"
         )
 
     http_client = _get_gemini_http_client()
@@ -349,8 +353,10 @@ def _predict_gemini(
 
 # ── Main prediction router ────────────────────────────────────────
 
-def run_prediction(model_spec: str, market_info: dict, instance_name: str | None = None) -> dict:
+def run_prediction(model_spec: str, market_info: dict, instance_name: str | None = None, api_keys: dict | None = None) -> dict:
     """Parse model spec and dispatch to the right provider."""
+    api_keys = api_keys or {}
+
     parts = model_spec.split(":")
     if len(parts) >= 3:
         provider = parts[0].lower()
@@ -365,12 +371,12 @@ def run_prediction(model_spec: str, market_info: dict, instance_name: str | None
         include_market = False
 
     if provider == "openai":
-        return _predict_openai(model_name, market_info, include_market)
+        return _predict_openai(model_name, market_info, include_market, api_keys)
     elif provider in ("anthropic", "claude"):
-        return _predict_anthropic(model_name, market_info, include_market)
+        return _predict_anthropic(model_name, market_info, include_market, api_keys)
     elif provider in ("gemini", "google"):
-        return _predict_gemini(model_name, market_info, include_market, instance_name)
+        return _predict_gemini(model_name, market_info, include_market, instance_name, api_keys)
     elif provider == "grok":
-        return _predict_grok(model_name, market_info, include_market)
+        return _predict_grok(model_name, market_info, include_market, api_keys)
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")

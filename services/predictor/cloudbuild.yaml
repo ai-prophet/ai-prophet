@@ -1,26 +1,29 @@
 steps:
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/predictor', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/${_IMAGE_NAME}', '.']
     dir: 'services/predictor'
 
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/predictor']
+    args: ['push', 'gcr.io/$PROJECT_ID/${_IMAGE_NAME}']
 
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     args:
       - 'gcloud'
       - 'run'
       - 'deploy'
-      - 'predictor'
-      - '--image=gcr.io/$PROJECT_ID/predictor'
-      - '--region=us-west1'
+      - '${_SERVICE_NAME}'
+      - '--image=gcr.io/$PROJECT_ID/${_IMAGE_NAME}'
+      - '--region=${_REGION}'
       - '--platform=managed'
       - '--allow-unauthenticated'
       - '--memory=1Gi'
       - '--timeout=300s'
       - '--concurrency=80'
-      - '--min-instances=1'
-      - '--max-instances=5'
-      # Note: Environment variables are preserved from previous deployment
-      # To update API keys, use: gcloud run services update predictor --region=us-west1 --update-env-vars=...
-      # Current env vars: GOOGLE_API_KEY_HAIFENG, GOOGLE_API_KEY_JIBANG, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY
+      - '--min-instances=0'
+      - '--max-instances=10'
+      # No environment variables - all API keys passed from render workers
+
+substitutions:
+  _SERVICE_NAME: predictor
+  _IMAGE_NAME: predictor
+  _REGION: us-west1
