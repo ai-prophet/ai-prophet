@@ -260,7 +260,10 @@ export default function Dashboard() {
         instanceApi.getMarkets(200),
         instanceApi.getPositions(200),
         instanceApi.getHealth(),
-        instanceApi.getKalshiBalance().catch(() => null),
+        instanceApi.getKalshiBalance().catch((e) => {
+          console.error("Failed to fetch balance:", e);
+          return null;
+        }),
         instanceApi.getAlerts(),
       ]);
       if (activeRequestRef.current !== requestId) return;
@@ -344,11 +347,14 @@ export default function Dashboard() {
     const cachedSnapshot = dataCacheRef.current[selectedInstance.key];
     if (cachedSnapshot) {
       // Apply cached data but clear balance to force fresh fetch
-      applySnapshot({
+      const clearedSnapshot = {
         ...cachedSnapshot,
         balance: null,  // Clear balance to show loading state
         pnl: null,      // Clear P&L as well since it's instance-specific
-      });
+      };
+      // Update the cache to reflect cleared values
+      dataCacheRef.current[selectedInstance.key] = clearedSnapshot;
+      applySnapshot(clearedSnapshot);
     } else {
       // No cache - clear everything
       clearSnapshot();
