@@ -1582,8 +1582,9 @@ def run_cycle(args) -> None:
             continue
 
         # Skip markets where the outcome is nearly certain (≥97% or ≤3%) — no profit opportunity.
-        if yes_ask >= 0.97 or yes_ask <= 0.03:
-            logger.debug("Skipping %s: near-certain price (yes_ask=%.3f)", ticker, yes_ask)
+        # Check BOTH yes_ask and no_ask to ensure we don't miss extreme markets
+        if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
+            logger.debug("Skipping %s: near-certain price (yes_ask=%.3f, no_ask=%.3f)", ticker, yes_ask, no_ask)
             continue
 
         # Never bet on MENTIONS markets — they track social media activity,
@@ -1909,10 +1910,11 @@ def run_cycle(args) -> None:
                 logger.debug("Could not materialize ledger-based portfolio snapshot: %s", e)
 
         # If the market drifted to near-certain territory since it was pulled, skip betting.
-        if yes_ask >= 0.97 or yes_ask <= 0.03:
+        # Check BOTH yes_ask and no_ask to ensure we don't miss extreme markets
+        if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
             logger.info(
-                "  HOLD_NOPROFIT %s — near-certain price (yes_ask=%.3f), skipping",
-                ticker, yes_ask,
+                "  HOLD_NOPROFIT %s — near-certain price (yes_ask=%.3f, no_ask=%.3f), skipping",
+                ticker, yes_ask, no_ask,
             )
             if db_engine and betting_engine is not None:
                 for ms, pred in model_predictions.items():
@@ -1937,11 +1939,16 @@ def run_cycle(args) -> None:
                         yes_ask=yes_ask,
                         no_ask=no_ask,
                     )
-                    decision = (
-                        f"BUY_{strategy_signal.side.upper()}"
-                        if strategy_signal is not None
-                        else "HOLD"
-                    )
+                    # Check if this is a HOLD_NOPROFIT signal
+                    if (strategy_signal is not None and
+                        strategy_signal.side == "hold" and
+                        strategy_signal.metadata and
+                        strategy_signal.metadata.get("reason") == "HOLD_NOPROFIT"):
+                        decision = "HOLD_NOPROFIT"
+                    elif strategy_signal is not None and strategy_signal.side in ["yes", "no"]:
+                        decision = f"BUY_{strategy_signal.side.upper()}"
+                    else:
+                        decision = "HOLD"
                 except Exception:
                     decision = "HOLD"
 
