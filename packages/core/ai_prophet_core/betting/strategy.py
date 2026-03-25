@@ -129,6 +129,31 @@ class DefaultBettingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
+        # Profitable range filter: Skip markets outside [3%, 97%] range
+        # These have poor risk/reward (e.g., paying 97c to make 3c)
+        MIN_PROFITABLE_PRICE = 0.03
+        MAX_PROFITABLE_PRICE = 0.97
+
+        # Check if market prices are in profitable range
+        if yes_ask <= MIN_PROFITABLE_PRICE or yes_ask >= MAX_PROFITABLE_PRICE:
+            # Return special signal to indicate HOLD_NOPROFIT
+            return BetSignal(
+                side="hold",
+                shares=0,
+                price=0,
+                cost=0,
+                metadata={"reason": "HOLD_NOPROFIT", "yes_ask": yes_ask}
+            )
+        if no_ask <= MIN_PROFITABLE_PRICE or no_ask >= MAX_PROFITABLE_PRICE:
+            # Return special signal to indicate HOLD_NOPROFIT
+            return BetSignal(
+                side="hold",
+                shares=0,
+                price=0,
+                cost=0,
+                metadata={"reason": "HOLD_NOPROFIT", "no_ask": no_ask}
+            )
+
         spread = yes_ask + no_ask
         if spread > self.max_spread:
             return None
@@ -236,7 +261,7 @@ class RebalancingStrategy(BettingStrategy):
         MAX_PROFITABLE_PRICE = 0.97
 
         # Check if market prices are in profitable range
-        if yes_ask < MIN_PROFITABLE_PRICE or yes_ask > MAX_PROFITABLE_PRICE:
+        if yes_ask <= MIN_PROFITABLE_PRICE or yes_ask >= MAX_PROFITABLE_PRICE:
             # Return special signal to indicate HOLD_NOPROFIT
             return BetSignal(
                 side="hold",
@@ -245,7 +270,7 @@ class RebalancingStrategy(BettingStrategy):
                 cost=0,
                 metadata={"reason": "HOLD_NOPROFIT", "yes_ask": yes_ask}
             )
-        if no_ask < MIN_PROFITABLE_PRICE or no_ask > MAX_PROFITABLE_PRICE:
+        if no_ask <= MIN_PROFITABLE_PRICE or no_ask >= MAX_PROFITABLE_PRICE:
             # Return special signal to indicate HOLD_NOPROFIT
             return BetSignal(
                 side="hold",
