@@ -1388,6 +1388,34 @@ def run_cycle(args) -> None:
         dry_run_override=dry_run_override,
     )
 
+    # Check if another instance is already running a cycle
+    if db_engine is not None:
+        try:
+            from sqlalchemy import text
+            with db_engine.connect() as conn:
+                # Check for recent cycle_start without cycle_end in last 10 minutes
+                result = conn.execute(text("""
+                    SELECT COUNT(*) FROM system_logs
+                    WHERE instance_name = :instance
+                    AND message = 'cycle_start'
+                    AND created_at > NOW() - INTERVAL '10 minutes'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM system_logs sl2
+                        WHERE sl2.instance_name = :instance
+                        AND sl2.message = 'cycle_end'
+                        AND sl2.created_at > system_logs.created_at
+                    )
+                """), {"instance": INSTANCE_NAME}).scalar()
+
+                if result > 0:
+                    logger.warning(
+                        "[CYCLE] Another %s worker appears to be running. Skipping this cycle to prevent duplicates.",
+                        INSTANCE_NAME
+                    )
+                    return
+        except Exception as e:
+            logger.warning("[CYCLE] Could not check for duplicate workers: %s", e)
+
     if db_engine is not None:
         log_heartbeat(db_engine, message="cycle_start", instance_name=INSTANCE_NAME)
         from ai_prophet_core.betting.db_schema import Base as CoreBase

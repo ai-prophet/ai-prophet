@@ -600,7 +600,13 @@ export function buildUnifiedMarketRows(
     let filled_shares: number | null = null;
     let pending_shares: number | null = null;
 
-    if (edge != null && Math.abs(edge) > 0.01) {
+    // Only set target_shares if there are actual orders (not HOLD)
+    // Check if there are any recent BUY/SELL orders
+    const hasRecentOrders = sortedTrades.some(t =>
+      t.action?.toUpperCase() === "BUY" || t.action?.toUpperCase() === "SELL"
+    ) || pendingOrders.length > 0;
+
+    if (edge != null && Math.abs(edge) > 0.01 && hasRecentOrders) {
       // Target shares = edge magnitude in percentage points (e.g., 29pp edge = 29 shares)
       target_shares = Math.round(Math.abs(edge) * 100);
     }

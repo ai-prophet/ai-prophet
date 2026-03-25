@@ -139,8 +139,11 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     );
   }
 
-  const cycleEndMs = new Date(cycleEndStr).getTime();
-  const nextCycleMs = cycleEndMs + health.poll_interval_sec * 1000;
+  // Calculate next hour boundary (workers run at top of hour)
+  const nowDate = new Date(now);
+  const nextHour = new Date(nowDate);
+  nextHour.setHours(nowDate.getHours() + 1, 0, 0, 0);  // Next hour, 0 minutes, 0 seconds
+  const nextCycleMs = nextHour.getTime();
   const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
   const min = Math.floor(remainingSec / 60);
   const sec = remainingSec % 60;
