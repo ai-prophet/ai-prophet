@@ -8,6 +8,9 @@
 #   ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY
 # And per-service:
 #   KALSHI_API_KEY_ID, KALSHI_PRIVATE_KEY_B64, PREDICTOR_API_KEY
+# And for multi-instance services like the API backend:
+#   KALSHI_API_KEY_ID_HAIFENG, KALSHI_PRIVATE_KEY_B64_HAIFENG,
+#   KALSHI_API_KEY_ID_JIBANG, KALSHI_PRIVATE_KEY_B64_JIBANG
 
 envVarGroups:
   - name: kalshi-trading-shared
@@ -263,6 +266,14 @@ services:
     envVars:
       - key: API_CORS_ORIGINS
         value: http://localhost:3000,https://kalshi-trading-dashboard.onrender.com
+      - key: KALSHI_API_KEY_ID_HAIFENG
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64_HAIFENG
+        sync: false
+      - key: KALSHI_API_KEY_ID_JIBANG
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64_JIBANG
+        sync: false
       # DB_NULL_POOL disabled - causes 40+ second request times with Cloud Run + Supabase
       # Using small connection pool (pool_size=1) instead for better performance
       - key: DB_NULL_POOL
