@@ -162,35 +162,86 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
   }, []);
 
   const cycleEndStr = health?.effective_last_cycle_end ?? health?.last_cycle_end;
-  if (!cycleEndStr || !health?.poll_interval_sec) {
+  const syncEndStr = health?.last_sync_end ?? null;
+  if ((!cycleEndStr && !syncEndStr) || !health?.poll_interval_sec) {
     return (
       <span className="text-[10px] text-txt-muted font-mono">
-        Next cycle: --:--
+        Worker inactive
       </span>
     );
   }
 
   const cycleIntervalMs = health.poll_interval_sec * 1000;
   const nextCycleMs = (Math.floor(now / cycleIntervalMs) + 1) * cycleIntervalMs;
-  const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
-  const min = Math.floor(remainingSec / 60);
-  const sec = remainingSec % 60;
-  const isOverdue = remainingSec === 0;
+  const cycleRemainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
+  const syncIntervalMs = (health.sync_interval_sec ?? 1800) * 1000;
+  const nextSyncMs = (Math.floor(now / syncIntervalMs) + 1) * syncIntervalMs;
+  const syncRemainingSec = Math.max(0, Math.floor((nextSyncMs - now) / 1000));
 
-  return (
+  const formatCountdown = (remainingSec: number) => {
+    const min = Math.floor(remainingSec / 60);
+    const sec = remainingSec % 60;
+    return `${min}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  const workerBadge = (
     <span
       className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-        isOverdue
-          ? "text-warn bg-warn-dim animate-pulse"
-          : remainingSec < 60
-            ? "text-accent bg-accent-dim"
-            : "text-txt-muted"
+        cycleRemainingSec < 60
+          ? "text-accent bg-accent-dim"
+          : "text-txt-muted"
       }`}
-      title={`Last cycle ended: ${health.last_cycle_end}`}
+      title={`Last cycle ended: ${health.last_cycle_end || "unknown"}`}
     >
-      {isOverdue
-        ? "Cycle running..."
-        : `Next cycle: ${min}:${sec.toString().padStart(2, "0")}`}
+      Next cycle: {formatCountdown(cycleRemainingSec)}
+    </span>
+  );
+
+  const syncBadge = syncEndStr ? (
+    <span
+      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+        syncRemainingSec < 60
+          ? "text-sky-300 bg-sky-500/10"
+          : "text-txt-muted"
+      }`}
+      title={`Last sync ended: ${health.last_sync_end || "unknown"}`}
+    >
+      Next sync: {formatCountdown(syncRemainingSec)}
+    </span>
+  ) : null;
+
+  if (health.cycle_running) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-accent bg-accent-dim animate-pulse"
+          title="Worker cycle in progress"
+        >
+          ● Cycle running...
+        </span>
+        {syncBadge}
+      </span>
+    );
+  }
+
+  if (health.sync_running) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {workerBadge}
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-sky-300 bg-sky-500/10 animate-pulse"
+          title={`Last sync ended: ${health.last_sync_end || "unknown"}`}
+        >
+          Syncing with Kalshi...
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {workerBadge}
+      {syncBadge}
     </span>
   );
 }

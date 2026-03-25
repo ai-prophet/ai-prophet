@@ -205,6 +205,7 @@ export interface HealthData {
   effective_last_cycle_end?: string | null;
   last_sync_end?: string | null;
   poll_interval_sec: number;
+  sync_interval_sec?: number;
   cycle_running?: boolean;
   sync_running?: boolean;
   mode: string;

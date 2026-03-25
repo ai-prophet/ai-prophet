@@ -229,6 +229,10 @@ def _worker_poll_interval(instance_name: str) -> int:
     return int(_instance_setting("WORKER_POLL_INTERVAL_SEC", instance_name, "14400"))
 
 
+def _sync_poll_interval(instance_name: str) -> int:
+    return int(_instance_setting("SYNC_INTERVAL_SEC", instance_name, "1800"))
+
+
 def _worker_stale_threshold_sec(instance_name: str) -> int:
     return max(1800, int(_worker_poll_interval(instance_name) * 1.5))
 
@@ -425,6 +429,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
         "effective_last_cycle_end": effective_last_cycle_end if show_cycle_timing else None,
         "last_sync_end": last_sync_end,
         "poll_interval_sec": poll_interval,
+        "sync_interval_sec": _sync_poll_interval(resolved_instance),
         "cycle_running": cycle_running if 'cycle_running' in locals() else False,
         "sync_running": sync_running if 'sync_running' in locals() else False,
         "mode": "dry_run" if dry_run else "live",

@@ -2,14 +2,13 @@
 """
 Kalshi Sync Service - Independent service to sync positions with Kalshi.
 
-This service runs independently of the main worker at 30 minutes past each hour:
+This service runs independently of the main worker on its own interval:
 1. Syncs pending order statuses with Kalshi
 2. Reconciles positions between DB and Kalshi
 3. Updates filled/cancelled orders
 4. Does NOT trigger new predictions or trades
 
-Runs at: :30 past each hour (e.g., 1:30, 2:30, 3:30 UTC)
-This is intentionally offset from the worker which runs at the top of the hour.
+Runs at the next UTC-aligned boundary for the configured interval.
 
 Usage:
     python services/kalshi_sync_service.py
@@ -21,7 +20,7 @@ Environment variables:
     KALSHI_API_KEY_ID         — Kalshi API key ID
     KALSHI_PRIVATE_KEY_B64    — Base64-encoded RSA private key
     KALSHI_BASE_URL           — Kalshi API base URL
-    SYNC_INTERVAL_SEC         — (Deprecated) Now runs at :30 past each hour
+    SYNC_INTERVAL_SEC         — Sync cadence in seconds (default: 1800 = 30 min)
 """
 
 from __future__ import annotations
@@ -78,6 +77,14 @@ def setup_logging(verbose: bool = False) -> None:
     )
     logging.getLogger("httpx").setLevel(logging.ERROR)
     logging.getLogger("httpcore").setLevel(logging.ERROR)
+
+
+def _next_sync_boundary(now: datetime, interval_sec: int) -> datetime:
+    """Return the next UTC-aligned sync boundary for the configured interval."""
+    interval = max(1, int(interval_sec))
+    now_ts = int(now.timestamp())
+    next_ts = ((now_ts // interval) + 1) * interval
+    return datetime.fromtimestamp(next_ts, tz=UTC)
 
 
 def log_sync_event(
@@ -381,18 +388,15 @@ def run_sync_loop(
         instance_name,
     )
 
-    # Wait for the next :30 boundary before starting (unless --once flag)
+    # Wait for the next interval boundary before starting (unless --once flag)
     if not run_once:
         now = datetime.now(UTC)
-        if now.minute < 30:
-            next_sync = now.replace(minute=30, second=0, microsecond=0)
-        else:
-            next_sync = now.replace(minute=30, second=0, microsecond=0) + timedelta(hours=1)
-
+        next_sync = _next_sync_boundary(now, interval_sec)
         seconds_until_next_sync = int((next_sync - now).total_seconds())
 
         logger.info(
-            "[SYNC] Waiting until next :30 boundary: %s UTC (%.0f seconds)",
+            "[SYNC] Waiting until next %d-second boundary: %s UTC (%.0f seconds)",
+            interval_sec,
             next_sync.strftime("%H:%M"), seconds_until_next_sync
         )
 
@@ -435,17 +439,9 @@ def run_sync_loop(
             logger.info("[SYNC] Single sync complete, exiting")
             break
 
-        # Calculate time until 30 minutes past the next hour
+        # Calculate time until the next configured sync boundary
         now = datetime.now(UTC)
-
-        # Find the next :30 time (either this hour or next hour)
-        if now.minute < 30:
-            # Next sync is at :30 this hour
-            next_sync = now.replace(minute=30, second=0, microsecond=0)
-        else:
-            # Next sync is at :30 next hour
-            next_sync = now.replace(minute=30, second=0, microsecond=0) + timedelta(hours=1)
-
+        next_sync = _next_sync_boundary(now, interval_sec)
         seconds_until_next_sync = int((next_sync - now).total_seconds())
 
         if seconds_until_next_sync > 0 and not _shutdown_requested:

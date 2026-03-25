@@ -1321,19 +1321,11 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     );
   }
 
-  const nowDate = new Date(now);
   const cycleIntervalMs = health.poll_interval_sec * 1000;
   const nextCycleMs = (Math.floor(now / cycleIntervalMs) + 1) * cycleIntervalMs;
   const cycleRemainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
-
-  // Sync worker runs at :30 past each hour.
-  const nextSync = new Date(nowDate);
-  if (nowDate.getMinutes() < 30) {
-    nextSync.setMinutes(30, 0, 0);
-  } else {
-    nextSync.setHours(nowDate.getHours() + 1, 30, 0, 0);
-  }
-  const nextSyncMs = nextSync.getTime();
+  const syncIntervalMs = (health.sync_interval_sec ?? 1800) * 1000;
+  const nextSyncMs = (Math.floor(now / syncIntervalMs) + 1) * syncIntervalMs;
   const syncRemainingSec = Math.max(0, Math.floor((nextSyncMs - now) / 1000));
 
   const formatCountdown = (remainingSec: number) => {
@@ -1342,46 +1334,64 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     return `${min}:${sec.toString().padStart(2, "0")}`;
   };
 
+  const workerBadge = (
+    <span
+      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+        cycleRemainingSec < 60
+          ? "text-accent bg-accent-dim"
+          : "text-txt-muted"
+      }`}
+      title={`Last cycle ended: ${health.last_cycle_end || "unknown"}`}
+    >
+      Next cycle: {formatCountdown(cycleRemainingSec)}
+    </span>
+  );
+
+  const syncBadge = syncEndStr ? (
+    <span
+      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+        syncRemainingSec < 60
+          ? "text-sky-300 bg-sky-500/10"
+          : "text-txt-muted"
+      }`}
+      title={`Last sync ended: ${health.last_sync_end || "unknown"}`}
+    >
+      Next sync: {formatCountdown(syncRemainingSec)}
+    </span>
+  ) : null;
+
   if (health.cycle_running) {
     return (
-      <span
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-accent bg-accent-dim animate-pulse"
-        title="Worker cycle in progress"
-      >
-        ● Cycle running...
+      <span className="inline-flex items-center gap-1.5">
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-accent bg-accent-dim animate-pulse"
+          title="Worker cycle in progress"
+        >
+          ● Cycle running...
+        </span>
+        {syncBadge}
       </span>
     );
   }
 
   if (health.sync_running) {
     return (
-      <span
-        className="text-[10px] font-mono px-1.5 py-0.5 rounded text-sky-300 bg-sky-500/10 animate-pulse"
-        title={`Last sync ended: ${health.last_sync_end || "unknown"}`}
-      >
-        Syncing with Kalshi...
+      <span className="inline-flex items-center gap-1.5">
+        {workerBadge}
+        <span
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded text-sky-300 bg-sky-500/10 animate-pulse"
+          title={`Last sync ended: ${health.last_sync_end || "unknown"}`}
+        >
+          Syncing with Kalshi...
+        </span>
       </span>
     );
   }
 
-  const showSyncCountdown = !!syncEndStr && syncRemainingSec < cycleRemainingSec;
-  const label = showSyncCountdown ? "Next sync" : "Next cycle";
-  const remainingSec = showSyncCountdown ? syncRemainingSec : cycleRemainingSec;
-
   return (
-    <span
-      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-        remainingSec < 60
-          ? "text-accent bg-accent-dim"
-          : "text-txt-muted"
-      }`}
-      title={
-        showSyncCountdown
-          ? `Last sync ended: ${health.last_sync_end || "unknown"}`
-          : `Last cycle ended: ${health.last_cycle_end || "unknown"}`
-      }
-    >
-      {label}: {formatCountdown(remainingSec)}
+    <span className="inline-flex items-center gap-1.5">
+      {workerBadge}
+      {syncBadge}
     </span>
   );
 }
