@@ -69,6 +69,13 @@ REMOTE_PREDICT_TIMEOUT_SEC = float(
     os.getenv("REMOTE_PREDICT_TIMEOUT_SEC", str(PREDICTOR_TIMEOUT_SEC + 10))
 )
 
+# API keys for LLM providers (will be passed to predictor service)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+XAI_API_KEY = os.getenv("XAI_API_KEY", "")
+
 _shutdown_requested = False
 
 
@@ -97,12 +104,28 @@ def setup_logging(verbose: bool = False) -> None:
 # ── Remote predictor call (same as main.py) ───────────────────────
 
 def _remote_predict(model_spec: str, market_info: dict) -> dict:
+    # Gather API keys to pass in request
+    api_keys = {}
+    if OPENAI_API_KEY:
+        api_keys["openai"] = OPENAI_API_KEY
+    if ANTHROPIC_API_KEY:
+        api_keys["anthropic"] = ANTHROPIC_API_KEY
+    if GOOGLE_API_KEY:
+        api_keys["google"] = GOOGLE_API_KEY
+        api_keys["gemini"] = GOOGLE_API_KEY
+    elif GEMINI_API_KEY:
+        api_keys["google"] = GEMINI_API_KEY
+        api_keys["gemini"] = GEMINI_API_KEY
+    if XAI_API_KEY:
+        api_keys["xai"] = XAI_API_KEY
+
     resp = requests.post(
         f"{PREDICTOR_SERVICE_URL}/predict",
         json={
             "model_spec": model_spec,
             "market_info": market_info,
             "instance_name": INSTANCE_NAME,
+            "api_keys": api_keys,  # Pass API keys in request body
         },
         headers={"X-API-Key": PREDICTOR_API_KEY} if PREDICTOR_API_KEY else {},
         timeout=REMOTE_PREDICT_TIMEOUT_SEC,

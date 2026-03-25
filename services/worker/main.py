@@ -104,6 +104,7 @@ def _build_instance_env() -> dict[str, str]:
         "ANTHROPIC_API_KEY",
         "GOOGLE_API_KEY",
         "GEMINI_API_KEY",
+        "XAI_API_KEY",
         "PREDICTOR_SERVICE_URL",
         "PREDICTOR_API_KEY",
         "WORKER_STRATEGY",
@@ -1275,14 +1276,39 @@ def _remote_predict(
     """Call the remote predictor service for a single (model, market) pair."""
     import requests
 
+    # Gather API keys from environment to pass in request
+    api_keys = {}
+
+    # OpenAI
+    openai_key = _instance_setting("OPENAI_API_KEY", "")
+    if openai_key:
+        api_keys["openai"] = openai_key
+
+    # Anthropic
+    anthropic_key = _instance_setting("ANTHROPIC_API_KEY", "")
+    if anthropic_key:
+        api_keys["anthropic"] = anthropic_key
+
+    # Google/Gemini - use instance-specific keys
+    google_key = _instance_specific_setting("GOOGLE_API_KEY") or _instance_specific_setting("GEMINI_API_KEY")
+    if google_key:
+        api_keys["gemini"] = google_key
+        api_keys["google"] = google_key
+
+    # xAI/Grok
+    xai_key = _instance_setting("XAI_API_KEY", "")
+    if xai_key:
+        api_keys["xai"] = xai_key
+
     resp = requests.post(
         f"{service_url}/predict",
         json={
             "model_spec": model_spec,
             "market_info": market_info,
             "instance_name": INSTANCE_NAME,
+            "api_keys": api_keys,  # Pass API keys in request body
         },
-        headers={"X-API-Key": api_key} if api_key else {},
+        headers={"X-API-Key": api_key} if api_key else {},  # Optional auth header
         timeout=REMOTE_PREDICT_TIMEOUT_SEC,
     )
     resp.raise_for_status()
