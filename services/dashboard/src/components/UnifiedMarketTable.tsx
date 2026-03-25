@@ -1741,7 +1741,7 @@ function TimelineTab({
 
                         {/* Show SELL part with side */}
                         <span className="text-loss">
-                          SELL {adjustment.sell.order?.count || 0} {adjustment.sell.side || ""}
+                          SELL {adjustment.sell.order?.count || 0} {adjustment.sell.side ? adjustment.sell.side.toUpperCase() : ""}
                         </span>
                         {adjustment.sell.order && (
                           <span className={`text-[9px] ${
@@ -1755,7 +1755,7 @@ function TimelineTab({
 
                         {/* Show BUY part with side */}
                         <span className="text-profit">
-                          BUY {adjustment.buy.order?.count || 0} {adjustment.buy.side || ""}
+                          BUY {adjustment.buy.order?.count || 0} {adjustment.buy.side ? adjustment.buy.side.toUpperCase() : ""}
                         </span>
                         {adjustment.buy.order && (
                           <span className={`text-[9px] ${
