@@ -876,7 +876,9 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
     pages, collects candidates closing within 15 days, then returns the top
-    ``max_markets`` ranked by volume (with a soft bonus for prices near 50%).
+    ``max_markets`` ranked by volume and urgency.
+
+    Markets with prices outside the 90/10 band are excluded from discovery.
     """
     base_url = adapter._base_url
     path = "/trade-api/v2/events"
@@ -956,6 +958,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                 _na = float(no_ask) if no_ask is not None else (1.0 - price)
                 if _ya + _na > 1.03:
                     continue
+                if _ya < 0.10 or _ya > 0.90 or _na < 0.10 or _na > 0.90:
+                    continue
 
                 # Urgency bonus: markets closing sooner rank higher
                 # 1.0 if closing today, 0.0 if closing in 15 days
@@ -968,8 +972,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     except (ValueError, AttributeError):
                         pass
 
-                # Rank by volume with a soft bonus for prices near 50% and urgency
-                proximity_bonus = 1.0 - 2.0 * abs(price - 0.5)
+                # Rank by volume with an urgency bonus for nearer expirations.
                 candidates.append({
                     "ticker": ticker,
                     "event_ticker": mkt.get("event_ticker", ""),
@@ -984,7 +987,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     "close_time": close_time_str,
                     "open_time": mkt.get("open_time"),
                     "volume_24h": volume,
-                    "_score": volume + proximity_bonus + urgency_bonus,
+                    "_score": volume + urgency_bonus,
                 })
 
         if not cursor:
@@ -992,7 +995,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
 
         logger.debug("Page %d: %d candidates so far, fetching more...", page + 1, len(candidates))
 
-    # Rank: prefer higher volume, soft bonus for prices near 50%
+    # Rank: prefer higher volume, with a bonus for nearer expirations.
     candidates.sort(key=lambda m: m["_score"], reverse=True)
     markets = candidates[:max_markets]
 
@@ -1437,7 +1440,8 @@ def run_cycle(args) -> None:
             db_engine,
             "INFO",
             f"Cycle start: fetcher={is_market_fetcher}, peers={peer_instances or []}, "
-            f"models={model_specs}, strategy={strategy_name}, max_active={max_active}",
+            f"models={model_specs}, strategy={strategy_name}, max_active={max_active}, "
+            f"dry_run={betting_engine.dry_run}",
             instance_name=INSTANCE_NAME,
         )
 
@@ -2153,10 +2157,11 @@ def main() -> None:
     all_sync_instances = list({INSTANCE_NAME} | set(peer_instances))
 
     logger.info(
-        "Worker starting (instance=%s, poll_interval=%ds, dry_run=%s, peers=%s)",
+        "Worker starting (instance=%s, poll_interval=%ds, cli_dry_run=%s, env_dry_run=%s, peers=%s)",
         INSTANCE_NAME,
         poll_interval,
         args.dry_run,
+        _instance_bool_setting("LIVE_BETTING_DRY_RUN", True),
         peer_instances or "none",
     )
     logger.info("Mode: STANDALONE (direct Kalshi API + LLM predictions)")

@@ -47,6 +47,7 @@ from position_replay import InventoryPosition, normalize_order
 logger = logging.getLogger(__name__)
 
 from ai_prophet_core.betting.db import create_db_engine, get_session
+from ai_prophet_core.betting.config import MAX_SPREAD
 from ai_prophet_core.betting.db_schema import (
     Base as CoreBase,
     BettingOrder,
@@ -67,6 +68,9 @@ from db_models import (
 # ── App setup ─────────────────────────────────────────────────────
 
 _db_engine = None
+MIN_PROFITABLE_PRICE = 0.03
+MAX_PROFITABLE_PRICE = 0.97
+MIN_REBALANCE_TRADE = 0.005
 
 
 def get_db():
@@ -159,6 +163,58 @@ def _instance_bool_setting(key: str, instance_name: str, default: bool) -> bool:
 def _instance_list_setting(key: str, instance_name: str) -> list[str]:
     raw = _instance_setting(key, instance_name, "")
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _hold_reason_from_market_context(
+    *,
+    model_decision: str | None,
+    p_yes: float | None,
+    yes_ask: float | None,
+    no_ask: float | None,
+) -> str:
+    decision = (model_decision or "").upper()
+    if yes_ask is None or no_ask is None or p_yes is None:
+        return "Holding because no trade was placed this cycle."
+
+    spread = yes_ask + no_ask
+    lower_bound = 1.0 - no_ask
+    upper_bound = yes_ask
+    edge = (p_yes - yes_ask) * 100
+
+    if decision == "HOLD_NOPROFIT":
+        if yes_ask <= MIN_PROFITABLE_PRICE or yes_ask >= MAX_PROFITABLE_PRICE:
+            return (
+                f"Holding because YES ask {(yes_ask * 100):.1f}% is outside the "
+                f"[{MIN_PROFITABLE_PRICE * 100:.0f}%, {MAX_PROFITABLE_PRICE * 100:.0f}%] tradeable range."
+            )
+        if no_ask <= MIN_PROFITABLE_PRICE or no_ask >= MAX_PROFITABLE_PRICE:
+            return (
+                f"Holding because NO ask {(no_ask * 100):.1f}% is outside the "
+                f"[{MIN_PROFITABLE_PRICE * 100:.0f}%, {MAX_PROFITABLE_PRICE * 100:.0f}%] tradeable range."
+            )
+
+    if spread > MAX_SPREAD:
+        return f"Holding because the bid-ask spread is too wide ({spread:.2f} > {MAX_SPREAD:.2f})."
+
+    if spread < 0.90:
+        return f"Holding because the market prices look crossed or unreliable (spread {spread:.2f} < 0.90)."
+
+    if lower_bound <= p_yes <= upper_bound:
+        return (
+            f"Holding because the model probability {(p_yes * 100):.1f}% sits inside the market band "
+            f"[{(lower_bound * 100):.1f}%, {(upper_bound * 100):.1f}%], so there is no clear edge."
+        )
+
+    if abs(p_yes - yes_ask) < MIN_REBALANCE_TRADE:
+        return (
+            f"Holding because the rebalance delta is below the minimum trade size "
+            f"({MIN_REBALANCE_TRADE * 100:.1f}pp)."
+        )
+
+    return (
+        f"Holding because the strategy did not produce an executable rebalance "
+        f"despite edge {edge:.1f}%, likely due to current position, minimum trade size, or cash constraints."
+    )
 
 
 def _heartbeat_components() -> tuple[str, ...]:
@@ -673,6 +729,7 @@ def get_markets(
         for order in pending_orders:
             pending_orders_by_ticker[order.ticker].append({
                 "order_id": order.order_id,
+                "action": order.action,
                 "side": order.side,
                 "count": order.count,
                 "filled_shares": float(order.filled_shares) if order.filled_shares else 0,
@@ -2015,7 +2072,8 @@ def get_cycle_evaluations(
                 bo.status as order_status,
                 bo.price_cents as order_price,
                 bo.filled_shares as order_filled,
-                mr.metadata_json as model_metadata
+                mr.metadata_json as model_metadata,
+                mr.decision as model_decision
             FROM betting_predictions bp
             LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
             LEFT JOIN betting_orders bo ON bo.ticker = tm.ticker
@@ -2077,27 +2135,24 @@ def get_cycle_evaluations(
                 action_taken = "HOLD"
                 action_type = "hold"
 
+            hold_reason = None
+            if action_type == "hold":
+                hold_reason = _hold_reason_from_market_context(
+                    model_decision=row.model_decision,
+                    p_yes=float(row.p_yes) if row.p_yes is not None else None,
+                    yes_ask=float(row.yes_ask) if row.yes_ask is not None else None,
+                    no_ask=float(row.no_ask) if row.no_ask is not None else None,
+                )
+
             # Determine reason for action/inaction
-            # Prefer actual model reasoning/rationale if available, otherwise use edge info
-            if model_reasoning or model_rationale:
+            if action_type == "hold":
+                reason = hold_reason
+            elif model_reasoning or model_rationale:
                 reason = model_reasoning or model_rationale
+            elif edge is not None:
+                reason = f"Edge {edge:.1f}% → {action_type}"
             else:
-                # Fallback to edge-based reasoning
-                if edge is not None:
-                    if action_type == "hold":
-                        # Explain why it was held
-                        # We don't bet when MARKET probability is < 3% or > 97%
-                        yes_ask_pct = row.yes_ask * 100 if row.yes_ask else None
-                        if yes_ask_pct and (yes_ask_pct < 3 or yes_ask_pct > 97):
-                            reason = f"Market {yes_ask_pct:.1f}% outside [3%, 97%] range"
-                        elif abs(edge) < 3:  # Also check if edge is too small
-                            reason = f"Edge {edge:.1f}% too small"
-                        else:
-                            reason = f"Edge {edge:.1f}% (position/capital limit)"
-                    else:
-                        reason = f"Edge {edge:.1f}% → {action_type}"
-                else:
-                    reason = None
+                reason = None
 
             evaluations.append({
                 "id": row.pred_id,

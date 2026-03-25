@@ -17,6 +17,7 @@ import {
   type HealthData,
   type SystemLogEntry,
   type KalshiBalanceData,
+  type KalshiPositionsData,
   type AnalyticsSummary,
   type ResolvedMarketsData,
   type Alert,
@@ -46,6 +47,7 @@ type DashboardSnapshot = {
   health: HealthData | null;
   logs: SystemLogEntry[];
   balance: KalshiBalanceData | null;
+  kalshiPositions: KalshiPositionsData | null;
   analytics: AnalyticsSummary | null;
   resolvedMarkets: ResolvedMarketsData | null;
   alerts: Alert[];
@@ -72,6 +74,7 @@ export default function Dashboard() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [logs, setLogs] = useState<SystemLogEntry[]>([]);
   const [balance, setBalance] = useState<KalshiBalanceData | null>(null);
+  const [kalshiPositions, setKalshiPositions] = useState<KalshiPositionsData | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [resolvedMarkets, setResolvedMarkets] = useState<ResolvedMarketsData | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -157,6 +160,7 @@ export default function Dashboard() {
     setHealth(snapshot.health);
     setLogs(snapshot.logs);
     setBalance(snapshot.balance);
+    setKalshiPositions(snapshot.kalshiPositions);
     setAnalytics(snapshot.analytics);
     setResolvedMarkets(snapshot.resolvedMarkets);
     setAlerts(snapshot.alerts);
@@ -171,6 +175,7 @@ export default function Dashboard() {
     setHealth(null);
     setLogs([]);
     setBalance(null);
+    setKalshiPositions(null);
     setAnalytics(null);
     setResolvedMarkets(null);
     setAlerts([]);
@@ -255,13 +260,17 @@ export default function Dashboard() {
 
     try {
       // Tier 1: Critical data — renders header, metrics, markets, alerts immediately
-      const [t, m, posData, h, b, al] = await Promise.all([
+      const [t, m, posData, h, b, kp, al] = await Promise.all([
         instanceApi.getTrades(500),
         instanceApi.getMarkets(200),
         instanceApi.getPositions(200),
         instanceApi.getHealth(),
         instanceApi.getKalshiBalance().catch((e) => {
           console.error(`Failed to fetch balance for ${instanceKey}:`, e);
+          return null;
+        }),
+        instanceApi.getKalshiPositions().catch((e) => {
+          console.error(`Failed to fetch live Kalshi positions for ${instanceKey}:`, e);
           return null;
         }),
         instanceApi.getAlerts(),
@@ -282,6 +291,7 @@ export default function Dashboard() {
         health: h,
         logs: cached?.logs ?? [],
         balance: b,
+        kalshiPositions: kp,
         analytics: cached?.analytics ?? null,
         resolvedMarkets: cached?.resolvedMarkets ?? null,
         alerts: filteredAlerts,
@@ -373,6 +383,25 @@ export default function Dashboard() {
   }, [applySnapshot, clearSnapshot, fetchAll, selectedInstance.key]);
 
   const metrics = computePortfolioMetrics(positions, trades, pnl, markets);
+  const liveActiveMarketCount = useMemo(() => {
+    if (!kalshiPositions?.positions) return metrics.marketsTraded;
+
+    const activeTickers = new Set<string>();
+    for (const position of kalshiPositions.positions) {
+      const ticker = typeof position.ticker === "string" ? position.ticker : null;
+      if (!ticker) continue;
+
+      const positionFp = Number((position as any).position_fp ?? 0);
+      const restingOrders = Number(position.resting_orders_count ?? 0);
+      const exposure = Number((position as any).market_exposure_dollars ?? (position as any).market_exposure ?? 0);
+
+      if (Math.abs(positionFp) > 0 || restingOrders > 0 || exposure > 0) {
+        activeTickers.add(ticker);
+      }
+    }
+
+    return activeTickers.size;
+  }, [kalshiPositions, metrics.marketsTraded]);
 
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
   const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | "winrate" | null>(null);
@@ -631,7 +660,7 @@ export default function Dashboard() {
           />
           <MetricCard
             label="Markets"
-            value={`${metrics.marketsTraded} / ${metrics.openPositions}`}
+            value={`${liveActiveMarketCount} / ${liveActiveMarketCount}`}
             sub="markets / positions"
           />
           <MetricCard

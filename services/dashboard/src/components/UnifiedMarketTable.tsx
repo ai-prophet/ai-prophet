@@ -64,6 +64,47 @@ function categoryChipClass(cat: string | null) {
   return CATEGORY_COLORS[cat.toUpperCase()] ?? "bg-t-panel-alt border-t-border/60 text-txt-muted";
 }
 
+function sideToneClass(side: string | null | undefined, dim = false): string {
+  const normalized = side?.toUpperCase();
+  if (normalized === "YES") return dim ? "text-profit font-bold" : "text-profit font-bold";
+  if (normalized === "NO") return dim ? "text-loss font-bold" : "text-loss font-bold";
+  return dim ? "text-txt-muted" : "text-txt-primary";
+}
+
+function holdEdgeToneClass(): string {
+  return "text-yellow-400/70";
+}
+
+function formatPriceCents(priceCents: number | null | undefined): string | null {
+  if (priceCents == null || Number.isNaN(priceCents) || priceCents <= 0) return null;
+  return `@ ${Math.round(priceCents)}c`;
+}
+
+function isHoldLikeDecision(decision: string | null | undefined): boolean {
+  const normalized = decision?.toUpperCase();
+  return normalized === "HOLD" || normalized === "HOLD_NOPROFIT";
+}
+
+function buildHoldExplanation(evaluation: CycleEvaluation): string {
+  const resultingPosition = (evaluation as any).resultingPosition as { quantity: number; side: string } | undefined;
+  const edge = evaluation.prediction?.edge;
+  const yesAskPct = evaluation.prediction?.yes_ask != null ? evaluation.prediction.yes_ask * 100 : null;
+
+  if (yesAskPct != null && (yesAskPct <= 3 || yesAskPct >= 97)) {
+    return `Holding because market price ${yesAskPct.toFixed(1)}% is outside the normal tradeable range.`;
+  }
+  if (edge != null && Math.abs(edge) < 3) {
+    return `Holding because edge ${edge.toFixed(1)}% is below the minimum trade threshold.`;
+  }
+  if (resultingPosition) {
+    return `Holding ${resultingPosition.quantity} ${resultingPosition.side} because no rebalance was triggered this cycle.`;
+  }
+  if (edge != null) {
+    return `Holding because no order was placed this cycle despite edge ${edge.toFixed(1)}%.`;
+  }
+  return "Holding because no action was taken this cycle.";
+}
+
 type SortKey =
   | "title"
   | "yes_ask"
@@ -769,6 +810,9 @@ function MarketRow({
 }) {
   const pos = row.position;
   const isYes = pos?.contract.toLowerCase() === "yes";
+  const latestModelDecision = [...row.model_predictions]
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]?.decision?.toUpperCase() ?? null;
+  const showHeldEdgeStyle = isHoldLikeDecision(latestModelDecision);
 
   return (
     <>
@@ -857,7 +901,13 @@ function MarketRow({
         </td>
 
         {/* Edge */}
-        <td className={`px-3 py-2 text-right font-mono font-medium ${row.edge != null ? pnlCls(row.edge) : "text-txt-muted"}`}>
+        <td
+          className={`px-3 py-2 text-right font-mono font-medium ${
+            row.edge != null
+              ? (showHeldEdgeStyle ? holdEdgeToneClass() : pnlCls(row.edge))
+              : "text-txt-muted"
+          }`}
+        >
           {row.edge != null
             ? `${row.edge >= 0 ? "+" : ""}${(row.edge * 100).toFixed(1)}pp`
             : "--"}
@@ -1171,7 +1221,7 @@ function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: M
       .map((item) => item.matchedRun?.id)
       .filter((id): id is number => id != null)
   );
-  return chronRuns.filter((run) => !matchedIds.has(run.id) && run.decision === "HOLD");
+  return chronRuns.filter((run) => !matchedIds.has(run.id) && isHoldLikeDecision(run.decision));
 }
 
 function TimelineTab({
@@ -1245,11 +1295,54 @@ function TimelineTab({
       } as any;
     });
 
+    const getExecutedCount = (order: CycleEvaluation["order"] | null): number => {
+      if (!order) return 0;
+      return order.filled != null ? order.filled : order.count;
+    };
+
+    const applyPositionChange = (
+      currentPos: { quantity: number; side: string } | undefined,
+      actionType: string | undefined,
+      orderSide: string | null,
+      order: CycleEvaluation["order"] | null,
+    ): { quantity: number; side: string } | undefined => {
+      if (!order || !orderSide) return currentPos;
+
+      const executedCount = getExecutedCount(order);
+      if (executedCount <= 0) return currentPos;
+
+      if (actionType === "buy") {
+        if (currentPos?.side === orderSide) {
+          return {
+            quantity: currentPos.quantity + executedCount,
+            side: orderSide,
+          };
+        }
+
+        return {
+          quantity: executedCount,
+          side: orderSide,
+        };
+      }
+
+      if (actionType === "sell" && currentPos?.side === orderSide) {
+        const remaining = Math.max(0, currentPos.quantity - executedCount);
+        if (remaining === 0) return undefined;
+        return {
+          quantity: remaining,
+          side: orderSide,
+        };
+      }
+
+      return currentPos;
+    };
+
     // Process each evaluation and detect position adjustments
     const evaluationEvents = evaluationsWithSuperseding.map((evaluation, idx) => {
       const marketId = evaluation.market_id;
       const order = evaluation.order;
       const orderSide = evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase();
+      const normalizedActionType = evaluation.action?.type?.toLowerCase();
 
       let modifiedEvaluation = evaluation;
 
@@ -1265,7 +1358,7 @@ function TimelineTab({
       }
 
       // Check if this is a position adjustment
-      if (order && marketId && orderSide && evaluation.action?.type === 'buy') {
+      if (order && marketId && orderSide && normalizedActionType === 'buy') {
         const currentPos = positionsByMarket.get(marketId);
 
         if (currentPos && currentPos.side === orderSide) {
@@ -1275,17 +1368,27 @@ function TimelineTab({
             action: {
               ...evaluation.action,
               type: "adjustment" as any,
-              description: `to ${order.count} ${orderSide} (was ${currentPos.quantity})`,
+              description: `BUY ${orderSide} ${order.count}`,
               originalDescription: evaluation.action?.description,
             },
           };
         }
+      }
 
-        // Update tracked position
-        positionsByMarket.set(marketId, {
-          quantity: order.count,
-          side: orderSide,
-        });
+      const currentPos = marketId ? positionsByMarket.get(marketId) : undefined;
+      const resultingPos = applyPositionChange(currentPos, normalizedActionType, orderSide, order);
+
+      if (resultingPos) {
+        positionsByMarket.set(marketId, resultingPos);
+      } else if (marketId && currentPos) {
+        positionsByMarket.delete(marketId);
+      }
+
+      if (resultingPos) {
+        modifiedEvaluation = {
+          ...modifiedEvaluation,
+          resultingPosition: resultingPos,
+        } as any;
       }
 
       // Track this order for future superseding detection
@@ -1341,14 +1444,15 @@ function TimelineTab({
               ...sellEvent.evaluation,
               action: {
                 type: "adjustment" as any,
-                description: `SELL ${sellEvent.evaluation.order?.count || 0} → BUY ${buyEvent.evaluation.order?.count || 0}`,
+                description: `SELL ${sellEvent.evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() || ""} ${sellEvent.evaluation.order?.count || 0} → BUY ${buyEvent.evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() || ""} ${buyEvent.evaluation.order?.count || 0}`,
                 reason: "Position flip",
               },
               // Combine order information
               adjustment: {
                 sell: sellEvent.evaluation,
                 buy: buyEvent.evaluation,
-              }
+              },
+              resultingPosition: (buyEvent.evaluation as any).resultingPosition,
             } as any,
           });
         } else {
@@ -1358,9 +1462,40 @@ function TimelineTab({
       }
     });
 
-    // Sort all events by timestamp, newest first
-    return finalEvents.sort((a, b) => b.sortTs - a.sortTs);
-  }, [cycleEvaluations]);
+    const hasCurrentPendingExposure = (row.pending_shares ?? 0) > 0;
+    const hasCurrentOpenPosition = (row.position?.quantity ?? 0) > 0;
+
+    const hasActionableEvaluation = finalEvents.some((event) => {
+      const actionType = event.evaluation.action?.type?.toLowerCase();
+      return actionType != null && actionType !== "hold";
+    });
+    const hasTradeHistory = row.trades.length > 0;
+
+    // Sort all events by timestamp, newest first, then drop phantom rows:
+    // - HOLD evaluations on dead markets
+    // - zero-fill action rows once there is no longer any live pending exposure
+    return finalEvents
+      .sort((a, b) => b.sortTs - a.sortTs)
+      .filter((event) => {
+        const actionType = event.evaluation.action?.type?.toLowerCase();
+        const order = event.evaluation.order;
+        const filledCount = order ? (order.filled ?? order.count) : 0;
+
+        if (actionType !== "hold") {
+          if (!order) return true;
+          if (filledCount > 0) return true;
+          return hasCurrentPendingExposure;
+        }
+
+        const resultingPosition = (event.evaluation as any).resultingPosition;
+        if (!hasActionableEvaluation && !hasTradeHistory) return true;
+        if (!resultingPosition) return false;
+        if (hasCurrentPendingExposure) return true;
+        if (hasCurrentOpenPosition) return true;
+
+        return false;
+      });
+  }, [cycleEvaluations, row.pending_shares, row.position?.quantity, row.trades]);
 
   type TradeEvent = { type: "trade"; key: string; sortTs: number; item: TimelineTradeItem };
   type PredEvent = { type: "prediction"; key: string; sortTs: number; run: ModelRun };
@@ -1754,19 +1889,36 @@ function TimelineTab({
           const edge = evaluation.prediction?.edge ?? null;
           const isPositiveEdge = edge != null && edge >= 0;
           const actionType = evaluation.action?.type?.toUpperCase() ?? "HOLD";
+          const isHoldAction = isHoldLikeDecision(actionType);
+          const holdExplanation = isHoldAction ? buildHoldExplanation(evaluation) : null;
+          const modelRationale =
+            evaluation.action?.rationale
+            || (isHoldAction ? evaluation.action?.reason : null)
+            || (!isHoldAction ? evaluation.action?.reason : null)
+            || null;
           const isExpanded = expandedEntryId === event.key;
-          const hasRationale = !!(evaluation.action?.rationale || evaluation.action?.reason || evaluation.action?.description);
+          const hasRationale = !!(modelRationale || holdExplanation || evaluation.action?.description);
 
           // Extract YES/NO from action description (e.g., "BUY 10 YES" -> "YES")
           const actionDescription = evaluation.action?.description ?? "";
           const sideMatch = actionDescription.match(/\b(YES|NO)\b/i);
           const side = sideMatch ? sideMatch[1].toUpperCase() : null;
+          const adjustmentMatch = actionDescription.match(/^(BUY|SELL)\s+(YES|NO)\s+(\d+)/i);
+          const adjustmentVerb = adjustmentMatch ? adjustmentMatch[1].toUpperCase() : null;
+          const adjustmentSide = adjustmentMatch ? adjustmentMatch[2].toUpperCase() : side;
+          const adjustmentCount = adjustmentMatch ? adjustmentMatch[3] : null;
+          const orderPriceLabel = formatPriceCents(evaluation.order?.price_cents);
 
           // Check if this is a position adjustment
           const isAdjustment = actionType === "ADJUSTMENT";
           const adjustment = (evaluation as any).adjustment;
 
           if (isAdjustment && adjustment) {
+            const adjustmentSellSide =
+              adjustment.sell.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() ?? null;
+            const adjustmentBuySide =
+              adjustment.buy.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() ?? null;
+
             // Render position adjustment (SELL + BUY in same timestep)
             return (
               <div key={event.key}>
@@ -1786,12 +1938,15 @@ function TimelineTab({
                         </span>
 
                         {/* Show SELL part with side */}
-                        <span className="text-loss">
-                          SELL {adjustment.sell.order?.count || 0}
-                        </span>
-                        {adjustment.sell.side && (
-                          <span className={adjustment.sell.side.toUpperCase() === "YES" ? "text-profit" : "text-loss"}>
-                            {adjustment.sell.side.toUpperCase()}
+                        <span className="text-loss font-semibold">SELL</span>
+                        {adjustmentSellSide && (
+                          <span className={sideToneClass(adjustmentSellSide)}>
+                            {adjustmentSellSide} {adjustment.sell.order?.count || 0}
+                          </span>
+                        )}
+                        {formatPriceCents(adjustment.sell.order?.price_cents) && (
+                          <span className="text-txt-muted">
+                            {formatPriceCents(adjustment.sell.order?.price_cents)}
                           </span>
                         )}
                         {adjustment.sell.order && (
@@ -1805,12 +1960,15 @@ function TimelineTab({
                         <span className="text-txt-muted">→</span>
 
                         {/* Show BUY part with side */}
-                        <span className="text-profit">
-                          BUY {adjustment.buy.order?.count || 0}
-                        </span>
-                        {adjustment.buy.side && (
-                          <span className={adjustment.buy.side.toUpperCase() === "YES" ? "text-profit" : "text-loss"}>
-                            {adjustment.buy.side.toUpperCase()}
+                        <span className="text-profit font-semibold">BUY</span>
+                        {adjustmentBuySide && (
+                          <span className={sideToneClass(adjustmentBuySide)}>
+                            {adjustmentBuySide} {adjustment.buy.order?.count || 0}
+                          </span>
+                        )}
+                        {formatPriceCents(adjustment.buy.order?.price_cents) && (
+                          <span className="text-txt-muted">
+                            {formatPriceCents(adjustment.buy.order?.price_cents)}
                           </span>
                         )}
                         {adjustment.buy.order && (
@@ -1818,6 +1976,15 @@ function TimelineTab({
                             adjustment.buy.order.filled === adjustment.buy.order.count ? 'text-profit-dim' : 'text-txt-muted'
                           }`}>
                             ({adjustment.buy.order.filled}/{adjustment.buy.order.count} filled)
+                          </span>
+                        )}
+
+                        {(evaluation as any).resultingPosition && (
+                          <span>
+                            <span className="text-txt-muted">hold:</span>{" "}
+                            <span className={sideToneClass((evaluation as any).resultingPosition.side, true)}>
+                              {(evaluation as any).resultingPosition.quantity} {(evaluation as any).resultingPosition.side}
+                            </span>
                           </span>
                         )}
 
@@ -1840,7 +2007,7 @@ function TimelineTab({
               <div className="relative py-1.5">
                 {/* Different colored dot for evaluations - use orange for HOLD, green for BUY, purple for ADJUSTMENT, red for SELL */}
                 <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
-                  actionType === "HOLD" ? "bg-orange-400" :
+                  isHoldAction ? "bg-orange-400" :
                   actionType === "ADJUSTMENT" ? "bg-purple-500" :
                   actionType === "BUY" ? "bg-profit" : "bg-loss"
                 }`} />
@@ -1864,61 +2031,99 @@ function TimelineTab({
                       <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
                       {/* Action badge */}
                       <span className={`text-[9px] px-1 py-px rounded font-bold ${
-                        actionType === "HOLD" ? "bg-yellow-900/30 text-yellow-500" :
+                        isHoldAction ? "bg-yellow-900/30 text-yellow-500" :
                         actionType === "ADJUSTMENT" ? "bg-purple-900/30 text-purple-400" :
                         actionType === "BUY" ? "bg-profit-dim text-profit" :
                         "bg-loss-dim text-loss"
                       }`}>
-                        {actionType === "ADJUSTMENT" ? "ADJUST" : actionType}
+                        {actionType === "ADJUSTMENT" ? "ADJUST" : isHoldAction ? "HOLD" : actionType}
                       </span>
-                      {/* Show YES/NO separately with color coding */}
-                      {side && actionType !== "HOLD" && actionType !== "ADJUSTMENT" && (
-                        <span className={side === "YES" ? "text-profit font-bold" : "text-loss font-bold"}>
-                          {side}
-                        </span>
-                      )}
 
                       {/* For adjustments, show the change */}
                       {actionType === "ADJUSTMENT" && evaluation.action?.description && (
-                        <span className="text-txt-primary">
-                          {evaluation.action.description}
+                        <>
+                          <span className={adjustmentVerb === "SELL" ? "text-loss font-semibold" : "text-profit font-semibold"}>
+                            {adjustmentVerb ?? "BUY"}
+                          </span>
+                          {adjustmentSide && adjustmentCount && (
+                            <span className={sideToneClass(adjustmentSide)}>
+                              {adjustmentSide} {adjustmentCount}
+                            </span>
+                          )}
+                          {orderPriceLabel && (
+                            <span className="text-txt-muted">
+                              {orderPriceLabel}
+                            </span>
+                          )}
+                        </>
+                      )}
+
+                      {(evaluation as any).resultingPosition && actionType === "ADJUSTMENT" && (
+                        <span>
+                          <span className="text-txt-muted">hold:</span>{" "}
+                          <span className={sideToneClass((evaluation as any).resultingPosition.side, true)}>
+                            {(evaluation as any).resultingPosition.quantity} {(evaluation as any).resultingPosition.side}
+                          </span>
                         </span>
                       )}
 
-                      {/* For BUY/SELL show shares and fill status prominently */}
-                      {evaluation.order && evaluation.order.count > 0 && actionType !== "HOLD" && actionType !== "ADJUSTMENT" && (
+                      {evaluation.order && evaluation.order.count > 0 && !isHoldAction && (
                         <>
-                          <span className="text-txt-primary font-semibold">
-                            {evaluation.order.count} shares
-                          </span>
-                          {/* Fill status immediately after shares */}
-                          <span className={`text-[10px] font-mono ${
-                            evaluation.order.filled != null && evaluation.order.filled === evaluation.order.count
-                              ? 'text-profit font-semibold'
-                              : evaluation.order.filled != null && evaluation.order.filled > 0
-                              ? 'text-accent font-semibold'
-                              : 'text-txt-muted'
-                          }`}>
-                            {evaluation.order.filled != null ? (
-                              evaluation.order.filled === evaluation.order.count ? (
-                                '✓ filled'
-                              ) : (
-                                // Check if this order has been superseded by looking ahead
-                                (evaluation as any).wasSuperseded ? (
-                                  `cancelled`
-                                ) : (
-                                  `(${evaluation.order.filled}/${evaluation.order.count} filled)`
-                                )
-                              )
-                            ) : (
-                              'ordered'
-                            )}
-                          </span>
-                          {/* Show note about previous cancelled order */}
-                          {(evaluation as any).previousUnfilledOrder && (
-                            <span className="text-[9px] text-txt-muted italic">
-                              (replaces {(evaluation as any).previousUnfilledOrder.count} unfilled)
+                          {actionType === "ADJUSTMENT" ? (
+                            <span className={`text-[10px] font-mono ${
+                              evaluation.order.filled === evaluation.order.count
+                                ? 'text-profit font-semibold'
+                                : (evaluation.order.filled ?? 0) > 0
+                                ? 'text-accent font-semibold'
+                                : 'text-txt-muted'
+                            }`}>
+                              ({evaluation.order.filled ?? 0}/{evaluation.order.count} filled)
                             </span>
+                          ) : (
+                            <>
+                              <span className={sideToneClass(side)}>
+                                {side ? `${side} ${evaluation.order.count} shares` : `${evaluation.order.count} shares`}
+                              </span>
+                              {orderPriceLabel && (
+                                <span className="text-txt-muted">
+                                  {orderPriceLabel}
+                                </span>
+                              )}
+                              {(evaluation as any).resultingPosition && (
+                                <span>
+                                  <span className="text-txt-muted">hold:</span>{" "}
+                                  <span className={sideToneClass((evaluation as any).resultingPosition.side, true)}>
+                                    {(evaluation as any).resultingPosition.quantity} {(evaluation as any).resultingPosition.side}
+                                  </span>
+                                </span>
+                              )}
+                              <span className={`text-[10px] font-mono ${
+                                evaluation.order.filled != null && evaluation.order.filled === evaluation.order.count
+                                  ? 'text-profit font-semibold'
+                                  : evaluation.order.filled != null && evaluation.order.filled > 0
+                                  ? 'text-accent font-semibold'
+                                  : 'text-txt-muted'
+                              }`}>
+                                {evaluation.order.filled != null ? (
+                                  evaluation.order.filled === evaluation.order.count ? (
+                                    '✓ filled'
+                                  ) : (
+                                    (evaluation as any).wasSuperseded ? (
+                                      `cancelled`
+                                    ) : (
+                                      `(${evaluation.order.filled}/${evaluation.order.count} filled)`
+                                    )
+                                  )
+                                ) : (
+                                  'ordered'
+                                )}
+                              </span>
+                              {(evaluation as any).previousUnfilledOrder && (
+                                <span className="text-[9px] text-txt-muted italic">
+                                  (replaces {(evaluation as any).previousUnfilledOrder.count} unfilled)
+                                </span>
+                              )}
+                            </>
                           )}
                         </>
                       )}
@@ -1938,14 +2143,14 @@ function TimelineTab({
                       )}
 
                       {/* Edge with color coding - only show for actionable decisions, not HOLDs */}
-                      {edge != null && actionType !== "HOLD" && (
+                      {edge != null && !isHoldAction && (
                         <span className={isPositiveEdge ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
                           edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
                         </span>
                       )}
                       {/* For HOLD, show why we're not trading */}
-                      {edge != null && actionType === "HOLD" && (
-                        <span className="text-txt-muted text-[9px]">
+                      {edge != null && isHoldAction && (
+                        <span className={`${holdEdgeToneClass()} text-[9px]`}>
                           edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
                         </span>
                       )}
@@ -1962,9 +2167,17 @@ function TimelineTab({
                     {/* Expanded rationale section */}
                     {isExpanded && hasRationale && (
                       <div className="mt-2 p-2 bg-t-panel-hover/30 rounded text-[10px] text-txt-secondary">
+                        {isHoldAction && holdExplanation && (
+                          <div className="mb-2">
+                            <div className="font-semibold mb-1 text-txt-primary">Why Holding:</div>
+                            <div className="text-txt-muted whitespace-pre-wrap">
+                              {holdExplanation}
+                            </div>
+                          </div>
+                        )}
                         <div className="font-semibold mb-1">Model Rationale:</div>
                         <div className="text-txt-muted whitespace-pre-wrap">
-                          {evaluation.action?.rationale || evaluation.action?.reason || "No rationale available"}
+                          {modelRationale || "No rationale available"}
                         </div>
                       </div>
                     )}

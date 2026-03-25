@@ -115,6 +115,7 @@ export interface ModelPrediction {
 
 export interface PendingOrder {
   order_id: string;
+  action: string;
   side: string;
   count: number;
   filled_shares: number;
@@ -526,6 +527,11 @@ export function buildUnifiedMarketRows(
   positions: Position[],
   trades: Trade[],
 ): UnifiedMarketRow[] {
+  const isSyntheticTradePrediction = (trade: Trade): boolean => {
+    const source = trade.prediction?.source?.toLowerCase() ?? "";
+    return source.startsWith("kalshi:");
+  };
+
   // Index positions by market_id
   const posMap = new Map<string, Position>();
   for (const pos of positions) posMap.set(pos.market_id, pos);
@@ -534,7 +540,22 @@ export function buildUnifiedMarketRows(
   const tradesByTicker = new Map<string, Trade[]>();
   // Also index by prediction.market_id for fallback matching
   const tradesByMarketId = new Map<string, Trade[]>();
+  const edgeTradesByTicker = new Map<string, Trade[]>();
+  const edgeTradesByMarketId = new Map<string, Trade[]>();
   for (const t of trades) {
+    if (t.status === "FILLED" || t.status === "DRY_RUN" || t.status === "PENDING") {
+      const edgeExisting = edgeTradesByTicker.get(t.ticker);
+      if (edgeExisting) edgeExisting.push(t);
+      else edgeTradesByTicker.set(t.ticker, [t]);
+
+      if (t.prediction?.market_id) {
+        const mid = t.prediction.market_id;
+        const edgeExistingByMarket = edgeTradesByMarketId.get(mid);
+        if (edgeExistingByMarket) edgeExistingByMarket.push(t);
+        else edgeTradesByMarketId.set(mid, [t]);
+      }
+    }
+
     if (t.status !== "FILLED" && t.status !== "DRY_RUN") continue;
     const existing = tradesByTicker.get(t.ticker);
     if (existing) existing.push(t);
@@ -558,8 +579,14 @@ export function buildUnifiedMarketRows(
     const mktTrades = tradesByTicker.get(mkt.ticker)
       ?? tradesByMarketId.get(mkt.market_id)
       ?? [];
+    const mktEdgeTrades = edgeTradesByTicker.get(mkt.ticker)
+      ?? edgeTradesByMarketId.get(mkt.market_id)
+      ?? [];
     // Sort trades by time descending
     const sortedTrades = [...mktTrades].sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    );
+    const sortedEdgeTrades = [...mktEdgeTrades].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
 
@@ -567,9 +594,11 @@ export function buildUnifiedMarketRows(
 
     // Calculate edge from most recent trade's prediction
     let edge: number | null = null;
-    if (sortedTrades.length > 0) {
+    const edgeEligibleTrades = sortedEdgeTrades.filter((trade) => !isSyntheticTradePrediction(trade));
+
+    if (edgeEligibleTrades.length > 0) {
       // Get the most recent trade (last in chronologically sorted array)
-      const mostRecentTrade = sortedTrades[sortedTrades.length - 1];
+      const mostRecentTrade = edgeEligibleTrades[edgeEligibleTrades.length - 1];
       const pred = mostRecentTrade.prediction;
       // Edge is always YES-framed: p_yes - yes_ask
       if (pred) {
@@ -577,12 +606,20 @@ export function buildUnifiedMarketRows(
       }
     }
 
-    // Fallback to current edge if no trades or no prediction on most recent trade
-    if (edge === null && predicted != null && mkt.yes_ask != null) {
-      edge = predicted - mkt.yes_ask;
-    }
-
     const modelPreds = mkt.model_predictions?.filter((p) => p.model_name !== "aggregated") ?? [];
+    const latestActionablePrediction =
+      [...modelPreds]
+        .reverse()
+        .find((p) => {
+          const decision = p.decision?.toUpperCase();
+          return decision != null && decision !== "HOLD" && decision !== "CYCLE_SKIPPED";
+        })
+      ?? null;
+
+    // Fallback to the latest actionable model edge. Ignore HOLD-only predictions.
+    if (edge === null && latestActionablePrediction?.p_yes != null && mkt.yes_ask != null) {
+      edge = latestActionablePrediction.p_yes - mkt.yes_ask;
+    }
 
     let positionData: UnifiedMarketRow["position"] = null;
     if (pos) {
@@ -597,19 +634,21 @@ export function buildUnifiedMarketRows(
 
     // Calculate position breakdown
     const pendingOrders = mkt.pending_orders ?? [];
+    const latestResolvedTradeMs = sortedTrades.reduce<number | null>((latest, trade) => {
+      if (trade.status?.toUpperCase() === "PENDING") return latest;
+      const createdMs = new Date(trade.created_at).getTime();
+      if (Number.isNaN(createdMs)) return latest;
+      return latest == null || createdMs > latest ? createdMs : latest;
+    }, null);
+    const effectivePendingOrders = pendingOrders.filter((order) => {
+      if (latestResolvedTradeMs == null) return true;
+      const createdMs = new Date(order.created_at).getTime();
+      if (Number.isNaN(createdMs)) return true;
+      return createdMs > latestResolvedTradeMs;
+    });
     let target_shares: number | null = null;
     let filled_shares: number | null = null;
     let pending_shares: number | null = null;
-
-    // Only set target_shares if we're actively trading (positive edge)
-    // Don't show targets for HOLD situations (negative or insufficient edge)
-    const hasActiveOrders = pendingOrders.length > 0;
-    const hasPositiveEdge = edge != null && edge > 0.01;
-
-    if (hasPositiveEdge && hasActiveOrders && edge != null) {
-      // Target shares = edge magnitude in percentage points (e.g., 29pp edge = 29 shares)
-      target_shares = Math.round(Math.abs(edge) * 100);
-    }
 
     // Calculate filled shares from BUY trades
     const buyTrades = sortedTrades.filter((t) => t.action?.toUpperCase() === "BUY");
@@ -618,11 +657,31 @@ export function buildUnifiedMarketRows(
     }
 
     // Calculate pending shares from pending orders
-    if (pendingOrders.length > 0) {
-      pending_shares = pendingOrders.reduce((sum, order) => {
+    if (effectivePendingOrders.length > 0) {
+      pending_shares = effectivePendingOrders.reduce((sum, order) => {
         const remaining = order.count - order.filled_shares;
         return sum + remaining;
       }, 0);
+
+      const currentSignedQuantity = pos
+        ? (pos.contract.toLowerCase() === "yes" ? pos.quantity : -pos.quantity)
+        : 0;
+
+      const targetSignedQuantity = effectivePendingOrders.reduce((signedQty, order) => {
+        const remaining = Math.max(0, order.count - order.filled_shares);
+        if (remaining <= 0) return signedQty;
+
+        const sideSign = order.side?.toUpperCase() === "YES" ? 1 : -1;
+        const action = order.action?.toUpperCase() ?? "BUY";
+
+        if (action === "SELL") {
+          return signedQty - sideSign * remaining;
+        }
+
+        return signedQty + sideSign * remaining;
+      }, currentSignedQuantity);
+
+      target_shares = Math.abs(targetSignedQuantity);
     }
 
     rows.push({
@@ -647,7 +706,7 @@ export function buildUnifiedMarketRows(
       target_shares,
       filled_shares,
       pending_shares,
-      pending_orders: pendingOrders,
+      pending_orders: effectivePendingOrders,
       has_position: pos != null,
       has_prediction: predicted != null,
       has_trades: sortedTrades.length > 0,
@@ -754,7 +813,20 @@ export function computePortfolioMetrics(
     0
   );
 
-  const uniqueMarkets = new Set(positions.map((p) => p.market_id));
+  const activeMarketIds = new Set(positions.map((p) => p.market_id));
+  let pendingOnlyMarketCount = 0;
+  if (markets) {
+    for (const market of markets) {
+      const hasPendingExposure = (market.pending_orders ?? []).some(
+        (order) => order.count - order.filled_shares > 0
+      );
+      if (!hasPendingExposure) continue;
+      if (!activeMarketIds.has(market.market_id)) {
+        pendingOnlyMarketCount += 1;
+      }
+      activeMarketIds.add(market.market_id);
+    }
+  }
 
   const filledTrades = trades.filter(
     (t) => t.status === "FILLED" || t.status === "DRY_RUN"
@@ -771,8 +843,8 @@ export function computePortfolioMetrics(
     totalRealizedPnl,
     totalUnrealizedPnl,
     capitalDeployed,
-    openPositions: positions.length,
-    marketsTraded: uniqueMarkets.size,
+    openPositions: positions.length + pendingOnlyMarketCount,
+    marketsTraded: activeMarketIds.size,
     winRate,
     avgReturn,
     totalTrades: pnl?.summary.total_trades ?? filledTrades.length,

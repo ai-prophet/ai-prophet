@@ -157,7 +157,7 @@ def sync_with_kalshi(
             db_engine,
             adapter,
             instance_name,
-            tolerance_contracts=5,
+            tolerance_contracts=0,
             sync_pending_orders=False,  # Already done above
         )
         results["position_drifts"] = drifts
@@ -168,7 +168,7 @@ def sync_with_kalshi(
             )
             log_sync_event(
                 db_engine,
-                "WARNING",
+                "ERROR",
                 f"Position drifts detected: {drift_msg}",
                 instance_name,
             )
@@ -176,6 +176,7 @@ def sync_with_kalshi(
         # 4. Update market prices from Kalshi for active positions
         if not dry_run:
             _update_market_prices(db_engine, adapter, instance_name)
+            _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name)
 
         logger.info(
             "[SYNC] Sync complete: %d orders updated, %d cancelled, %d drifts",
@@ -201,27 +202,13 @@ def _update_market_prices(db_engine, adapter, instance_name: str) -> None:
     """Update market prices from Kalshi for active positions."""
     try:
         from ai_prophet_core.betting.db import get_session
-        from ai_prophet_core.betting.db_schema import BettingOrder
         from db_models import TradingMarket
-        from position_replay import replay_orders_by_ticker
 
-        # Get active positions
-        with get_session(db_engine) as session:
-            orders = (
-                session.query(BettingOrder)
-                .filter(
-                    BettingOrder.instance_name == instance_name,
-                    BettingOrder.status == "FILLED",
-                )
-                .order_by(BettingOrder.created_at.asc())
-                .all()
-            )
-
-        positions = replay_orders_by_ticker(orders)
+        # Use live Kalshi positions as the source of truth for active tickers.
         active_tickers = [
-            ticker
-            for ticker, pos in positions.items()
-            if pos.current_position()[0] is not None and pos.current_position()[1] > 0
+            pos.get("ticker")
+            for pos in adapter.get_positions()
+            if pos.get("ticker") and abs(float(pos.get("position_fp", 0) or 0)) > 0
         ]
 
         if not active_tickers:
@@ -259,6 +246,84 @@ def _update_market_prices(db_engine, adapter, instance_name: str) -> None:
 
     except Exception as e:
         logger.error("[SYNC] Failed to update market prices: %s", e)
+
+
+def _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name: str) -> None:
+    """Emit an alert if local position views diverge from live Kalshi."""
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from ai_prophet_core.betting.db_schema import BettingOrder
+        from db_models import TradingPosition
+        from position_replay import replay_orders_by_ticker
+
+        live_positions = {}
+        for pos in adapter.get_positions():
+            ticker = pos.get("ticker")
+            if not ticker:
+                continue
+            signed_qty = float(pos.get("position_fp", 0) or 0)
+            if abs(signed_qty) <= 1e-9:
+                continue
+            live_positions[ticker] = int(round(signed_qty))
+
+        with get_session(db_engine) as session:
+            order_rows = (
+                session.query(BettingOrder)
+                .filter(
+                    BettingOrder.instance_name == instance_name,
+                    BettingOrder.status == "FILLED",
+                )
+                .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
+                .all()
+            )
+            snapshot_rows = (
+                session.query(TradingPosition)
+                .filter(TradingPosition.instance_name == instance_name)
+                .all()
+            )
+
+        ledger_positions = {}
+        for ticker, pos in replay_orders_by_ticker(order_rows).items():
+            side, qty, _avg = pos.current_position()
+            if side is None or qty <= 1e-9:
+                continue
+            signed_qty = qty if side == "yes" else -qty
+            ledger_positions[ticker] = int(round(signed_qty))
+
+        snapshot_positions = {}
+        for row in snapshot_rows:
+            ticker = row.market_id.split("kalshi:", 1)[1] if row.market_id.startswith("kalshi:") else row.market_id
+            signed_qty = row.quantity if (row.contract or "").lower() == "yes" else -row.quantity
+            if abs(signed_qty) <= 1e-9:
+                continue
+            snapshot_positions[ticker] = int(round(signed_qty))
+
+        mismatches = []
+        all_tickers = set(live_positions.keys()) | set(snapshot_positions.keys()) | set(ledger_positions.keys())
+        for ticker in sorted(all_tickers):
+            live_qty = live_positions.get(ticker, 0)
+            snapshot_qty = snapshot_positions.get(ticker, 0)
+            ledger_qty = ledger_positions.get(ticker, 0)
+            if live_qty != snapshot_qty or live_qty != ledger_qty:
+                mismatches.append(
+                    f"{ticker}: ledger={ledger_qty} snapshot={snapshot_qty} live={live_qty}"
+                )
+
+        if mismatches:
+            message = "Kalshi position mismatch: " + ", ".join(mismatches[:10])
+            logger.error("[SYNC] %s", message)
+            log_sync_event(db_engine, "ERROR", message, instance_name)
+        else:
+            logger.info("[SYNC] local ledger and trading_positions match live Kalshi positions")
+
+    except Exception as e:
+        logger.error("[SYNC] Failed to compare trading_positions against live Kalshi: %s", e)
+        log_sync_event(
+            db_engine,
+            "ERROR",
+            f"Failed to compare trading_positions against live Kalshi: {e}",
+            instance_name,
+        )
 
 
 def run_sync_loop(
