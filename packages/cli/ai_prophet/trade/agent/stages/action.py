@@ -265,6 +265,20 @@ What is your trade decision?{memory_block}"""
             logger.debug(f"Size ${size_usd} below minimum ${self.min_size_usd}, skipping")
             return None
 
+        # Skip trades larger than $20
+        max_trade_size_usd = 20.0
+        if size_usd > max_trade_size_usd:
+            logger.info(f"Trade size ${size_usd:.2f} exceeds maximum ${max_trade_size_usd:.2f}, skipping")
+            return None
+
+        # Skip markets with extreme prices (likely data issues or illiquid)
+        # Don't trade when YES is below 3c or above 97c
+        if hasattr(market_info, 'yes_ask') and market_info.yes_ask is not None:
+            yes_ask_cents = market_info.yes_ask * 100
+            if yes_ask_cents <= 3 or yes_ask_cents >= 97:
+                logger.info(f"Market price too extreme: {yes_ask_cents:.0f}c, skipping {market_id}")
+                return None
+
         # Determine action and side based on recommendation
         if recommendation == "BUY_YES":
             action = "BUY"

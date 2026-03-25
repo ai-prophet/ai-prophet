@@ -216,9 +216,16 @@ export function UnifiedMarketTable({
     }
   }, []);
 
-  // Sort
+  // Sort and prioritize markets with actual trades or pending orders
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
+      // FIRST PRIORITY: Markets with actual trades OR pending orders come before inactive markets
+      const aIsActive = a.has_trades || a.trade_count > 0 || (a.pending_shares && a.pending_shares > 0);
+      const bIsActive = b.has_trades || b.trade_count > 0 || (b.pending_shares && b.pending_shares > 0);
+      if (aIsActive && !bIsActive) return -1;
+      if (!aIsActive && bIsActive) return 1;
+
+      // SECOND PRIORITY: Apply normal sorting within each group
       for (const { key, asc } of sortKeys) {
         const diff = computeMarketDiff(key, a, b);
         // null means "sort to bottom regardless of direction"
@@ -505,24 +512,53 @@ export function UnifiedMarketTable({
               </tr>
             </thead>
             <tbody className="divide-y divide-t-border/40">
-              {visible.map((row) => {
+              {visible.map((row, index) => {
                 const isExpanded = expandedMarketId === row.market_id;
                 const hasMultipleModels = row.model_predictions.length > 1;
 
+                // Check if this is the first inactive market after active markets
+                const prevIsActive = index > 0 && (
+                  visible[index - 1].has_trades ||
+                  visible[index - 1].trade_count > 0 ||
+                  (visible[index - 1].pending_shares && visible[index - 1].pending_shares > 0)
+                );
+                const currIsInactive = !(
+                  row.has_trades ||
+                  row.trade_count > 0 ||
+                  (row.pending_shares && row.pending_shares > 0)
+                );
+                const isFirstInactive = index > 0 && prevIsActive && currIsInactive;
+
                 return (
-                  <MarketRow
-                    key={row.market_id}
-                    row={row}
-                    isExpanded={isExpanded}
-                    hasMultipleModels={hasMultipleModels}
-                    apiClient={apiClient}
-                    instanceCacheKey={instanceCacheKey}
-                    onToggle={() => setExpandedMarketId(isExpanded ? null : row.market_id)}
-                    rowRef={(el) => {
-                      if (el) rowRefs.current.set(row.market_id, el);
-                      else rowRefs.current.delete(row.market_id);
-                    }}
-                  />
+                  <>
+                    {/* Add divider row between active and inactive markets */}
+                    {isFirstInactive && (
+                      <tr key={`divider-${row.market_id}`} className="bg-t-bg-secondary/30">
+                        <td colSpan={11} className="px-3 py-2 text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            <div className="h-px bg-t-border flex-1" />
+                            <span className="text-[10px] text-txt-muted font-medium uppercase tracking-wider">
+                              Markets Without Activity
+                            </span>
+                            <div className="h-px bg-t-border flex-1" />
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    <MarketRow
+                      key={row.market_id}
+                      row={row}
+                      isExpanded={isExpanded}
+                      hasMultipleModels={hasMultipleModels}
+                      apiClient={apiClient}
+                      instanceCacheKey={instanceCacheKey}
+                      onToggle={() => setExpandedMarketId(isExpanded ? null : row.market_id)}
+                      rowRef={(el) => {
+                        if (el) rowRefs.current.set(row.market_id, el);
+                        else rowRefs.current.delete(row.market_id);
+                      }}
+                    />
+                  </>
                 );
               })}
             </tbody>
@@ -1174,13 +1210,55 @@ function TimelineTab({
   const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
   const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
   const events = useMemo(() => {
-    // Only show evaluation events - these represent the actual decisions at each timestep
-    const evaluationEvents = cycleEvaluations.map((evaluation, idx) => ({
-      type: "evaluation" as const,
-      key: `eval-${evaluation.id}-${idx}`,
-      sortTs: evaluation.timestamp ? new Date(evaluation.timestamp).getTime() : Date.now(),
-      evaluation: evaluation,
-    }));
+    // First sort chronologically to track positions correctly
+    const sortedEvaluations = [...cycleEvaluations].sort((a, b) => {
+      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return aTime - bTime; // Oldest first for position tracking
+    });
+
+    // Track positions as we process events
+    const positionsByMarket = new Map<string, { quantity: number; side: string }>();
+
+    // Process each evaluation and detect position adjustments
+    const evaluationEvents = sortedEvaluations.map((evaluation, idx) => {
+      const marketId = evaluation.market_id;
+      const order = evaluation.order;
+      const orderSide = evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase();
+
+      let modifiedEvaluation = evaluation;
+
+      // Check if this is a position adjustment
+      if (order && marketId && orderSide && evaluation.action?.type === 'buy') {
+        const currentPos = positionsByMarket.get(marketId);
+
+        if (currentPos && currentPos.side === orderSide) {
+          // This is increasing an existing position - mark as adjustment
+          modifiedEvaluation = {
+            ...evaluation,
+            action: {
+              ...evaluation.action,
+              type: "adjustment" as any,
+              description: `to ${order.count} ${orderSide} (was ${currentPos.quantity})`,
+              originalDescription: evaluation.action?.description,
+            },
+          };
+        }
+
+        // Update tracked position
+        positionsByMarket.set(marketId, {
+          quantity: order.count,
+          side: orderSide,
+        });
+      }
+
+      return {
+        type: "evaluation" as const,
+        key: `eval-${evaluation.id}-${idx}`,
+        sortTs: evaluation.timestamp ? new Date(evaluation.timestamp).getTime() : Date.now(),
+        evaluation: modifiedEvaluation,
+      };
+    });
 
     // Group events by timestamp - events within 1 minute are considered same timestep
     const grouped = new Map<number, typeof evaluationEvents[0][]>();
@@ -1203,12 +1281,12 @@ function TimelineTab({
         // Single event at this timestamp
         finalEvents.push(eventsAtTime[0]);
       } else {
-        // Multiple events at same timestamp - could be position adjustment
+        // Multiple events at same timestamp - could be a complex adjustment
         const sellEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'sell');
-        const buyEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'buy');
+        const buyEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'buy' || e.evaluation.action?.type === 'adjustment');
 
         if (sellEvent && buyEvent) {
-          // This is a position adjustment - create a combined event
+          // This is a SELL + BUY adjustment - create a combined event
           finalEvents.push({
             ...sellEvent,
             type: "evaluation" as const,
@@ -1216,9 +1294,9 @@ function TimelineTab({
             evaluation: {
               ...sellEvent.evaluation,
               action: {
-                type: "adjustment" as any, // Position adjustment
+                type: "adjustment" as any,
                 description: `SELL ${sellEvent.evaluation.order?.count || 0} → BUY ${buyEvent.evaluation.order?.count || 0}`,
-                reason: "Position adjustment",
+                reason: "Position flip",
               },
               // Combine order information
               adjustment: {
@@ -1228,7 +1306,7 @@ function TimelineTab({
             } as any,
           });
         } else {
-          // Not an adjustment, just keep all events
+          // Not a sell+buy adjustment, keep all events
           finalEvents.push(...eventsAtTime);
         }
       }
@@ -1631,7 +1709,12 @@ function TimelineTab({
           const isPositiveEdge = edge != null && edge >= 0;
           const actionType = evaluation.action?.type?.toUpperCase() ?? "HOLD";
           const isExpanded = expandedEntryId === event.key;
-          const hasRationale = !!(evaluation.action?.reason || evaluation.action?.description);
+          const hasRationale = !!(evaluation.action?.rationale || evaluation.action?.reason || evaluation.action?.description);
+
+          // Extract YES/NO from action description (e.g., "BUY 10 YES" -> "YES")
+          const actionDescription = evaluation.action?.description ?? "";
+          const sideMatch = actionDescription.match(/\b(YES|NO)\b/i);
+          const side = sideMatch ? sideMatch[1].toUpperCase() : null;
 
           // Check if this is a position adjustment
           const isAdjustment = actionType === "ADJUSTMENT";
@@ -1656,9 +1739,9 @@ function TimelineTab({
                           ADJUST
                         </span>
 
-                        {/* Show SELL part */}
+                        {/* Show SELL part with side */}
                         <span className="text-loss">
-                          SELL {adjustment.sell.order?.count || 0}
+                          SELL {adjustment.sell.order?.count || 0} {adjustment.sell.side || ""}
                         </span>
                         {adjustment.sell.order && (
                           <span className={`text-[9px] ${
@@ -1670,9 +1753,9 @@ function TimelineTab({
 
                         <span className="text-txt-muted">→</span>
 
-                        {/* Show BUY part */}
+                        {/* Show BUY part with side */}
                         <span className="text-profit">
-                          BUY {adjustment.buy.order?.count || 0}
+                          BUY {adjustment.buy.order?.count || 0} {adjustment.buy.side || ""}
                         </span>
                         {adjustment.buy.order && (
                           <span className={`text-[9px] ${
@@ -1699,9 +1782,10 @@ function TimelineTab({
           return (
             <div key={event.key}>
               <div className="relative py-1.5">
-                {/* Different colored dot for evaluations - use orange for HOLD, green for BUY, red for SELL */}
+                {/* Different colored dot for evaluations - use orange for HOLD, green for BUY, purple for ADJUSTMENT, red for SELL */}
                 <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
                   actionType === "HOLD" ? "bg-orange-400" :
+                  actionType === "ADJUSTMENT" ? "bg-purple-500" :
                   actionType === "BUY" ? "bg-profit" : "bg-loss"
                 }`} />
 
@@ -1722,17 +1806,25 @@ function TimelineTab({
                       }}
                     >
                       <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
-                      {/* Action badge */}
+                      {/* Action badge with YES/NO */}
                       <span className={`text-[9px] px-1 py-px rounded font-bold ${
                         actionType === "HOLD" ? "bg-yellow-900/30 text-yellow-500" :
+                        actionType === "ADJUSTMENT" ? "bg-purple-900/30 text-purple-400" :
                         actionType === "BUY" ? "bg-profit-dim text-profit" :
                         "bg-loss-dim text-loss"
                       }`}>
-                        {actionType}
+                        {actionType === "ADJUSTMENT" ? "ADJUST" : actionType}{side && actionType !== "HOLD" && actionType !== "ADJUSTMENT" ? ` ${side}` : ""}
                       </span>
 
+                      {/* For adjustments, show the change */}
+                      {actionType === "ADJUSTMENT" && evaluation.action?.description && (
+                        <span className="text-txt-primary">
+                          {evaluation.action.description}
+                        </span>
+                      )}
+
                       {/* For BUY/SELL show shares and fill status prominently */}
-                      {evaluation.order && evaluation.order.count > 0 && actionType !== "HOLD" && (
+                      {evaluation.order && evaluation.order.count > 0 && actionType !== "HOLD" && actionType !== "ADJUSTMENT" && (
                         <>
                           <span className="text-txt-primary font-semibold">
                             {evaluation.order.count} shares
@@ -1772,9 +1864,15 @@ function TimelineTab({
                         </span>
                       )}
 
-                      {/* Edge with color coding */}
-                      {edge != null && (
+                      {/* Edge with color coding - only show for actionable decisions, not HOLDs */}
+                      {edge != null && actionType !== "HOLD" && (
                         <span className={isPositiveEdge ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
+                          edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
+                        </span>
+                      )}
+                      {/* For HOLD, show why we're not trading */}
+                      {edge != null && actionType === "HOLD" && (
+                        <span className="text-txt-muted text-[9px]">
                           edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
                         </span>
                       )}
@@ -1792,8 +1890,8 @@ function TimelineTab({
                     {isExpanded && hasRationale && (
                       <div className="mt-2 p-2 bg-t-panel-hover/30 rounded text-[10px] text-txt-secondary">
                         <div className="font-semibold mb-1">Model Rationale:</div>
-                        <div className="text-txt-muted">
-                          {evaluation.action?.reason || evaluation.action?.description || "No rationale available"}
+                        <div className="text-txt-muted whitespace-pre-wrap">
+                          {evaluation.action?.rationale || evaluation.action?.reason || "No rationale available"}
                         </div>
                       </div>
                     )}

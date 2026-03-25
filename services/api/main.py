@@ -1983,6 +1983,7 @@ def get_cycle_evaluations(
 
         # Get ALL predictions - each one represents a cycle evaluation
         # If there's no associated order, it was a HOLD decision
+        # Join with ModelRun to get the reasoning from metadata_json
         query = text("""
             SELECT
                 bp.id as pred_id,
@@ -2000,12 +2001,16 @@ def get_cycle_evaluations(
                 bo.count as order_count,
                 bo.status as order_status,
                 bo.price_cents as order_price,
-                bo.filled_shares as order_filled
+                bo.filled_shares as order_filled,
+                mr.metadata_json as model_metadata
             FROM betting_predictions bp
             LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
             LEFT JOIN betting_orders bo ON bo.ticker = tm.ticker
                 AND bo.instance_name = bp.instance_name
                 AND bo.created_at BETWEEN bp.created_at - INTERVAL '1 minute' AND bp.created_at + INTERVAL '1 minute'
+            LEFT JOIN model_runs mr ON mr.market_id = bp.market_id
+                AND mr.instance_name = bp.instance_name
+                AND mr.timestamp BETWEEN bp.created_at - INTERVAL '1 minute' AND bp.created_at + INTERVAL '1 minute'
             WHERE bp.instance_name = :instance
             AND (:ticker IS NULL OR tm.ticker = :ticker)
             ORDER BY bp.created_at DESC
@@ -2031,6 +2036,18 @@ def get_cycle_evaluations(
                 # Edge = prediction - market ask price
                 edge = (row.p_yes - row.yes_ask) * 100  # Convert to percentage
 
+            # Extract reasoning from model metadata if available
+            model_reasoning = None
+            model_rationale = None
+            if row.model_metadata:
+                try:
+                    metadata = json.loads(row.model_metadata)
+                    model_reasoning = metadata.get("reasoning")
+                    # Also check for 'rationale' field in metadata
+                    model_rationale = metadata.get("rationale")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
             # Determine the action taken based on whether an order exists
             if row.order_id:
                 # An order was placed - use the actual action (buy/sell) regardless of status
@@ -2048,20 +2065,26 @@ def get_cycle_evaluations(
                 action_type = "hold"
 
             # Determine reason for action/inaction
-            edge_info = None
-            if edge is not None:
-                if action_type == "hold":
-                    # Explain why it was held
-                    # We don't bet when MARKET probability is < 3% or > 97%
-                    yes_ask_pct = row.yes_ask * 100 if row.yes_ask else None
-                    if yes_ask_pct and (yes_ask_pct < 3 or yes_ask_pct > 97):
-                        edge_info = f"Market {yes_ask_pct:.1f}% outside [3%, 97%] range"
-                    elif abs(edge) < 3:  # Also check if edge is too small
-                        edge_info = f"Edge {edge:.1f}% too small"
+            # Prefer actual model reasoning/rationale if available, otherwise use edge info
+            if model_reasoning or model_rationale:
+                reason = model_reasoning or model_rationale
+            else:
+                # Fallback to edge-based reasoning
+                if edge is not None:
+                    if action_type == "hold":
+                        # Explain why it was held
+                        # We don't bet when MARKET probability is < 3% or > 97%
+                        yes_ask_pct = row.yes_ask * 100 if row.yes_ask else None
+                        if yes_ask_pct and (yes_ask_pct < 3 or yes_ask_pct > 97):
+                            reason = f"Market {yes_ask_pct:.1f}% outside [3%, 97%] range"
+                        elif abs(edge) < 3:  # Also check if edge is too small
+                            reason = f"Edge {edge:.1f}% too small"
+                        else:
+                            reason = f"Edge {edge:.1f}% (position/capital limit)"
                     else:
-                        edge_info = f"Edge {edge:.1f}% (position/capital limit)"
+                        reason = f"Edge {edge:.1f}% → {action_type}"
                 else:
-                    edge_info = f"Edge {edge:.1f}% → {action_type}"
+                    reason = None
 
             evaluations.append({
                 "id": row.pred_id,
@@ -2079,7 +2102,8 @@ def get_cycle_evaluations(
                 "action": {
                     "type": action_type,
                     "description": action_taken,
-                    "reason": edge_info,
+                    "reason": reason,
+                    "rationale": model_rationale,  # Add the actual LLM rationale
                 },
                 "order": {
                     "count": row.order_count,
