@@ -202,19 +202,37 @@ def _update_market_prices(db_engine, adapter, instance_name: str) -> None:
     """Update market prices from Kalshi for active positions."""
     try:
         from ai_prophet_core.betting.db import get_session
+        from ai_prophet_core.betting.db_schema import BettingOrder
         from db_models import TradingMarket
 
-        # Use live Kalshi positions as the source of truth for active tickers.
-        active_tickers = [
+        # Use both live Kalshi positions and pending orders as the source of truth
+        # for markets whose live prices must stay fresh in the dashboard.
+        live_position_tickers = [
             pos.get("ticker")
             for pos in adapter.get_positions()
             if pos.get("ticker") and abs(float(pos.get("position_fp", 0) or 0)) > 0
         ]
 
+        with get_session(db_engine) as session:
+            pending_tickers = [
+                ticker for (ticker,) in (
+                    session.query(BettingOrder.ticker)
+                    .filter(
+                        BettingOrder.instance_name == instance_name,
+                        BettingOrder.status == "PENDING",
+                    )
+                    .distinct()
+                    .all()
+                )
+                if ticker
+            ]
+
+        active_tickers = sorted(set(live_position_tickers) | set(pending_tickers))
+
         if not active_tickers:
             return
 
-        logger.info("[SYNC] Updating prices for %d active positions", len(active_tickers))
+        logger.info("[SYNC] Updating live prices for %d active/pending markets", len(active_tickers))
 
         # Fetch current prices from Kalshi
         for ticker in active_tickers:

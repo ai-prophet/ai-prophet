@@ -71,6 +71,7 @@ _db_engine = None
 MIN_PROFITABLE_PRICE = 0.03
 MAX_PROFITABLE_PRICE = 0.97
 MIN_REBALANCE_TRADE = 0.005
+WITHIN_SPREAD_BUFFER = 0.02
 
 
 def get_db():
@@ -168,36 +169,37 @@ def _instance_list_setting(key: str, instance_name: str) -> list[str]:
 def _hold_reason_from_market_context(
     *,
     model_decision: str | None,
+    strategy_metadata: dict[str, Any] | None = None,
+    has_order: bool = False,
     p_yes: float | None,
     yes_ask: float | None,
     no_ask: float | None,
 ) -> str:
-    decision = (model_decision or "").upper()
     if yes_ask is None or no_ask is None or p_yes is None:
         return "Holding because no trade was placed this cycle."
 
+    if strategy_metadata and strategy_metadata.get("flatten_reason") == "WITHIN_SPREAD":
+        lower_bound = strategy_metadata.get("lower_bound")
+        upper_bound = strategy_metadata.get("upper_bound")
+        current_pos = strategy_metadata.get("current_pos")
+        if lower_bound is not None and upper_bound is not None and current_pos is not None:
+            return (
+                f"Holding because the model stayed within spread, so the strategy flattened the existing "
+                f"position of {abs(float(current_pos)) * 100:.0f} contracts back to zero inside the "
+                f"[{float(lower_bound) * 100:.1f}%, {float(upper_bound) * 100:.1f}%] band."
+            )
+        return "Holding because the model stayed within spread, so the strategy flattened the existing position back to zero."
+
     spread = yes_ask + no_ask
-    lower_bound = 1.0 - no_ask
-    upper_bound = yes_ask
+    lower_bound = max(0.0, 1.0 - no_ask - WITHIN_SPREAD_BUFFER)
+    upper_bound = min(1.0, yes_ask + WITHIN_SPREAD_BUFFER)
     edge = (p_yes - yes_ask) * 100
 
-    if decision == "HOLD_NOPROFIT":
-        if yes_ask <= MIN_PROFITABLE_PRICE or yes_ask >= MAX_PROFITABLE_PRICE:
-            return (
-                f"Holding because YES ask {(yes_ask * 100):.1f}% is outside the "
-                f"[{MIN_PROFITABLE_PRICE * 100:.0f}%, {MAX_PROFITABLE_PRICE * 100:.0f}%] tradeable range."
-            )
-        if no_ask <= MIN_PROFITABLE_PRICE or no_ask >= MAX_PROFITABLE_PRICE:
-            return (
-                f"Holding because NO ask {(no_ask * 100):.1f}% is outside the "
-                f"[{MIN_PROFITABLE_PRICE * 100:.0f}%, {MAX_PROFITABLE_PRICE * 100:.0f}%] tradeable range."
-            )
-
     if spread > MAX_SPREAD:
-        return f"Holding because the bid-ask spread is too wide ({spread:.2f} > {MAX_SPREAD:.2f})."
+        return f"No trade because the bid-ask spread is too wide ({spread:.2f} > {MAX_SPREAD:.2f})."
 
     if spread < 0.90:
-        return f"Holding because the market prices look crossed or unreliable (spread {spread:.2f} < 0.90)."
+        return f"No trade because the market prices look crossed or unreliable (spread {spread:.2f} < 0.90)."
 
     if lower_bound <= p_yes <= upper_bound:
         return (
@@ -205,16 +207,7 @@ def _hold_reason_from_market_context(
             f"[{(lower_bound * 100):.1f}%, {(upper_bound * 100):.1f}%], so there is no clear edge."
         )
 
-    if abs(p_yes - yes_ask) < MIN_REBALANCE_TRADE:
-        return (
-            f"Holding because the rebalance delta is below the minimum trade size "
-            f"({MIN_REBALANCE_TRADE * 100:.1f}pp)."
-        )
-
-    return (
-        f"Holding because the strategy did not produce an executable rebalance "
-        f"despite edge {edge:.1f}%, likely due to current position, minimum trade size, or cash constraints."
-    )
+    return f"No trade was placed this cycle despite edge {edge:.1f}%."
 
 
 def _heartbeat_components() -> tuple[str, ...]:
@@ -233,7 +226,7 @@ def _heartbeat_query(session, instance_name: str):
 
 
 def _worker_poll_interval(instance_name: str) -> int:
-    return int(_instance_setting("WORKER_POLL_INTERVAL_SEC", instance_name, "3600"))
+    return int(_instance_setting("WORKER_POLL_INTERVAL_SEC", instance_name, "14400"))
 
 
 def _worker_stale_threshold_sec(instance_name: str) -> int:
@@ -579,6 +572,7 @@ def get_trades(
                     "status": row.status,
                     "filled_shares": row.filled_shares,
                     "fill_price": row.fill_price,
+                    "fee_paid": row.fee_paid,
                     "exchange_order_id": row.exchange_order_id,
                     "dry_run": row.dry_run,
                     "created_at": row.created_at.isoformat(),
@@ -1064,7 +1058,7 @@ def get_pnl(
         cumulative_realized = 0.0
 
         for row in rows:
-            action, side, shares, price = normalize_order(row)
+            action, side, shares, price, fee_paid = normalize_order(row)
             cost = price * shares
             total_trades += 1
             total_volume += cost
@@ -1108,6 +1102,7 @@ def get_pnl(
                 "open_value": round(point_open_value, 4),
                 "cash_spent": round(point_cash_spent, 4),
                 "trade_cost": round(cost, 4),
+                "trade_fee": round(fee_paid, 4),
                 "ticker": row.ticker,
                 "side": row.side,
                 "action": action,
@@ -1305,11 +1300,12 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
         for o in orders:
             action = getattr(o, "action", "BUY") or "BUY"
             day_key = o.created_at.strftime("%Y-%m-%d")
+            fee_paid = float(getattr(o, "fee_paid", 0) or 0)
             cost = (o.price_cents / 100.0) * o.count
             if action.upper() == "SELL":
-                daily_pnl[day_key] += cost  # sell proceeds
+                daily_pnl[day_key] += cost - fee_paid  # sell proceeds net of fees
             else:
-                daily_pnl[day_key] -= cost  # buy cost
+                daily_pnl[day_key] -= cost + fee_paid  # buy cost plus fees
 
         daily_returns = list(daily_pnl.values()) if daily_pnl else []
 
@@ -2111,6 +2107,7 @@ def get_cycle_evaluations(
                 bo.status as order_status,
                 bo.price_cents as order_price,
                 bo.filled_shares as order_filled,
+                bo.fee_paid as order_fee,
                 mr.metadata_json as model_metadata,
                 mr.decision as model_decision
             FROM betting_predictions bp
@@ -2155,11 +2152,20 @@ def get_cycle_evaluations(
                     model_reasoning = metadata.get("reasoning")
                     # Also check for 'rationale' field in metadata
                     model_rationale = metadata.get("rationale")
+                    strategy_metadata = metadata.get("strategy") if isinstance(metadata.get("strategy"), dict) else None
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    strategy_metadata = None
+            else:
+                strategy_metadata = None
 
             # Determine the action taken based on whether an order exists
-            if row.order_id:
+            if row.model_decision == "SKIP":
+                action_taken = "SKIP"
+                action_type = "skip"
+            elif row.order_id and strategy_metadata and strategy_metadata.get("flatten_reason") == "WITHIN_SPREAD":
+                action_taken = "HOLD (within spread)"
+                action_type = "hold"
+            elif row.order_id:
                 # An order was placed - use the actual action (buy/sell) regardless of status
                 action_type = row.order_action.lower() if row.order_action else "buy"
 
@@ -2178,6 +2184,8 @@ def get_cycle_evaluations(
             if action_type == "hold":
                 hold_reason = _hold_reason_from_market_context(
                     model_decision=row.model_decision,
+                    strategy_metadata=strategy_metadata,
+                    has_order=bool(row.order_id),
                     p_yes=float(row.p_yes) if row.p_yes is not None else None,
                     yes_ask=float(row.yes_ask) if row.yes_ask is not None else None,
                     no_ask=float(row.no_ask) if row.no_ask is not None else None,
@@ -2188,6 +2196,8 @@ def get_cycle_evaluations(
                 reason = hold_reason
             elif model_reasoning or model_rationale:
                 reason = model_reasoning or model_rationale
+            elif action_type == "skip":
+                reason = "Skipped because the order would consume more than $50 of capital."
             elif edge is not None:
                 reason = f"Edge {edge:.1f}% → {action_type}"
             else:
@@ -2213,10 +2223,13 @@ def get_cycle_evaluations(
                     "rationale": model_rationale,  # Add the actual LLM rationale
                 },
                 "order": {
+                    "action": row.order_action,
+                    "side": row.order_side,
                     "count": row.order_count,
                     "filled": row.order_filled,
                     "price_cents": row.order_price,
                     "status": row.order_status,
+                    "fee_paid": float(row.order_fee or 0),
                 } if row.order_id else None,
             })
 

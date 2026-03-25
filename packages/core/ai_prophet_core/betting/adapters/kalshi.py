@@ -245,6 +245,33 @@ class KalshiAdapter(ExchangeAdapter):
             logger.error("KalshiAdapter: failed to fetch positions - %s", e)
             return []
 
+    def get_market(self, ticker: str) -> dict[str, Any] | None:
+        """Fetch a single market's live pricing from Kalshi."""
+        path = f"/trade-api/v2/markets/{ticker}"
+        headers = self._sign_request("GET", path)
+
+        try:
+            response = self._session.get(
+                self._base_url + path,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            market = response.json().get("market", {})
+            return {
+                "ticker": ticker,
+                "yes_bid": market.get("yes_bid_dollars"),
+                "yes_ask": market.get("yes_ask_dollars"),
+                "no_bid": market.get("no_bid_dollars"),
+                "no_ask": market.get("no_ask_dollars"),
+                "last_price": market.get("last_price_dollars"),
+                "volume": market.get("volume_24h_fp", 0),
+                "status": market.get("status"),
+            }
+        except requests.exceptions.RequestException as e:
+            logger.error("KalshiAdapter: failed to fetch market %s - %s", ticker, e)
+            return None
+
     def get_order(self, exchange_order_id: str) -> OrderResult | None:
         """Poll Kalshi for the current status of an order."""
         if self._dry_run:
@@ -314,6 +341,7 @@ class KalshiAdapter(ExchangeAdapter):
 
         kalshi_status = order_data.get("status", "").lower()
         exchange_order_id = order_data.get("order_id", "")
+        fee = self._extract_fee(order_data)
 
         if kalshi_status in ("executed", "filled"):
             status = OrderStatus.FILLED
@@ -340,7 +368,7 @@ class KalshiAdapter(ExchangeAdapter):
                 filled_shares=filled_shares,
                 fill_price=fill_price,
                 notional=notional,
-                fee=Decimal("0"),
+                fee=fee,
                 filled_at=now,
                 exchange_order_id=exchange_order_id,
                 raw_response=data,
@@ -363,3 +391,55 @@ class KalshiAdapter(ExchangeAdapter):
             exchange_order_id=exchange_order_id,
             raw_response=data,
         )
+
+    @staticmethod
+    def _coerce_money_amount(key: str, value: Any) -> Decimal:
+        amount = Decimal(str(value))
+        if key.endswith("_cents") or key.endswith("_cent"):
+            return amount / Decimal("100")
+        return amount
+
+    def _extract_fee(self, order_data: dict[str, Any]) -> Decimal:
+        total = Decimal("0")
+        found_any = False
+        candidate_keys = (
+            "fee",
+            "fees",
+            "fee_dollars",
+            "fees_dollars",
+            "fee_cents",
+            "fees_cents",
+            "maker_fees",
+            "maker_fees_dollars",
+            "maker_fees_cents",
+            "taker_fees",
+            "taker_fees_dollars",
+            "taker_fees_cents",
+            "filled_fees",
+            "filled_fees_dollars",
+            "filled_fees_cents",
+            "fees_paid",
+            "fees_paid_dollars",
+            "fees_paid_cents",
+        )
+
+        for key in candidate_keys:
+            value = order_data.get(key)
+            if value in (None, ""):
+                continue
+            total += self._coerce_money_amount(key, value)
+            found_any = True
+
+        fills = order_data.get("fills")
+        if not found_any and isinstance(fills, list):
+            for fill in fills:
+                if not isinstance(fill, dict):
+                    continue
+                for key in candidate_keys:
+                    value = fill.get(key)
+                    if value in (None, ""):
+                        continue
+                    total += self._coerce_money_amount(key, value)
+                    found_any = True
+
+        return total if found_any else Decimal("0")

@@ -43,6 +43,7 @@ COLUMN_MIGRATIONS = [
     ("market_price_snapshots", "instance_name", "VARCHAR(64)", "'Haifeng'"),
     ("trading_positions", "max_position", "DOUBLE PRECISION", "0"),
     ("trading_positions", "realized_trades", "INTEGER", "0"),
+    ("betting_orders", "fee_paid", "DOUBLE PRECISION", "0"),
 ]
 
 

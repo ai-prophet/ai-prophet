@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 MAX_SPREAD = 1.03
+MAX_ORDER_COST = 50.0
 
 # Maximum number of markets to place orders on per tick.
 # Change this to limit how many bets the engine places in a single tick.
@@ -109,5 +110,4 @@ class LiveBettingSettings:
             dry_run=_parse_bool(env_map.get(LIVE_BETTING_DRY_RUN_ENV), default=True),
             kalshi=KalshiConfig.from_env(env_map),
         )
-
 

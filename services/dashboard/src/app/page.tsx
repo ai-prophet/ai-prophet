@@ -36,6 +36,8 @@ import { OrderMonitoringPanel } from "@/components/OrderMonitoringPanel";
 
 const REFRESH_INTERVAL = 5_000;
 const INSTANCE_STORAGE_KEY = "dashboard-instance-key";
+const DISPLAY_CUTOFF_MS = new Date("2026-03-24T00:00:00-05:00").getTime();
+const SYNTHETIC_BACKFILL_SOURCE_PREFIX = "kalshi:";
 const WIN_RATE_TOOLTIP =
   "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
 
@@ -61,6 +63,122 @@ function formatLastUpdateTime(): string {
     second: "2-digit",
     hour12: false,
   });
+}
+
+function isOnOrAfterDisplayCutoff(timestamp: string | null | undefined): boolean {
+  if (!timestamp) return false;
+  return new Date(timestamp).getTime() >= DISPLAY_CUTOFF_MS;
+}
+
+function filterTradesForDisplay(trades: Trade[]): Trade[] {
+  return trades.filter((trade) => isOnOrAfterDisplayCutoff(trade.created_at));
+}
+
+function isSyntheticBackfillTrade(trade: Trade): boolean {
+  const source = trade.prediction?.source?.toLowerCase() ?? "";
+  return source.startsWith(SYNTHETIC_BACKFILL_SOURCE_PREFIX);
+}
+
+function parseFiniteNumber(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function inferLivePositionFee(position: KalshiPositionsData["positions"][number]): number {
+  const directFee = parseFiniteNumber((position as any).fees_paid_dollars);
+  if (directFee > 0) return directFee;
+
+  const qty = Math.abs(parseFiniteNumber((position as any).position_fp));
+  const avgPrice = parseFiniteNumber(
+    (position as any).average_price_dollars
+    ?? (position as any).avg_price_dollars
+    ?? (position as any).avg_price
+  );
+  const actualPaid = parseFiniteNumber(
+    (position as any).market_exposure_dollars
+    ?? (position as any).market_exposure
+  );
+
+  const impliedFee = actualPaid - (qty * avgPrice);
+  return impliedFee > 0 ? impliedFee : 0;
+}
+
+function reconcileBackfillTradeFees(
+  trades: Trade[],
+  livePositions: KalshiPositionsData | null,
+): Trade[] {
+  if (!livePositions?.positions?.length || trades.length === 0) return trades;
+
+  const liveFeesByTicker = new Map<string, number>();
+  for (const position of livePositions.positions) {
+    const ticker = typeof position.ticker === "string" ? position.ticker : null;
+    if (!ticker) continue;
+    const fee = inferLivePositionFee(position);
+    if (fee > 0) liveFeesByTicker.set(ticker, fee);
+  }
+  if (liveFeesByTicker.size === 0) return trades;
+
+  const candidateIndexesByTicker = new Map<string, number[]>();
+  trades.forEach((trade, index) => {
+    const status = trade.status?.toUpperCase() ?? "";
+    if (trade.dry_run || trade.fee_paid > 0 || !isSyntheticBackfillTrade(trade) || status !== "FILLED") {
+      return;
+    }
+    const existing = candidateIndexesByTicker.get(trade.ticker) ?? [];
+    existing.push(index);
+    candidateIndexesByTicker.set(trade.ticker, existing);
+  });
+
+  if (candidateIndexesByTicker.size === 0) return trades;
+
+  const nextTrades = [...trades];
+  let changed = false;
+
+  for (const [ticker, indexes] of Array.from(candidateIndexesByTicker.entries())) {
+    const liveFee = liveFeesByTicker.get(ticker);
+    if (!liveFee || liveFee <= 0) continue;
+
+    const weights = indexes.map((index) => {
+      const trade = trades[index];
+      return Math.max(trade.filled_shares || trade.count || 0, 1);
+    });
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    if (totalWeight <= 0) continue;
+
+    let allocated = 0;
+    indexes.forEach((index, idx) => {
+      const isLast = idx === indexes.length - 1;
+      const inferredFee = isLast
+        ? Math.max(0, liveFee - allocated)
+        : Math.round((liveFee * (weights[idx] / totalWeight)) * 10000) / 10000;
+      allocated += inferredFee;
+      nextTrades[index] = { ...nextTrades[index], fee_paid: inferredFee };
+      changed = true;
+    });
+  }
+
+  return changed ? nextTrades : trades;
+}
+
+function filterPnlForDisplay(pnlData: PnLData | null): PnLData | null {
+  if (!pnlData) return null;
+
+  const series = pnlData.series.filter((point) => isOnOrAfterDisplayCutoff(point.timestamp));
+  const trade_markers = pnlData.trade_markers.filter((marker) =>
+    isOnOrAfterDisplayCutoff(marker.timestamp)
+  );
+
+  return {
+    ...pnlData,
+    series,
+    trade_markers,
+    summary: {
+      ...pnlData.summary,
+      total_pnl: series.length > 0 ? series[series.length - 1].pnl : 0,
+      total_trades: trade_markers.length,
+      total_volume: trade_markers.reduce((sum, marker) => sum + marker.count, 0),
+    },
+  };
 }
 
 export default function Dashboard() {
@@ -129,7 +247,8 @@ export default function Dashboard() {
       const cashFlow = mktTrades.reduce((sum, t) => {
         const qty = t.filled_shares || t.count;
         const price = t.price_cents / 100;
-        return sum + (t.action?.toUpperCase() === "SELL" ? qty * price : -(qty * price));
+        const fee = t.fee_paid || 0;
+        return sum + (t.action?.toUpperCase() === "SELL" ? (qty * price) - fee : -((qty * price) + fee));
       }, 0);
       const currentBid = pos.contract.toLowerCase() === "yes"
         ? (mkt?.yes_bid ?? (mkt?.no_ask != null ? 1 - mkt.no_ask : null))
@@ -276,6 +395,7 @@ export default function Dashboard() {
         instanceApi.getAlerts(),
       ]);
       if (activeRequestRef.current !== requestId) return;
+      const displayTrades = reconcileBackfillTradeFees(filterTradesForDisplay(t), kp);
 
       // Apply Tier 1 immediately so the page renders
       const cached = dataCacheRef.current[instanceKey];
@@ -284,7 +404,7 @@ export default function Dashboard() {
         (alert) => !alert.message.toLowerCase().includes("large edge detected")
       );
       const tier1Snapshot: DashboardSnapshot = {
-        trades: t,
+        trades: displayTrades,
         markets: m,
         positions: posData.positions,
         pnl: cached?.pnl ?? null,
@@ -317,7 +437,11 @@ export default function Dashboard() {
         if (activeRequestRef.current !== requestId) return;
         const current = dataCacheRef.current[instanceKey];
         if (current) {
-          const updated = { ...current, pnl: pnlData, lastUpdate: formatLastUpdateTime() };
+          const updated = {
+            ...current,
+            pnl: filterPnlForDisplay(pnlData),
+            lastUpdate: formatLastUpdateTime(),
+          };
           dataCacheRef.current[instanceKey] = updated;
           applySnapshot(updated);
         }
@@ -403,8 +527,12 @@ export default function Dashboard() {
     return activeTickers.size;
   }, [kalshiPositions, metrics.marketsTraded]);
 
+  const totalFeesPaid = useMemo(() => {
+    return trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
+  }, [trades]);
+
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
-  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | "winrate" | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | "winrate" | "fees" | null>(null);
 
   // Per-position P&L breakdowns
   const marketById = new Map(markets.map((m) => [m.market_id, m]));
@@ -418,25 +546,26 @@ export default function Dashboard() {
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     let netShares = 0;
     let totalCost = 0;
-    const sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number }[] = [];
+    const sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[] = [];
     let totalRealized = 0;
     for (const t of relevant) {
       const qty = t.filled_shares || t.count;
       let price = t.price_cents / 100;
       if (price > 1.0) price /= 100; // fix corrupted fill_price stored as cents
+      const fee = t.fee_paid || 0;
       const action = (t.action ?? "BUY").toUpperCase();
       const isYes = (t.side ?? "yes").toLowerCase() === "yes";
       if (action === "SELL") {
         const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
-        const contribution = (price - avgAtSell) * qty;
+        const contribution = (price - avgAtSell) * qty - fee;
         totalRealized += contribution;
-        sells.push({ qty, sellPrice: price, avgAtSell, contribution });
+        sells.push({ qty, sellPrice: price, avgAtSell, contribution, feePaid: fee });
         if (isYes) { netShares -= qty; totalCost -= avgAtSell * qty; }
         else { netShares += qty; totalCost += avgAtSell * qty; }
         if (Math.abs(netShares) < 0.001) { netShares = 0; totalCost = 0; }
       } else {
-        if (isYes) { netShares += qty; totalCost += qty * price; }
-        else { netShares -= qty; totalCost -= qty * price; }
+        if (isYes) { netShares += qty; totalCost += qty * price + fee; }
+        else { netShares -= qty; totalCost -= qty * price + fee; }
       }
     }
     const remainingQty = Math.abs(netShares);
@@ -462,7 +591,7 @@ export default function Dashboard() {
   type PerMarketResult = {
     title: string;
     contract: string;
-    sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number }[];
+    sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[];
     totalRealized: number;
     avgEntry: number;
     currentBid: number | null;
@@ -470,6 +599,7 @@ export default function Dashboard() {
     openValue: number;
     cashSpent: number;
     hasMoreTrades: boolean;
+    feeTotal: number;
   };
   const perMarket: PerMarketResult[] = [];
 
@@ -480,8 +610,8 @@ export default function Dashboard() {
     const { sells, totalRealized, remainingAvgPrice } = replayTrades(row.trades);
     const dbQty = row.position?.quantity ?? 0;
     const contract = row.position?.contract ?? (row.trades[0]?.side ?? "yes");
-    const avgEntry = row.position?.avg_price ?? remainingAvgPrice;
-    const realizedValue = row.position?.realized_pnl ?? totalRealized;
+    const avgEntry = row.trades.length > 0 ? remainingAvgPrice : (row.position?.avg_price ?? 0);
+    const realizedValue = row.trades.length > 0 ? totalRealized : (row.position?.realized_pnl ?? 0);
     totalCashPnl += realizedValue;
 
     const mkt = marketById.get(row.market_id);
@@ -495,11 +625,12 @@ export default function Dashboard() {
     const openValue = currentBid != null ? currentBid * dbQty : 0;
     totalOpenValue += openValue;
     totalCashSpent += cashSpent;
+    const feeTotal = row.fees_paid_total ?? 0;
 
     const dbPos = positions.find((p) => p.market_id === row.market_id);
     const hasMoreTrades = dbPos != null && Math.abs(totalRealized - dbPos.realized_pnl) > 0.005;
 
-    perMarket.push({ title: row.title, contract, sells, totalRealized: realizedValue, avgEntry, currentBid, dbQty, openValue, cashSpent, hasMoreTrades });
+    perMarket.push({ title: row.title, contract, sells, totalRealized: realizedValue, avgEntry, currentBid, dbQty, openValue, cashSpent, hasMoreTrades, feeTotal });
   }
 
   const totalLiveNetPnl = totalOpenValue - totalCashSpent + totalCashPnl;
@@ -524,6 +655,15 @@ export default function Dashboard() {
       isWin: r.totalRealized > 0,
     }))
     .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)); // Sort by absolute value
+
+  const feesBreakdown = perMarket
+    .filter((r) => r.feeTotal > 0)
+    .map((r) => ({
+      title: r.title,
+      contract: r.contract,
+      value: r.feeTotal,
+    }))
+    .sort((a, b) => b.value - a.value);
 
   const cashBalance =
     balance == null
@@ -677,9 +817,12 @@ export default function Dashboard() {
             pnl={metrics.avgReturn}
           />
           <MetricCard
-            label="Sharpe"
-            value={analytics ? analytics.sharpe_ratio.toFixed(2) : "--"}
-            pnl={analytics ? analytics.sharpe_ratio : undefined}
+            label="Total Fees"
+            value={fmtDollar(totalFeesPaid)}
+            pnl={-Math.abs(totalFeesPaid)}
+            tooltip="Total fees paid across recorded trades in the current display window."
+            onClick={() => setExpandedMetric(expandedMetric === "fees" ? null : "fees")}
+            active={expandedMetric === "fees"}
           />
           <MetricCard
             label="Max DD"
@@ -722,14 +865,18 @@ export default function Dashboard() {
                   ? "Realized P&L Breakdown"
                   : expandedMetric === "unrealized"
                     ? "Unrealized P&L Breakdown"
-                    : "Win Rate Breakdown"}
+                    : expandedMetric === "fees"
+                      ? "Fee Breakdown"
+                      : "Win Rate Breakdown"}
               </span>
               <span className="text-[9px] text-txt-muted font-mono">
                 {expandedMetric === "realized"
                   ? "(sell_price − avg_entry) × qty_sold"
                   : expandedMetric === "unrealized"
                     ? "current_bid × open_qty"
-                    : "Markets with realized wins/losses"}
+                    : expandedMetric === "fees"
+                      ? "Recorded by market, plus live Kalshi fee reconciliation if needed"
+                      : "Markets with realized wins/losses"}
               </span>
             </div>
             {expandedMetric === "realized" && (
@@ -758,7 +905,7 @@ export default function Dashboard() {
                               ? <>
                                   {row.sells.map((s, j) => (
                                     <div key={j}>
-                                      ({Math.round(s.sellPrice * 100)}¢ − {Math.round(s.avgAtSell * 100)}¢) × {s.qty} = <span className={s.contribution >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(s.contribution)}</span>
+                                      ({Math.round(s.sellPrice * 100)}¢ − {Math.round(s.avgAtSell * 100)}¢) × {s.qty}{s.feePaid > 0 ? ` − fee ${fmtDollar(s.feePaid)}` : ""} = <span className={s.contribution >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(s.contribution)}</span>
                                     </div>
                                   ))}
                                   {row.hasMoreTrades && <div className="text-txt-muted/50 text-[9px]">* additional historical trades not shown</div>}
@@ -861,6 +1008,38 @@ export default function Dashboard() {
                       </tbody>
                     </table>
                   </>
+            )}
+            {expandedMetric === "fees" && (
+              feesBreakdown.length === 0
+                ? <p className="text-[10px] text-txt-muted font-mono">No fees recorded yet.</p>
+                : <table className="w-full text-[10px] font-mono">
+                    <thead>
+                      <tr className="text-txt-muted border-b border-t-border">
+                        <th className="text-left pb-1 font-medium">Market</th>
+                        <th className="text-center pb-1 font-medium w-12">Side</th>
+                        <th className="text-left pb-1 font-medium pl-4">Source</th>
+                        <th className="text-right pb-1 font-medium w-20">Fees</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {feesBreakdown.map((row, i) => (
+                        <tr key={i} className="border-b border-t-border/40 last:border-0">
+                          <td className="py-1.5 pr-3 text-txt-primary truncate max-w-[300px]">{row.title}</td>
+                          <td className="py-1.5 text-center">
+                            <span className={`px-1 rounded text-[8px] font-bold ${row.contract.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                              {row.contract.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="py-1.5 pl-4 text-txt-muted">
+                            Recorded trade fees
+                          </td>
+                          <td className="py-1.5 text-right text-warn">
+                            {fmtDollar(row.value)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
             )}
           </div>
         )}
@@ -1142,11 +1321,9 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     );
   }
 
-  // Worker runs at the top of each hour.
   const nowDate = new Date(now);
-  const nextHour = new Date(nowDate);
-  nextHour.setHours(nowDate.getHours() + 1, 0, 0, 0);
-  const nextCycleMs = nextHour.getTime();
+  const cycleIntervalMs = health.poll_interval_sec * 1000;
+  const nextCycleMs = (Math.floor(now / cycleIntervalMs) + 1) * cycleIntervalMs;
   const cycleRemainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
 
   // Sync worker runs at :30 past each hour.

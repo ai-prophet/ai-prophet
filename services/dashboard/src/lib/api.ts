@@ -77,6 +77,7 @@ export interface Trade {
   price_cents: number;
   status: string;
   filled_shares: number;
+  fee_paid: number;
   dry_run: boolean;
   created_at: string;
   market_title: string | null;
@@ -168,6 +169,7 @@ export interface PnLPoint {
   /** @deprecated Use open_value - cash_spent instead */
   unrealized_pnl?: number;
   trade_cost: number;
+  trade_fee?: number;
   ticker: string;
   side: string;
   action: string;
@@ -246,6 +248,7 @@ export interface KalshiPositionsData {
     realized_pnl: number;
     resting_orders_count: number;
     total_traded: number;
+    fees_paid_dollars?: number;
     [key: string]: unknown;
   }>;
   dry_run: boolean;
@@ -435,16 +438,19 @@ export interface CycleEvaluation {
     no_ask: number | null;
   };
   action: {
-    type: "buy" | "sell" | "hold" | "dry_run" | "pending";
+    type: "buy" | "sell" | "hold" | "dry_run" | "pending" | "skip";
     description: string;
     reason: string | null;
     rationale?: string | null;  // The actual LLM reasoning
   };
   order: {
+    action?: string | null;
+    side?: string | null;
     count: number;
     filled: number;
     price_cents: number;
     status: string;
+    fee_paid: number;
   } | null;
 }
 
@@ -481,6 +487,7 @@ export interface UnifiedMarketRow {
     realized_pnl: number;
     capital: number;
   } | null;
+  fees_paid_total: number;
 
   trades: Trade[];
   trade_count: number;
@@ -502,9 +509,10 @@ export function liveNetPnl(row: UnifiedMarketRow): number | null {
   if (!row.position && row.trades.length === 0) return null;
   const cashFlow = row.trades.reduce((sum, t) => {
     const qty = t.filled_shares || t.count;
+    const fee = t.fee_paid || 0;
     let price = t.price_cents / 100;
     if (price > 1.0) price /= 100; // fix corrupted fill_price stored as cents-of-cents
-    return sum + (t.action?.toUpperCase() === "SELL" ? qty * price : -(qty * price));
+    return sum + (t.action?.toUpperCase() === "SELL" ? (qty * price) - fee : -((qty * price) + fee));
   }, 0);
   const pos = row.position;
   if (!pos) return cashFlow;
@@ -641,6 +649,7 @@ export function buildUnifiedMarketRows(
     }
 
     let positionData: UnifiedMarketRow["position"] = null;
+    const fees_paid_total = filledMktTrades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
     if (pos) {
       positionData = {
         contract: pos.contract,
@@ -719,6 +728,7 @@ export function buildUnifiedMarketRows(
       edge,
       model_predictions: modelPreds,
       position: positionData,
+      fees_paid_total,
       trades: sortedTrades,
       trade_count: sortedTrades.length,
       last_trade_time: sortedTrades[0]?.created_at ?? null,
@@ -770,6 +780,7 @@ export function buildUnifiedMarketRows(
         realized_pnl: pos.realized_pnl,
         capital: pos.avg_price * pos.quantity,
       },
+      fees_paid_total: filledMktTrades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0),
       trades: sortedTrades,
       trade_count: sortedTrades.length,
       last_trade_time: sortedTrades[0]?.created_at ?? null,

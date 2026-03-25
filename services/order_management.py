@@ -57,6 +57,7 @@ def _sync_pending_order_status(
                         order.status = kalshi_order.status.value
                         order.filled_shares = float(kalshi_order.filled_shares)
                         order.fill_price = float(kalshi_order.fill_price)
+                        order.fee_paid = float(kalshi_order.fee or 0)
                         updated_count += 1
                         logger.info(
                             "[ORDER_MGMT] Updated order %s status: PENDING -> %s (filled: %d shares)",
@@ -114,6 +115,8 @@ def cancel_stale_orders(
 
         for order in stale_orders:
             try:
+                current_exchange_status = None
+
                 # Try to cancel on exchange
                 if order.exchange_order_id:
                     try:
@@ -132,7 +135,30 @@ def cancel_stale_orders(
                             e,
                         )
 
-                # Mark as cancelled in database regardless
+                    try:
+                        current_exchange_status = adapter.get_order(order.exchange_order_id)
+                    except Exception as e:
+                        logger.warning(
+                            "[ORDER_MGMT] Failed to re-check order %s after cancel attempt: %s",
+                            order.order_id[:8],
+                            e,
+                        )
+
+                if current_exchange_status is not None:
+                    order.status = current_exchange_status.status.value
+                    order.filled_shares = float(current_exchange_status.filled_shares or 0)
+                    if current_exchange_status.fill_price is not None:
+                        order.fill_price = float(current_exchange_status.fill_price)
+                    order.fee_paid = float(current_exchange_status.fee or 0)
+
+                    if order.status == "PENDING":
+                        logger.info(
+                            "[ORDER_MGMT] Order %s is still pending on Kalshi; leaving it pending in DB",
+                            order.order_id[:8],
+                        )
+                        continue
+
+                # If we could not confirm a different live status, fall back to local cancellation.
                 order.status = "CANCELLED"
                 cancelled_count += 1
 

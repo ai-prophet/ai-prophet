@@ -80,7 +80,7 @@ def test_default_strategy_buy_no():
 
 def test_default_strategy_skip_within_spread():
     strategy = DefaultBettingStrategy()
-    # With yes_ask=0.60, no_ask=0.45: lower=0.55, upper=0.60 → p_yes=0.57 is inside
+    # With the +/-1pp buffer, yes_ask=0.60, no_ask=0.45 -> [0.54, 0.61]
     signal = strategy.evaluate("kalshi:TEST", p_yes=0.57, yes_ask=0.60, no_ask=0.45)
     assert signal is None
 
@@ -96,13 +96,13 @@ def test_custom_strategy():
         name = "always-yes"
 
         def evaluate(self, market_id, p_yes, yes_ask, no_ask):
-            return BetSignal(side="yes", shares=1.0, price=yes_ask, cost=yes_ask)
+            return BetSignal(side="yes", shares=0.1, price=yes_ask, cost=0.1 * yes_ask)
 
     strategy = AlwaysBetYes()
     signal = strategy.evaluate("kalshi:TEST", p_yes=0.50, yes_ask=0.55, no_ask=0.45)
     assert signal is not None
     assert signal.side == "yes"
-    assert signal.shares == 1.0
+    assert signal.shares == 0.1
 
 
 # ── Engine tests ────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ def test_engine_with_custom_strategy():
         name = "always-yes"
 
         def evaluate(self, market_id, p_yes, yes_ask, no_ask):
-            return BetSignal(side="yes", shares=1.0, price=yes_ask, cost=yes_ask)
+            return BetSignal(side="yes", shares=0.1, price=yes_ask, cost=0.1 * yes_ask)
 
     db_engine = create_engine("sqlite:///:memory:")
     engine = BettingEngine(
@@ -207,7 +207,7 @@ def test_engine_with_custom_strategy():
     mock_adapter = Mock()
     mock_adapter.submit_order.return_value = Mock(
         status=OrderStatus.DRY_RUN,
-        filled_shares=Decimal("100"),
+        filled_shares=Decimal("10"),
         fill_price=Decimal("0.55"),
         exchange_order_id="dry-run-123",
         rejection_reason=None,
@@ -533,28 +533,31 @@ def test_rebalancing_sell_down_on_edge_flip():
     assert signal.metadata["sell_portion"] > 0
 
 
-def test_rebalancing_sell_down_zero_cash():
-    """Hold 3 NO, edge flips positive, cash=0 → sell proceeds fund the buy."""
+def test_rebalancing_flattens_inside_widened_spread_with_existing_position():
+    """Inside the widened no-trade band, an existing position should be flattened."""
     strategy = _rebal(cash=0.0, shares=3, side="no")
-    # p_yes=0.15, yes_ask=0.14 → target=+0.01, current=-0.03, delta=+0.04
+    # With the 1% widened band, [0.12, 0.15] is a no-trade region for flat books.
+    # Since we already hold 3 NO, the strategy should flatten instead of buying through it.
     signal = strategy.evaluate("kalshi:TEST", p_yes=0.15, yes_ask=0.14, no_ask=0.87)
     assert signal is not None
     assert signal.side == "yes"
-    # sell_portion=0.03 (3 NO), sell proceeds (0.03*0.87=0.026) fund buy_portion=0.01
-    assert round(signal.shares * 100) == 4
+    assert round(signal.shares * 100) == 3
     assert signal.metadata["sell_portion"] > 0
-    assert signal.metadata["buy_portion"] > 0
+    assert signal.metadata["buy_portion"] == 0
+    assert signal.metadata["target"] == 0.0
+    assert signal.metadata["flatten_reason"] == "WITHIN_SPREAD"
 
 
 def test_rebalancing_partial_sell_down_same_side():
-    """Hold 5 NO, target is -2 NO → sell 3 NO to reduce from 5 to 2."""
-    strategy = _rebal(cash=100.0, shares=5, side="no")
-    # p_yes=0.12, yes_ask=0.14 → target=-0.02, current=-0.05, delta=+0.03
-    signal = strategy.evaluate("kalshi:TEST", p_yes=0.12, yes_ask=0.14, no_ask=0.87)
+    """Hold 20 NO, target is 15 NO outside the widened no-trade band."""
+    strategy = _rebal(cash=100.0, shares=20, side="no")
+    # p_yes=0.15, yes_ask=0.30 → target=-0.15, current=-0.20, delta=+0.05
+    # With no-trade band [0.27, 0.32], this remains an actionable sell-down.
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.15, yes_ask=0.30, no_ask=0.71)
     assert signal is not None
     assert signal.side == "yes"
-    # delta=+0.03 → 3 contracts; all from selling existing NO (sell_portion=0.03)
-    assert round(signal.shares * 100) == 3
+    # delta=+0.05 → 5 contracts; all from selling existing NO (sell_portion=0.05)
+    assert round(signal.shares * 100) == 5
     assert signal.metadata["sell_portion"] > 0
 
 
@@ -568,3 +571,20 @@ def test_rebalancing_pure_buy_no_position():
     assert round(signal.shares * 100) == 3
     assert signal.metadata["sell_portion"] == 0
     assert signal.metadata["buy_portion"] > 0
+
+
+def test_rebalancing_holds_when_flat_inside_widened_spread():
+    strategy = _rebal(cash=100.0, shares=0, side=None)
+    # With buffer, market band is [0.54, 0.56], so 0.545 should still HOLD when flat.
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.545, yes_ask=0.55, no_ask=0.45)
+    assert signal is None
+
+
+def test_rebalancing_flattens_existing_position_inside_widened_spread():
+    strategy = _rebal(cash=100.0, shares=10, side="yes")
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.545, yes_ask=0.55, no_ask=0.45)
+    assert signal is not None
+    assert signal.side == "no"
+    assert round(signal.shares * 100) == 10
+    assert signal.metadata["target"] == 0.0
+    assert signal.metadata["flatten_reason"] == "WITHIN_SPREAD"

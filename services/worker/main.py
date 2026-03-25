@@ -17,7 +17,7 @@ Environment variables:
     KALSHI_BASE_URL           — Kalshi API base URL
     LIVE_BETTING_ENABLED      — Master kill switch (default: false)
     LIVE_BETTING_DRY_RUN      — Dry-run mode (default: true)
-    WORKER_POLL_INTERVAL_SEC  — (Deprecated) Workers now run at the top of each hour
+    WORKER_POLL_INTERVAL_SEC  — Poll interval in seconds (default: 14400 = every 4 hours)
     WORKER_MODELS             — Comma-separated model specs (default: gemini:gemini-3.1-pro-preview)
                                  Providers: openai, anthropic, gemini
                                  Examples: gemini:gemini-3.1-pro-preview, anthropic:claude-sonnet-4-5-20250929
@@ -183,6 +183,7 @@ def _validate_instance_profile_or_raise() -> None:
 # ── Shutdown handling ──────────────────────────────────────────────
 
 _shutdown_requested = False
+DEFAULT_WORKER_POLL_INTERVAL_SEC = 4 * 60 * 60
 
 
 def _handle_signal(signum, frame):
@@ -193,6 +194,14 @@ def _handle_signal(signum, frame):
 
 signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
+
+
+def _next_cycle_boundary(now: datetime, poll_interval_sec: int) -> datetime:
+    """Return the next UTC-aligned cycle boundary for the configured interval."""
+    interval = max(1, int(poll_interval_sec))
+    now_ts = int(now.timestamp())
+    next_ts = ((now_ts // interval) + 1) * interval
+    return datetime.fromtimestamp(next_ts, tz=UTC)
 
 
 # ── Logging setup ─────────────────────────────────────────────────
@@ -528,6 +537,7 @@ def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
 
                     order.status = result.status.value
                     order.filled_shares = float(result.filled_shares) if result.filled_shares else 0
+                    order.fee_paid = float(result.fee) if getattr(result, "fee", None) else 0
 
                     # Update fill_price if we have fills but no price
                     if order.filled_shares > 0 and (order.fill_price is None or order.fill_price == 0):
@@ -1899,16 +1909,16 @@ def run_cycle(args) -> None:
                 logger.debug("Could not materialize ledger-based portfolio snapshot: %s", e)
 
         # If the market drifted to near-certain territory since it was pulled, skip betting.
-        # Check BOTH yes_ask and no_ask to ensure we don't miss extreme markets
+        # This is no longer a HOLD state; it's just a cycle skip.
         if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
             logger.info(
-                "  HOLD_NOPROFIT %s — near-certain price (yes_ask=%.3f, no_ask=%.3f), skipping",
+                "  CYCLE_SKIPPED %s — near-certain price (yes_ask=%.3f, no_ask=%.3f), skipping",
                 ticker, yes_ask, no_ask,
             )
             if db_engine and betting_engine is not None:
                 for ms, pred in model_predictions.items():
                     save_model_run(
-                        db_engine, ms, market_id, "HOLD_NOPROFIT", pred.get("confidence"),
+                        db_engine, ms, market_id, "CYCLE_SKIPPED", pred.get("confidence"),
                         metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
                                   "analysis": pred.get("analysis", {}),
                                   "sources": pred.get("sources", []),
@@ -1928,25 +1938,28 @@ def run_cycle(args) -> None:
                         yes_ask=yes_ask,
                         no_ask=no_ask,
                     )
-                    # Check if this is a HOLD_NOPROFIT signal
-                    if (strategy_signal is not None and
-                        strategy_signal.side == "hold" and
-                        strategy_signal.metadata and
-                        strategy_signal.metadata.get("reason") == "HOLD_NOPROFIT"):
-                        decision = "HOLD_NOPROFIT"
-                    elif strategy_signal is not None and strategy_signal.side in ["yes", "no"]:
+                    strategy_metadata = strategy_signal.metadata if strategy_signal is not None else None
+                    if strategy_signal is None:
+                        decision = "HOLD"
+                    elif strategy_metadata and strategy_metadata.get("flatten_reason") == "WITHIN_SPREAD":
+                        decision = "HOLD"
+                    elif strategy_signal.cost > 50.0:
+                        decision = "SKIP"
+                    elif strategy_signal.side in ["yes", "no"]:
                         decision = f"BUY_{strategy_signal.side.upper()}"
                     else:
                         decision = "HOLD"
                 except Exception:
                     decision = "HOLD"
+                    strategy_metadata = None
 
                 save_model_run(
                     db_engine, ms, market_id, decision, pred.get("confidence"),
                     metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
                               "analysis": pred.get("analysis", {}),
                               "sources": pred.get("sources", []),
-                              "yes_ask": yes_ask, "no_ask": no_ask},
+                              "yes_ask": yes_ask, "no_ask": no_ask,
+                              "strategy": strategy_metadata},
                     instance_name=INSTANCE_NAME,
                 )
 
@@ -2136,7 +2149,7 @@ def main() -> None:
     _start_health_server()
     _validate_instance_profile_or_raise()
 
-    poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", 3600)
+    poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", DEFAULT_WORKER_POLL_INTERVAL_SEC)
     peer_instances_str = _instance_setting("WORKER_PEER_INSTANCES", "")
     peer_instances = [p.strip() for p in peer_instances_str.split(",") if p.strip()] if peer_instances_str else []
     all_sync_instances = list({INSTANCE_NAME} | set(peer_instances))
@@ -2151,32 +2164,32 @@ def main() -> None:
     )
     logger.info("Mode: STANDALONE (direct Kalshi API + LLM predictions)")
 
-    # Wait for the next hour boundary before starting (unless --once flag is set)
+    # Wait for the next configured cycle boundary before starting (unless --once flag is set)
     if not args.once:
         now = datetime.now(UTC)
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        seconds_until_next_hour = (next_hour - now).total_seconds()
+        next_cycle = _next_cycle_boundary(now, poll_interval)
+        seconds_until_next_cycle = (next_cycle - now).total_seconds()
 
         logger.info(
-            "Waiting until next hour boundary: %s UTC (%.0f seconds)",
-            next_hour.strftime("%H:%M"), seconds_until_next_hour
+            "Waiting until next cycle boundary: %s UTC (%.0f seconds, interval=%ds)",
+            next_cycle.strftime("%H:%M"), seconds_until_next_cycle, poll_interval
         )
 
         # Show local time too
         try:
             import zoneinfo
             local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
-            next_hour_local = next_hour.astimezone(local_tz)
+            next_cycle_local = next_cycle.astimezone(local_tz)
             logger.info(
                 "First cycle will run at: %s UTC / %s PST",
-                next_hour.strftime("%H:%M"),
-                next_hour_local.strftime("%H:%M")
+                next_cycle.strftime("%H:%M"),
+                next_cycle_local.strftime("%H:%M")
             )
         except:
             pass
 
-        if seconds_until_next_hour > 0 and not _shutdown_requested:
-            time.sleep(seconds_until_next_hour)
+        if seconds_until_next_cycle > 0 and not _shutdown_requested:
+            time.sleep(seconds_until_next_cycle)
 
     while not _shutdown_requested:
         try:
@@ -2202,12 +2215,12 @@ def main() -> None:
             logger.info("--once flag set, exiting after single cycle.")
             break
 
-        # Calculate time until the next top of the hour
+        # Calculate time until the next configured cycle boundary
         now = datetime.now(UTC)
 
-        # Find the next hour boundary
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        seconds_until_next_hour = (next_hour - now).total_seconds()
+        # Find the next cycle boundary
+        next_cycle = _next_cycle_boundary(now, poll_interval)
+        seconds_until_next_cycle = (next_cycle - now).total_seconds()
 
         # For peer synchronization, check if we need to wait for other instances
         db_engine_for_sync = None
@@ -2224,67 +2237,70 @@ def main() -> None:
             except Exception:
                 pass
 
-        # If peers are still running and would finish after the next hour, wait longer
+        # If peers are still running and would finish after the next cycle boundary, wait longer
         if max_cycle_end is not None:
             max_cycle_end_aware = max_cycle_end.replace(tzinfo=UTC) if max_cycle_end.tzinfo is None else max_cycle_end
-            if max_cycle_end_aware > next_hour:
-                # Wait until the hour after peers finish
-                hours_to_wait = ((max_cycle_end_aware - next_hour).total_seconds() / 3600) + 1
-                next_hour = next_hour + timedelta(hours=int(hours_to_wait))
-                seconds_until_next_hour = (next_hour - now).total_seconds()
+            if max_cycle_end_aware > next_cycle:
+                # Wait until the interval boundary after peers finish.
+                next_cycle = _next_cycle_boundary(max_cycle_end_aware, poll_interval)
+                seconds_until_next_cycle = (next_cycle - now).total_seconds()
                 # Show local time too
                 try:
                     import zoneinfo
                     local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
-                    next_hour_local = next_hour.astimezone(local_tz)
+                    next_cycle_local = next_cycle.astimezone(local_tz)
                     logger.info(
                         "Sync: peers still running, waiting until %s UTC / %s PST (%.0f seconds)",
-                        next_hour.strftime("%H:%M"),
-                        next_hour_local.strftime("%H:%M"),
-                        seconds_until_next_hour
+                        next_cycle.strftime("%H:%M"),
+                        next_cycle_local.strftime("%H:%M"),
+                        seconds_until_next_cycle
                     )
                 except:
                     logger.info(
                         "Sync: peers still running, waiting until %s UTC (%.0f seconds)",
-                        next_hour.strftime("%H:%M"), seconds_until_next_hour
+                        next_cycle.strftime("%H:%M"), seconds_until_next_cycle
                     )
             else:
                 # Show local time too
                 try:
                     import zoneinfo
                     local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
-                    next_hour_local = next_hour.astimezone(local_tz)
+                    next_cycle_local = next_cycle.astimezone(local_tz)
                     logger.info(
-                        "Next cycle will run at the top of the hour: %s UTC / %s PST (%.0f seconds)",
-                        next_hour.strftime("%H:%M"),
-                        next_hour_local.strftime("%H:%M"),
-                        seconds_until_next_hour
+                        "Next cycle will run at the next %d-hour boundary: %s UTC / %s PST (%.0f seconds)",
+                        max(1, poll_interval // 3600),
+                        next_cycle.strftime("%H:%M"),
+                        next_cycle_local.strftime("%H:%M"),
+                        seconds_until_next_cycle
                     )
                 except:
                     logger.info(
-                        "Next cycle will run at the top of the hour: %s UTC (%.0f seconds)",
-                        next_hour.strftime("%H:%M"), seconds_until_next_hour
+                        "Next cycle will run at the next %d-hour boundary: %s UTC (%.0f seconds)",
+                        max(1, poll_interval // 3600),
+                        next_cycle.strftime("%H:%M"), seconds_until_next_cycle
                     )
         else:
             # Show local time too
             try:
                 import zoneinfo
                 local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
-                next_hour_local = next_hour.astimezone(local_tz)
+                next_cycle_local = next_cycle.astimezone(local_tz)
                 logger.info(
-                    "Next cycle will run at the top of the hour: %s UTC / %s PST (%.0f seconds)",
-                    next_hour.strftime("%H:%M"),
-                    next_hour_local.strftime("%H:%M"),
-                    seconds_until_next_hour
+                    "Next cycle will run at the next %d-hour boundary: %s UTC / %s PST (%.0f seconds)",
+                    max(1, poll_interval // 3600),
+                    next_cycle.strftime("%H:%M"),
+                    next_cycle_local.strftime("%H:%M"),
+                    seconds_until_next_cycle
                 )
             except:
                 logger.info(
-                    "Next cycle will run at the top of the hour: %s UTC (%.0f seconds)",
-                    next_hour.strftime("%H:%M"), seconds_until_next_hour
+                    "Next cycle will run at the next %d-hour boundary: %s UTC (%.0f seconds)",
+                    max(1, poll_interval // 3600),
+                    next_cycle.strftime("%H:%M"), seconds_until_next_cycle
                 )
 
-        # Sleep until the next hour, checking for shutdown every second
-        for _ in range(int(seconds_until_next_hour)):
+        # Sleep until the next cycle boundary, checking for shutdown every second
+        for _ in range(int(seconds_until_next_cycle)):
             if _shutdown_requested:
                 break
             time.sleep(1)

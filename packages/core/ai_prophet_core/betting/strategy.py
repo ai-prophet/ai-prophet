@@ -15,6 +15,9 @@ from typing import Any
 
 from .config import MAX_SPREAD
 
+WITHIN_SPREAD_BUFFER = 0.02
+MIN_RELIABLE_SPREAD = 0.90
+
 
 @dataclass(frozen=True)
 class PortfolioSnapshot:
@@ -107,6 +110,32 @@ class BettingStrategy(ABC):
         ...
 
 
+def _is_tradeable_spread(spread: float, max_spread: float) -> bool:
+    return MIN_RELIABLE_SPREAD <= spread <= max_spread
+
+
+def _within_spread_bounds(p_yes: float, yes_ask: float, no_ask: float) -> tuple[bool, float, float]:
+    lower_bound = max(0.0, 1.0 - no_ask - WITHIN_SPREAD_BUFFER)
+    upper_bound = min(1.0, yes_ask + WITHIN_SPREAD_BUFFER)
+    return lower_bound <= p_yes <= upper_bound, lower_bound, upper_bound
+
+
+def _build_signal_metadata(
+    p_yes: float,
+    yes_ask: float,
+    no_ask: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "edge": p_yes - yes_ask,
+        "p_yes": p_yes,
+        "yes_ask": yes_ask,
+        "no_ask": no_ask,
+    }
+    metadata.update(extra)
+    return metadata
+
+
 class DefaultBettingStrategy(BettingStrategy):
     """Average-return-neutral strategy (the built-in default).
 
@@ -129,41 +158,12 @@ class DefaultBettingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        # Profitable range filter: Skip markets outside [3%, 97%] range
-        # These have poor risk/reward (e.g., paying 97c to make 3c)
-        MIN_PROFITABLE_PRICE = 0.03
-        MAX_PROFITABLE_PRICE = 0.97
-
-        # Check if market prices are in profitable range
-        if yes_ask <= MIN_PROFITABLE_PRICE or yes_ask >= MAX_PROFITABLE_PRICE:
-            # Return special signal to indicate HOLD_NOPROFIT
-            return BetSignal(
-                side="hold",
-                shares=0,
-                price=0,
-                cost=0,
-                metadata={"reason": "HOLD_NOPROFIT", "yes_ask": yes_ask}
-            )
-        if no_ask <= MIN_PROFITABLE_PRICE or no_ask >= MAX_PROFITABLE_PRICE:
-            # Return special signal to indicate HOLD_NOPROFIT
-            return BetSignal(
-                side="hold",
-                shares=0,
-                price=0,
-                cost=0,
-                metadata={"reason": "HOLD_NOPROFIT", "no_ask": no_ask}
-            )
-
         spread = yes_ask + no_ask
-        if spread > self.max_spread:
-            return None
-        # Skip crossed/invalid markets (spread < 1 means prices are unreliable)
-        if spread < 0.90:
+        if not _is_tradeable_spread(spread, self.max_spread):
             return None
 
-        lower_bound = 1.0 - no_ask
-        upper_bound = yes_ask
-        if lower_bound <= p_yes <= upper_bound:
+        within_spread, _lower_bound, _upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
+        if within_spread:
             return None
 
         diff = p_yes - yes_ask
@@ -194,15 +194,13 @@ class DefaultBettingStrategy(BettingStrategy):
 
         cost = desired_shares * price
 
-        # Include edge in metadata for tracking entry edge
-        metadata = {
-            "edge": p_yes - yes_ask,  # Current edge (positive for YES, negative for NO)
-            "p_yes": p_yes,
-            "yes_ask": yes_ask,
-            "no_ask": no_ask
-        }
-
-        return BetSignal(side=side, shares=desired_shares, price=price, cost=cost, metadata=metadata)
+        return BetSignal(
+            side=side,
+            shares=desired_shares,
+            price=price,
+            cost=cost,
+            metadata=_build_signal_metadata(p_yes, yes_ask, no_ask),
+        )
 
 
 class RebalancingStrategy(BettingStrategy):
@@ -255,49 +253,44 @@ class RebalancingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        # Profitable range filter: Skip markets outside [3%, 97%] range
-        # These have poor risk/reward (e.g., paying 97c to make 3c)
-        MIN_PROFITABLE_PRICE = 0.03
-        MAX_PROFITABLE_PRICE = 0.97
-
-        # Check if market prices are in profitable range
-        if yes_ask <= MIN_PROFITABLE_PRICE or yes_ask >= MAX_PROFITABLE_PRICE:
-            # Return special signal to indicate HOLD_NOPROFIT
-            return BetSignal(
-                side="hold",
-                shares=0,
-                price=0,
-                cost=0,
-                metadata={"reason": "HOLD_NOPROFIT", "yes_ask": yes_ask}
-            )
-        if no_ask <= MIN_PROFITABLE_PRICE or no_ask >= MAX_PROFITABLE_PRICE:
-            # Return special signal to indicate HOLD_NOPROFIT
-            return BetSignal(
-                side="hold",
-                shares=0,
-                price=0,
-                cost=0,
-                metadata={"reason": "HOLD_NOPROFIT", "no_ask": no_ask}
-            )
-
         spread = yes_ask + no_ask
-        if spread > self.max_spread:
-            return None
-        if spread < 0.90:
+        if not _is_tradeable_spread(spread, self.max_spread):
             return None
 
-        # Within-spread filter: if prediction sits inside the bid-ask band,
-        # there is no edge — skip without updating state.
-        lower_bound = 1.0 - no_ask
-        upper_bound = yes_ask
-        if lower_bound <= p_yes <= upper_bound:
-            return None
+        # If the model sits inside the widened market band, there is no
+        # directional edge. Stay flat if we have no position; otherwise
+        # flatten the existing position completely.
+        current_pos = self._current_position_yes_equiv()
+        within_spread, lower_bound, upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
+        if within_spread:
+            if abs(current_pos) < self.min_trade:
+                return None
+
+            side = "no" if current_pos > 0 else "yes"
+            shares = abs(current_pos)
+            price = no_ask if current_pos > 0 else yes_ask
+            return BetSignal(
+                side=side,
+                shares=shares,
+                price=price,
+                cost=shares * price,
+                metadata=_build_signal_metadata(
+                    p_yes,
+                    yes_ask,
+                    no_ask,
+                    target=0.0,
+                    current_pos=round(current_pos, 6),
+                    delta=round(-current_pos, 6),
+                    sell_portion=round(abs(current_pos), 6),
+                    buy_portion=0.0,
+                    flatten_reason="WITHIN_SPREAD",
+                    lower_bound=round(lower_bound, 6),
+                    upper_bound=round(upper_bound, 6),
+                ),
+            )
 
         # Target position in YES-equivalent fractional units: p - q
         target = p_yes - yes_ask
-
-        # Actual current position from portfolio (set by engine)
-        current_pos = self._current_position_yes_equiv()
 
         # Delta to reach target
         delta = target - current_pos
@@ -348,15 +341,14 @@ class RebalancingStrategy(BettingStrategy):
             shares=shares,
             price=price,
             cost=cost,
-            metadata={
-                "edge": p_yes - yes_ask,  # Current edge at time of signal
-                "p_yes": p_yes,
-                "yes_ask": yes_ask,
-                "no_ask": no_ask,
-                "target": round(target, 6),
-                "current_pos": round(current_pos, 6),
-                "delta": round(delta, 6),
-                "sell_portion": round(sell_portion, 6),
-                "buy_portion": round(buy_portion, 6),
-            },
+            metadata=_build_signal_metadata(
+                p_yes,
+                yes_ask,
+                no_ask,
+                target=round(target, 6),
+                current_pos=round(current_pos, 6),
+                delta=round(delta, 6),
+                sell_portion=round(sell_portion, 6),
+                buy_portion=round(buy_portion, 6),
+            ),
         )

@@ -91,6 +91,7 @@ class BettingOrder(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     filled_shares: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     fill_price: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    fee_paid: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     exchange_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

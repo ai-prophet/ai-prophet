@@ -28,6 +28,7 @@ import { ModelCalibration } from "@/components/ModelCalibration";
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const REFRESH_INTERVAL = 10_000;
+const DISPLAY_CUTOFF_MS = new Date("2026-03-24T00:00:00-05:00").getTime();
 
 const MODEL_META: Record<string, { label: string; color: string }> = {
   GPT5: { label: "GPT-5.4", color: "#10a37f" },
@@ -38,6 +39,36 @@ const MODEL_META: Record<string, { label: string; color: string }> = {
 const STARTING_CASH = 10_000;
 const WIN_RATE_TOOLTIP =
   "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
+
+function isOnOrAfterDisplayCutoff(timestamp: string | null | undefined): boolean {
+  if (!timestamp) return false;
+  return new Date(timestamp).getTime() >= DISPLAY_CUTOFF_MS;
+}
+
+function filterTradesForDisplay(trades: Trade[]): Trade[] {
+  return trades.filter((trade) => isOnOrAfterDisplayCutoff(trade.created_at));
+}
+
+function filterPnlForDisplay(pnlData: PnLData | null): PnLData | null {
+  if (!pnlData) return null;
+
+  const series = pnlData.series.filter((point) => isOnOrAfterDisplayCutoff(point.timestamp));
+  const trade_markers = pnlData.trade_markers.filter((marker) =>
+    isOnOrAfterDisplayCutoff(marker.timestamp)
+  );
+
+  return {
+    ...pnlData,
+    series,
+    trade_markers,
+    summary: {
+      ...pnlData.summary,
+      total_pnl: series.length > 0 ? series[series.length - 1].pnl : 0,
+      total_trades: trade_markers.length,
+      total_volume: trade_markers.reduce((sum, marker) => sum + marker.count, 0),
+    },
+  };
+}
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -139,11 +170,8 @@ function CycleCountdown({ health }: { health: HealthData | null }) {
     );
   }
 
-  // Calculate next hour boundary (workers run at top of hour)
-  const nowDate = new Date(now);
-  const nextHour = new Date(nowDate);
-  nextHour.setHours(nowDate.getHours() + 1, 0, 0, 0);  // Next hour, 0 minutes, 0 seconds
-  const nextCycleMs = nextHour.getTime();
+  const cycleIntervalMs = health.poll_interval_sec * 1000;
+  const nextCycleMs = (Math.floor(now / cycleIntervalMs) + 1) * cycleIntervalMs;
   const remainingSec = Math.max(0, Math.floor((nextCycleMs - now) / 1000));
   const min = Math.floor(remainingSec / 60);
   const sec = remainingSec % 60;
@@ -205,7 +233,7 @@ export default function ModelDetailPage() {
   const [supportTab, setSupportTab] = useState<"risk" | "alerts" | "activity">("risk");
   const [marketViewTab, setMarketViewTab] = useState<"activity" | "heatmap">("activity");
   const [scrollToMarketId, setScrollToMarketId] = useState<string | null>(null);
-  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | "fees" | null>(null);
   const activeRequestRef = useRef(0);
 
   const apiClient = useMemo(
@@ -241,8 +269,9 @@ export default function ModelDetailPage() {
         apiClient.getAlerts(),
       ]);
       if (activeRequestRef.current !== requestId) return;
+      const displayTrades = filterTradesForDisplay(t);
 
-      setTrades(t);
+      setTrades(displayTrades);
       setMarkets(m);
       setPositions(posData.positions);
       setHealth(h);
@@ -266,7 +295,7 @@ export default function ModelDetailPage() {
       ]);
       if (activeRequestRef.current !== requestId) return;
 
-      setPnl(pnlData);
+      setPnl(filterPnlForDisplay(pnlData));
       setLogs(l);
       setAnalytics(an);
       setResolvedMarkets(resolved);
@@ -300,25 +329,26 @@ export default function ModelDetailPage() {
     );
     let netShares = 0;
     let totalCost = 0;
-    const sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number }[] = [];
+    const sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[] = [];
     let totalRealized = 0;
     for (const t of relevant) {
       const qty = t.filled_shares || t.count;
       let price = t.price_cents / 100;
       if (price > 1.0) price /= 100;
+      const fee = t.fee_paid || 0;
       const action = (t.action ?? "BUY").toUpperCase();
       const isYes = (t.side ?? "yes").toLowerCase() === "yes";
       if (action === "SELL") {
         const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
-        const contribution = (price - avgAtSell) * qty;
+        const contribution = (price - avgAtSell) * qty - fee;
         totalRealized += contribution;
-        sells.push({ qty, sellPrice: price, avgAtSell, contribution });
+        sells.push({ qty, sellPrice: price, avgAtSell, contribution, feePaid: fee });
         if (isYes) { netShares -= qty; totalCost -= avgAtSell * qty; }
         else { netShares += qty; totalCost += avgAtSell * qty; }
         if (Math.abs(netShares) < 0.001) { netShares = 0; totalCost = 0; }
       } else {
-        if (isYes) { netShares += qty; totalCost += qty * price; }
-        else { netShares -= qty; totalCost -= qty * price; }
+        if (isYes) { netShares += qty; totalCost += qty * price + fee; }
+        else { netShares -= qty; totalCost -= qty * price + fee; }
       }
     }
     const remainingQty = Math.abs(netShares);
@@ -334,7 +364,7 @@ export default function ModelDetailPage() {
   type PerMarketResult = {
     title: string;
     contract: string;
-    sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number }[];
+    sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[];
     totalRealized: number;
     avgEntry: number;
     currentBid: number | null;
@@ -352,8 +382,8 @@ export default function ModelDetailPage() {
     const { sells, totalRealized, remainingAvgPrice } = replayTrades(row.trades);
     const dbQty = row.position?.quantity ?? 0;
     const contract = row.position?.contract ?? (row.trades[0]?.side ?? "yes");
-    const avgEntry = row.position?.avg_price ?? remainingAvgPrice;
-    const realizedValue = row.position?.realized_pnl ?? totalRealized;
+    const avgEntry = row.trades.length > 0 ? remainingAvgPrice : (row.position?.avg_price ?? 0);
+    const realizedValue = row.trades.length > 0 ? totalRealized : (row.position?.realized_pnl ?? 0);
     totalCashPnl += realizedValue;
 
     const mkt = marketById.get(row.market_id);
@@ -386,6 +416,15 @@ export default function ModelDetailPage() {
     .map((r) => ({ title: r.title, contract: r.contract, quantity: r.dbQty, avgEntry: r.avgEntry, currentBid: r.currentBid!, value: r.openValue }))
     .sort((a, b) => b.value - a.value);
 
+  const feesBreakdown = unifiedRows
+    .map((row) => ({
+      title: row.title,
+      contract: row.position?.contract ?? (row.trades[0]?.side ?? "yes"),
+      value: row.fees_paid_total ?? row.trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0),
+    }))
+    .filter((row) => row.value > 0)
+    .sort((a, b) => b.value - a.value);
+
   const balance = STARTING_CASH - totalCashSpent + totalCashPnl;
 
   const livePnlByMarket = (() => {
@@ -402,7 +441,8 @@ export default function ModelDetailPage() {
       const cashFlow = mktTrades.reduce((sum, t) => {
         const qty = t.filled_shares || t.count;
         const price = t.price_cents / 100;
-        return sum + (t.action?.toUpperCase() === "SELL" ? qty * price : -(qty * price));
+        const fee = t.fee_paid || 0;
+        return sum + (t.action?.toUpperCase() === "SELL" ? (qty * price) - fee : -((qty * price) + fee));
       }, 0);
       const currentBid = pos.contract.toLowerCase() === "yes"
         ? (mkt?.yes_bid ?? (mkt?.no_ask != null ? 1 - mkt.no_ask : null))
@@ -414,6 +454,7 @@ export default function ModelDetailPage() {
   })();
 
   const alertCount = alerts.length;
+  const totalFeesPaid = trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
 
   // ── Render ────────────────────────────────────────────────────
 
@@ -530,9 +571,11 @@ export default function ModelDetailPage() {
               pnl={metrics.avgReturn}
             />
             <MetricCard
-              label="Sharpe"
-              value={analytics ? analytics.sharpe_ratio.toFixed(2) : "--"}
-              pnl={analytics ? analytics.sharpe_ratio : undefined}
+              label="Total Fees"
+              value={fmtDollar(totalFeesPaid)}
+              pnl={-Math.abs(totalFeesPaid)}
+              onClick={() => setExpandedMetric(expandedMetric === "fees" ? null : "fees")}
+              active={expandedMetric === "fees"}
             />
           </div>
 
@@ -565,12 +608,18 @@ export default function ModelDetailPage() {
             <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest">
-                  {expandedMetric === "realized" ? "Realized P&L Breakdown" : "Unrealized P&L Breakdown"}
+                  {expandedMetric === "realized"
+                    ? "Realized P&L Breakdown"
+                    : expandedMetric === "unrealized"
+                      ? "Unrealized P&L Breakdown"
+                      : "Fee Breakdown"}
                 </span>
                 <span className="text-[9px] text-txt-muted font-mono">
                   {expandedMetric === "realized"
                     ? "(sell_price − avg_entry) × qty_sold"
-                    : "current_bid × open_qty"}
+                    : expandedMetric === "unrealized"
+                      ? "current_bid × open_qty"
+                      : "Recorded trade fees by market"}
                 </span>
               </div>
               {expandedMetric === "realized" && (
@@ -597,7 +646,7 @@ export default function ModelDetailPage() {
                             <td className="py-1.5 pl-4 text-txt-muted space-y-0.5">
                               {row.sells.map((s, j) => (
                                 <div key={j}>
-                                  ({Math.round(s.sellPrice * 100)}¢ − {Math.round(s.avgAtSell * 100)}¢) × {s.qty} = <span className={s.contribution >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(s.contribution)}</span>
+                                  ({Math.round(s.sellPrice * 100)}¢ − {Math.round(s.avgAtSell * 100)}¢) × {s.qty}{s.feePaid > 0 ? ` − fee ${fmtDollar(s.feePaid)}` : ""} = <span className={s.contribution >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(s.contribution)}</span>
                                 </div>
                               ))}
                               {row.hasMoreTrades && <div className="text-txt-muted/50 text-[9px]">* additional historical trades not shown</div>}
@@ -635,6 +684,38 @@ export default function ModelDetailPage() {
                               {Math.round(row.currentBid * 100)}¢ × {row.quantity} shares = <span className="text-profit">{fmtDollar(row.value)}</span>
                             </td>
                             <td className={`py-1.5 text-right ${row.value >= 0 ? "text-profit" : "text-loss"}`}>
+                              {fmtDollar(row.value)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+              )}
+              {expandedMetric === "fees" && (
+                feesBreakdown.length === 0
+                  ? <p className="text-[10px] text-txt-muted font-mono">No fees recorded yet.</p>
+                  : <table className="w-full text-[10px] font-mono">
+                      <thead>
+                        <tr className="text-txt-muted border-b border-t-border">
+                          <th className="text-left pb-1 font-medium">Market</th>
+                          <th className="text-center pb-1 font-medium w-12">Side</th>
+                          <th className="text-left pb-1 font-medium pl-4">Source</th>
+                          <th className="text-right pb-1 font-medium w-20">Fees</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {feesBreakdown.map((row, i) => (
+                          <tr key={i} className="border-b border-t-border/40 last:border-0">
+                            <td className="py-1.5 pr-3 text-txt-primary truncate max-w-[300px]">{row.title}</td>
+                            <td className="py-1.5 text-center">
+                              <span className={`px-1 rounded text-[8px] font-bold ${row.contract.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                                {row.contract.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="py-1.5 pl-4 text-txt-muted">
+                              Recorded trade fees
+                            </td>
+                            <td className="py-1.5 text-right text-warn">
                               {fmtDollar(row.value)}
                             </td>
                           </tr>

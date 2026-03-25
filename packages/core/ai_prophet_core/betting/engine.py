@@ -31,7 +31,7 @@ from typing import Any
 
 from sqlalchemy.engine import Engine
 
-from .config import MAX_MARKETS_PER_TICK, KalshiConfig
+from .config import MAX_MARKETS_PER_TICK, MAX_ORDER_COST, KalshiConfig
 from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ class BetResult:
     status: str | None = None
     filled_shares: float = 0.0
     fill_price: float = 0.0
+    fee_paid: float = 0.0
     exchange_order_id: str | None = None
     error: str | None = None
 
@@ -200,21 +201,6 @@ class BettingEngine:
                     source, market_id, p_yes,
                 )
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
-                continue
-
-            # Check for HOLD_NOPROFIT signal
-            if signal.side == "hold" and signal.metadata and signal.metadata.get("reason") == "HOLD_NOPROFIT":
-                logger.info(
-                    "[BETTING] %s on %s: p_yes=%.3f → HOLD_NOPROFIT (market outside [3%%, 97%%] range)",
-                    source, market_id, p_yes,
-                )
-                results.append(BetResult(
-                    market_id=market_id,
-                    signal=signal,
-                    order_placed=False,
-                    status="HOLD_NOPROFIT",
-                    error="Market outside profitable range [3%, 97%]"
-                ))
                 continue
 
             # 4. Persist signal
@@ -495,6 +481,7 @@ class BettingEngine:
                             status=sell_status,
                             filled_shares=float(sell_result.filled_shares),
                             fill_price=float(sell_result.fill_price),
+                            fee_paid=float(sell_result.fee),
                             exchange_order_id=sell_result.exchange_order_id,
                             action="SELL",
                         )
@@ -532,6 +519,17 @@ class BettingEngine:
                     error=f"Insufficient cash: live balance is ${float(live_cash):.2f}",
                 )
             order_cost = Decimal(str(count)) * Decimal(str(signal.price))
+            if order_cost > Decimal(str(MAX_ORDER_COST)):
+                logger.warning(
+                    "[BETTING] Max order cost exceeded: need $%.2f which is above $%.2f, skipping %s",
+                    float(order_cost), MAX_ORDER_COST, ticker,
+                )
+                return BetResult(
+                    market_id=market_id,
+                    signal=signal,
+                    order_placed=False,
+                    error=f"SKIP: order cost ${float(order_cost):.2f} exceeds max ${MAX_ORDER_COST:.2f}",
+                )
             if order_cost > live_cash:
                 max_shares = int(live_cash / Decimal(str(signal.price)))
                 if max_shares <= 0:
@@ -581,6 +579,11 @@ class BettingEngine:
             status = order_result.status.value
             filled_shares = float(order_result.filled_shares)
             fill_price = float(order_result.fill_price)
+            raw_fee = getattr(order_result, "fee", 0)
+            try:
+                fee_paid = float(raw_fee or 0)
+            except (TypeError, ValueError):
+                fee_paid = 0.0
             exchange_oid = order_result.exchange_order_id
             error = order_result.rejection_reason
         except Exception as e:
@@ -588,13 +591,14 @@ class BettingEngine:
             status = "ERROR"
             filled_shares = 0.0
             fill_price = 0.0
+            fee_paid = 0.0
             exchange_oid = None
             error = str(e)
 
         logger.info(
-            "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s)",
+            "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s, fee=%s)",
             order_id[:8], action, effective_side, count, ticker,
-            price_cents, status, filled_shares, fill_price,
+            price_cents, status, filled_shares, fill_price, fee_paid,
         )
 
         self._save_order(
@@ -607,6 +611,7 @@ class BettingEngine:
             status=status,
             filled_shares=filled_shares,
             fill_price=fill_price,
+            fee_paid=fee_paid,
             exchange_order_id=exchange_oid,
             action=action,
         )
@@ -619,6 +624,7 @@ class BettingEngine:
             status=status,
             filled_shares=filled_shares,
             fill_price=fill_price,
+            fee_paid=fee_paid,
             exchange_order_id=exchange_oid,
             error=error,
         )
@@ -740,6 +746,7 @@ class BettingEngine:
         status: str,
         filled_shares: float,
         fill_price: float,
+        fee_paid: float,
         exchange_order_id: str | None,
         action: str = "BUY",
     ) -> None:
@@ -762,6 +769,7 @@ class BettingEngine:
             status=status,
             filled_shares=filled_shares,
             fill_price=fill_price,
+            fee_paid=fee_paid,
             exchange_order_id=exchange_order_id,
             dry_run=self.dry_run,
             created_at=now,
@@ -830,6 +838,7 @@ class BettingEngine:
                     "status": row.status,
                     "filled_shares": row.filled_shares,
                     "fill_price": row.fill_price,
+                    "fee_paid": row.fee_paid,
                     "dry_run": row.dry_run,
                     "created_at": row.created_at.isoformat(),
                 }

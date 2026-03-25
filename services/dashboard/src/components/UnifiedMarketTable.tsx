@@ -82,27 +82,25 @@ function formatPriceCents(priceCents: number | null | undefined): string | null 
 
 function isHoldLikeDecision(decision: string | null | undefined): boolean {
   const normalized = decision?.toUpperCase();
-  return normalized === "HOLD" || normalized === "HOLD_NOPROFIT";
+  return normalized === "HOLD";
 }
 
 function buildHoldExplanation(evaluation: CycleEvaluation): string {
-  const resultingPosition = (evaluation as any).resultingPosition as { quantity: number; side: string } | undefined;
-  const edge = evaluation.prediction?.edge;
-  const yesAskPct = evaluation.prediction?.yes_ask != null ? evaluation.prediction.yes_ask * 100 : null;
+  if (evaluation.action?.reason) {
+    return evaluation.action.reason;
+  }
 
-  if (yesAskPct != null && (yesAskPct <= 3 || yesAskPct >= 97)) {
-    return `Holding because market price ${yesAskPct.toFixed(1)}% is outside the normal tradeable range.`;
+  const pYes = evaluation.prediction?.p_yes;
+  const yesAsk = evaluation.prediction?.yes_ask;
+  const noAsk = evaluation.prediction?.no_ask;
+
+  if (pYes != null && yesAsk != null && noAsk != null) {
+    const lowerBound = Math.max(0, 1 - noAsk - 0.01);
+    const upperBound = Math.min(1, yesAsk + 0.01);
+    return `Holding because model probability ${(pYes * 100).toFixed(1)}% sits inside the widened no-trade band ${(lowerBound * 100).toFixed(1)}% to ${(upperBound * 100).toFixed(1)}% around the live spread.`;
   }
-  if (edge != null && Math.abs(edge) < 3) {
-    return `Holding because edge ${edge.toFixed(1)}% is below the minimum trade threshold.`;
-  }
-  if (resultingPosition) {
-    return `Holding ${resultingPosition.quantity} ${resultingPosition.side} because no rebalance was triggered this cycle.`;
-  }
-  if (edge != null) {
-    return `Holding because no order was placed this cycle despite edge ${edge.toFixed(1)}%.`;
-  }
-  return "Holding because no action was taken this cycle.";
+
+  return "Holding because the model probability stayed inside the widened no-trade band around the live spread.";
 }
 
 function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
@@ -111,6 +109,22 @@ function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
 
 function rowHasActivity(row: UnifiedMarketRow): boolean {
   return row.has_trades || row.trade_count > 0 || (row.pending_shares != null && row.pending_shares > 0) || hasLivePendingExposure(row);
+}
+
+function tradeFeeTotal(row: UnifiedMarketRow): number {
+  return row.fees_paid_total ?? row.trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
+}
+
+function totalInvestment(row: UnifiedMarketRow): number {
+  return row.position ? row.position.capital + tradeFeeTotal(row) : 0;
+}
+
+function formatFeeLabel(fee: number): string {
+  return `fee: ${fmtDollar(fee)}`;
+}
+
+function formatInvestmentSplit(base: number, fee: number): string {
+  return `b:${fmtDollar(base)} f:${fmtDollar(fee)}`;
 }
 
 type SortKey =
@@ -247,7 +261,7 @@ export function UnifiedMarketTable({
         if (pb == null) return null;
         return pa - pb;
       }
-      case "capital": return (a.position?.capital ?? 0) - (b.position?.capital ?? 0);
+      case "capital": return totalInvestment(a) - totalInvestment(b);
       case "last_trade":
         return (a.last_trade_time ? new Date(a.last_trade_time).getTime() : 0) -
                (b.last_trade_time ? new Date(b.last_trade_time).getTime() : 0);
@@ -258,8 +272,8 @@ export function UnifiedMarketTable({
         return new Date(a.expiration).getTime() - new Date(b.expiration).getTime();
       }
       case "return": {
-        const ra = a.position ? (liveNetPnl(a) ?? 0) / (a.position.capital || 1) : 0;
-        const rb = b.position ? (liveNetPnl(b) ?? 0) / (b.position.capital || 1) : 0;
+        const ra = a.position ? (liveNetPnl(a) ?? 0) / (totalInvestment(a) || 1) : 0;
+        const rb = b.position ? (liveNetPnl(b) ?? 0) / (totalInvestment(b) || 1) : 0;
         return ra - rb;
       }
     }
@@ -348,7 +362,7 @@ export function UnifiedMarketTable({
         ? row.title.split(":")[0]?.trim() || row.title
         : row.title;
       const pnl = liveNetPnl(row) ?? 0;
-      const capital = row.position?.capital ?? 0;
+      const capital = totalInvestment(row);
 
       const existing = groups.get(eventKey);
       if (existing) {
@@ -549,13 +563,13 @@ export function UnifiedMarketTable({
               <tr className="border-b border-t-border text-txt-muted text-[9px] uppercase tracking-widest">
                 <Th k="title" sortKeys={sortKeys} onClick={handleSort} align="left" info="Prediction market name and ticker">Market</Th>
                 <th className="px-3 py-2 text-left font-medium">Category</th>
-                <Th k="yes_ask" sortKeys={sortKeys} onClick={handleSort} align="right" info="Current Yes / No ask prices on Kalshi">Mkt Price</Th>
+                <Th k="yes_ask" sortKeys={sortKeys} onClick={handleSort} align="right" info="Current live Yes / No ask prices on Kalshi">Live mkt price</Th>
                 <Th k="predicted" sortKeys={sortKeys} onClick={handleSort} align="right" info="Model probability (p_yes from the prediction model)">Model P</Th>
                 <Th k="edge" sortKeys={sortKeys} onClick={handleSort} align="right" info="Edge = Agg P − Yes Ask. Positive = model thinks YES is underpriced">Edge</Th>
                 <Th k="position" sortKeys={sortKeys} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
                 <Th k="avg_price" sortKeys={sortKeys} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
                 <Th k="unrealized" sortKeys={sortKeys} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
-                <Th k="capital" sortKeys={sortKeys} onClick={handleSort} align="right" info="Total capital invested: avg entry price × quantity">Investment</Th>
+                <Th k="capital" sortKeys={sortKeys} onClick={handleSort} align="right" info="Total capital invested including fees: avg entry price × quantity + fees paid">Investment</Th>
                 <Th k="last_trade" sortKeys={sortKeys} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
                 <Th k="expiration" sortKeys={sortKeys} onClick={handleSort} align="right" info="Market close/expiration date">Closes</Th>
               </tr>
@@ -732,7 +746,10 @@ function EventGroupRowView({
                         </td>
                         <td className="px-2 py-1.5 text-right font-mono text-txt-muted">{row.ticker}</td>
                         <td className="px-2 py-1.5 text-right font-mono text-txt-primary">
-                          {fmtDollar(row.position?.capital ?? 0)}
+                          <div>{fmtDollar(totalInvestment(row))}</div>
+                          <div className="text-[9px] text-warn">
+                            {formatInvestmentSplit(row.position?.capital ?? 0, tradeFeeTotal(row))}
+                          </div>
                         </td>
                         <td className={`px-2 py-1.5 text-right font-mono font-medium ${net != null ? pnlCls(net) : "text-txt-muted"}`}>
                           {net != null ? fmtDollar(net) : "--"}
@@ -976,7 +993,12 @@ function MarketRow({
 
         {/* Capital */}
         <td className="px-3 py-2 text-right font-mono text-txt-primary">
-          {pos ? fmtDollar(pos.capital) : "--"}
+          <div>{pos ? fmtDollar(totalInvestment(row)) : "--"}</div>
+          {pos && (
+            <div className="text-[9px] text-warn">
+              {formatInvestmentSplit(pos.capital, tradeFeeTotal(row))}
+            </div>
+          )}
         </td>
 
         {/* Last Trade */}
@@ -1690,9 +1712,10 @@ function TimelineTab({
       // Calculate P&L for this trade
       const qty = trade.filled_shares || trade.count;
       const price = trade.price_cents / 100;
+      const fee = trade.fee_paid || 0;
       const isSell = trade.action?.toUpperCase() === "SELL";
       // BUY = negative cash flow (spending), SELL = positive cash flow (receiving)
-      const cashFlow = isSell ? qty * price : -(qty * price);
+      const cashFlow = isSell ? (qty * price) - fee : -((qty * price) + fee);
       cycle.pnl += cashFlow;
     });
 
@@ -1860,6 +1883,7 @@ function TimelineTab({
                   const qty = trade.filled_shares || trade.count;
                   const isSell = trade.action?.toUpperCase() === "SELL";
                   const cost = (trade.price_cents / 100) * qty;
+                  const fee = trade.fee_paid || 0;
                   let netShares = 0, totalCost = 0, sellPnl = 0;
                   for (let i = 0; i <= idx; i++) {
                     const t = chronTrades[i];
@@ -1867,20 +1891,21 @@ function TimelineTab({
                     const tSell = (t.action ?? "BUY").toUpperCase() === "SELL";
                     let tPrice = t.price_cents / 100;
                     if (tPrice > 1.0) tPrice /= 100;
+                    const tFee = t.fee_paid || 0;
                     const isYes = t.side.toLowerCase() === "yes";
                     if (tSell) {
                       const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
-                      sellPnl = (tPrice - avgAtSell) * tQty;
+                      sellPnl = (tPrice - avgAtSell) * tQty - tFee;
                       if (isYes) { netShares -= tQty; totalCost -= avgAtSell * tQty; }
                       else { netShares += tQty; totalCost += avgAtSell * tQty; }
                       if (Math.abs(netShares) < 0.001) { netShares = 0; totalCost = 0; }
                     } else {
-                      if (isYes) { netShares += tQty; totalCost += tQty * tPrice; }
-                      else { netShares -= tQty; totalCost -= tQty * tPrice; }
+                      if (isYes) { netShares += tQty; totalCost += (tQty * tPrice) + tFee; }
+                      else { netShares -= tQty; totalCost -= (tQty * tPrice) + tFee; }
                       sellPnl = 0;
                     }
                   }
-                  return { trade, qty, isSell, cost, currentSellPnl: isSell ? sellPnl : 0, cumulativeQty: Math.abs(netShares), cumulativeSide: netShares > 0 ? "YES" : netShares < 0 ? "NO" : null, totalCost };
+                  return { trade, qty, isSell, cost, fee, currentSellPnl: isSell ? sellPnl : 0, cumulativeQty: Math.abs(netShares), cumulativeSide: netShares > 0 ? "YES" : netShares < 0 ? "NO" : null, totalCost };
                 });
 
                 return (
@@ -1891,7 +1916,7 @@ function TimelineTab({
                       className={`rounded px-1 -mx-1 transition-colors ${hasGroupDetail ? "cursor-pointer hover:bg-t-panel-hover/40" : ""}`}
                       onClick={() => { if (!hasGroupDetail) return; setExpandedEntryId(isGroupExpanded ? null : event.key); }}
                     >
-                      {subRows.map(({ trade, qty, isSell, cost, currentSellPnl, cumulativeQty, cumulativeSide, totalCost }, subIdx) => {
+                      {subRows.map(({ trade, qty, isSell, cost, fee, currentSellPnl, cumulativeQty, cumulativeSide, totalCost }, subIdx) => {
                         const pred = trade.prediction;
                         return (
                           <div key={subIdx} className={`flex items-start gap-3 ${subIdx > 0 ? "mt-0.5" : ""}`}>
@@ -1904,6 +1929,7 @@ function TimelineTab({
                                 {trade.side.toUpperCase()}
                               </span>
                               <span className="text-txt-primary">{isSell ? "-" : "+"}{qty} @ {trade.price_cents}c</span>
+                              <span className="text-warn">{formatFeeLabel(fee)}</span>
                               <span className="text-txt-muted">{isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}</span>
                               {isSell && <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>{currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}</span>}
                               <span className="text-txt-muted">total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}</span>
@@ -1970,12 +1996,15 @@ function TimelineTab({
           // Extract YES/NO from action description (e.g., "BUY 10 YES" -> "YES")
           const actionDescription = evaluation.action?.description ?? "";
           const sideMatch = actionDescription.match(/\b(YES|NO)\b/i);
-          const side = sideMatch ? sideMatch[1].toUpperCase() : null;
+          const side = (
+            sideMatch ? sideMatch[1].toUpperCase() : (evaluation.order?.side?.toUpperCase() ?? null)
+          );
           const adjustmentMatch = actionDescription.match(/^(BUY|SELL)\s+(YES|NO)\s+(\d+)/i);
           const adjustmentVerb = adjustmentMatch ? adjustmentMatch[1].toUpperCase() : null;
           const adjustmentSide = adjustmentMatch ? adjustmentMatch[2].toUpperCase() : side;
           const adjustmentCount = adjustmentMatch ? adjustmentMatch[3] : null;
           const orderPriceLabel = formatPriceCents(evaluation.order?.price_cents);
+          const orderFee = evaluation.order?.fee_paid ?? 0;
 
           // Check if this is a position adjustment
           const isAdjustment = actionType === "ADJUSTMENT";
@@ -2017,6 +2046,9 @@ function TimelineTab({
                             {formatPriceCents(adjustment.sell.order?.price_cents)}
                           </span>
                         )}
+                        <span className="text-warn">
+                          {formatFeeLabel(adjustment.sell.order?.fee_paid ?? 0)}
+                        </span>
                         {adjustment.sell.order && (
                           <span className={`text-[9px] ${
                             adjustment.sell.order.filled === adjustment.sell.order.count ? 'text-profit-dim' : 'text-txt-muted'
@@ -2039,6 +2071,9 @@ function TimelineTab({
                             {formatPriceCents(adjustment.buy.order?.price_cents)}
                           </span>
                         )}
+                        <span className="text-warn">
+                          {formatFeeLabel(adjustment.buy.order?.fee_paid ?? 0)}
+                        </span>
                         {adjustment.buy.order && (
                           <span className={`text-[9px] ${
                             adjustment.buy.order.filled === adjustment.buy.order.count ? 'text-profit-dim' : 'text-txt-muted'
@@ -2076,6 +2111,7 @@ function TimelineTab({
                 {/* Different colored dot for evaluations - use orange for HOLD, green for BUY, purple for ADJUSTMENT, red for SELL */}
                 <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
                   isHoldAction ? "bg-orange-400" :
+                  actionType === "SKIP" ? "bg-txt-muted" :
                   actionType === "ADJUSTMENT" ? "bg-purple-500" :
                   actionType === "BUY" ? "bg-profit" : "bg-loss"
                 }`} />
@@ -2100,6 +2136,7 @@ function TimelineTab({
                       {/* Action badge */}
                       <span className={`text-[9px] px-1 py-px rounded font-bold ${
                         isHoldAction ? "bg-yellow-900/30 text-yellow-500" :
+                        actionType === "SKIP" ? "bg-t-border/50 text-txt-muted" :
                         actionType === "ADJUSTMENT" ? "bg-purple-900/30 text-purple-400" :
                         actionType === "BUY" ? "bg-profit-dim text-profit" :
                         "bg-loss-dim text-loss"
@@ -2123,6 +2160,9 @@ function TimelineTab({
                               {orderPriceLabel}
                             </span>
                           )}
+                          <span className="text-warn">
+                            {formatFeeLabel(orderFee)}
+                          </span>
                         </>
                       )}
 
@@ -2135,7 +2175,7 @@ function TimelineTab({
                         </span>
                       )}
 
-                      {evaluation.order && evaluation.order.count > 0 && !isHoldAction && (
+                      {evaluation.order && evaluation.order.count > 0 && (
                         <>
                           {actionType === "ADJUSTMENT" ? (
                             <span className={`text-[10px] font-mono ${
@@ -2149,6 +2189,11 @@ function TimelineTab({
                             </span>
                           ) : (
                             <>
+                              {isHoldAction && (
+                                <span className="text-loss font-semibold">
+                                  {evaluation.order.action?.toUpperCase() ?? "SELL"}
+                                </span>
+                              )}
                               <span className={sideToneClass(side)}>
                                 {side ? `${side} ${evaluation.order.count} shares` : `${evaluation.order.count} shares`}
                               </span>
@@ -2157,6 +2202,9 @@ function TimelineTab({
                                   {orderPriceLabel}
                                 </span>
                               )}
+                              <span className="text-warn">
+                                {formatFeeLabel(orderFee)}
+                              </span>
                               {(evaluation as any).resultingPosition && (
                                 <span>
                                   <span className="text-txt-muted">hold:</span>{" "}
@@ -2310,7 +2358,7 @@ function TimelineTab({
                             ? "bg-profit-dim text-profit"
                             : run.decision === "BUY_NO"
                               ? "bg-loss-dim text-loss"
-                              : run.decision === "HOLD_NOPROFIT"
+                              : isHoldLikeDecision(run.decision)
                                 ? "bg-yellow-900/30 text-yellow-500"
                                 : "bg-t-border/30 text-txt-muted"
                         }`}
@@ -2374,11 +2422,12 @@ function TimelineTab({
           const tSell = (t.action ?? "BUY").toUpperCase() === "SELL";
           let tPrice = t.price_cents / 100;
           if (tPrice > 1.0) tPrice /= 100;
+          const tFee = t.fee_paid || 0;
           const isYes = t.side.toLowerCase() === "yes";
 
           if (tSell) {
             const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
-            sellPnl = (tPrice - avgAtSell) * tQty;
+            sellPnl = (tPrice - avgAtSell) * tQty - tFee;
             if (isYes) {
               netShares -= tQty;
               totalCost -= avgAtSell * tQty;
@@ -2393,10 +2442,10 @@ function TimelineTab({
           } else {
             if (isYes) {
               netShares += tQty;
-              totalCost += tQty * tPrice;
+              totalCost += (tQty * tPrice) + tFee;
             } else {
               netShares -= tQty;
-              totalCost -= tQty * tPrice;
+              totalCost -= (tQty * tPrice) + tFee;
             }
             sellPnl = 0;
           }
@@ -2404,6 +2453,7 @@ function TimelineTab({
         const cumulativeQty = Math.abs(netShares);
         const cumulativeSide = netShares > 0 ? "YES" : netShares < 0 ? "NO" : null;
         const currentSellPnl = isSell ? sellPnl : 0;
+        const tradeFee = trade.fee_paid || 0;
 
         return (
           <div key={event.key}>
@@ -2438,6 +2488,9 @@ function TimelineTab({
                     </span>
                     <span className="text-txt-primary">
                       {isSell ? "-" : "+"}{qty} @ {trade.price_cents}c
+                    </span>
+                    <span className="text-warn">
+                      {formatFeeLabel(tradeFee)}
                     </span>
                     <span className="text-txt-muted">
                       {isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}
@@ -2600,10 +2653,11 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
     const isExecuted = status === "FILLED" || status === "DRY_RUN";
     const qty = isExecuted ? (trade.filled_shares || trade.count) : (trade.filled_shares || 0);
     const price = trade.price_cents / 100;
+    const fee = trade.fee_paid || 0;
     const isSell = trade.action?.toUpperCase() === "SELL";
     // BUY: you spend -qty×price. SELL: you receive +qty×price.
-    const cashFlow = isSell ? qty * price : -(qty * price);
-    return { trade, qty, displayQty: trade.count, price, isSell, cashFlow, isExecuted };
+    const cashFlow = isSell ? (qty * price) - fee : -((qty * price) + fee);
+    return { trade, qty, displayQty: trade.count, price, fee, isSell, cashFlow, isExecuted };
   });
 
   const totalCashFlow = tradeRows.reduce((sum, r) => sum + r.cashFlow, 0);
@@ -2629,13 +2683,14 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
             <th className="px-2 py-1.5 text-center font-medium">Side</th>
             <th className="px-2 py-1.5 text-right font-medium">Qty</th>
             <th className="px-2 py-1.5 text-right font-medium">Price</th>
+            <th className="px-2 py-1.5 text-right font-medium">Fee</th>
             <th className="px-2 py-1.5 text-right font-medium">Cash</th>
             <th className="px-2 py-1.5 text-center font-medium">Status</th>
             <th className="px-2 py-1.5 text-center font-medium">Mode</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-t-border/20">
-          {tradeRows.map(({ trade, qty, displayQty, price, isSell, cashFlow, isExecuted }) => (
+          {tradeRows.map(({ trade, qty, displayQty, price, fee, isSell, cashFlow, isExecuted }) => (
             <tr key={trade.id} className="hover:bg-t-panel-hover/50">
               <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
                 {fmtTime(trade.created_at)}
@@ -2659,6 +2714,9 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
                 ) : null}
               </td>
               <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{Math.round(price * 100)}c</td>
+              <td className="px-2 py-1.5 text-right font-mono text-warn">
+                {fmtDollar(fee)}
+              </td>
               <td className={`px-2 py-1.5 text-right font-mono font-medium ${isExecuted ? pnlCls(cashFlow) : "text-txt-muted"}`}>
                 {isExecuted ? `${cashFlow >= 0 ? "+" : ""}${fmtDollar(cashFlow)}` : "--"}
               </td>
@@ -2677,7 +2735,7 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
         </tbody>
         <tfoot>
           <tr className="border-t border-t-border/60 text-[9px] text-txt-muted">
-            <td colSpan={4} className="px-2 py-1.5 font-medium">
+            <td colSpan={5} className="px-2 py-1.5 font-medium">
               {pos && currentBid != null
                 ? `Exit value: ${pos.quantity} ${pos.contract.toUpperCase()} × ${Math.round(currentBid * 100)}c bid`
                 : "No open position"}

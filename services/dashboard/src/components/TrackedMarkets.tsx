@@ -173,7 +173,7 @@ export function TrackedMarkets({ markets }: { markets: Market[] }) {
                     <div className="space-y-0.5">
                       <span
                         className={`inline-block px-1.5 py-px rounded text-[9px] font-bold ${
-                          mkt.model_prediction.decision === "HOLD_NOPROFIT"
+                          mkt.model_prediction.decision === "HOLD"
                             ? "bg-yellow-900/30 text-yellow-500"
                             : mkt.model_prediction.decision.includes("YES")
                               ? "bg-profit-dim text-profit"

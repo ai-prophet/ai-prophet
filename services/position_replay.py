@@ -9,8 +9,8 @@ from typing import Any, Iterable
 EPSILON = 1e-6
 
 
-def normalize_order(order: Any) -> tuple[str, str, float, float]:
-    """Return normalized (action, side, shares, price) for a betting order row."""
+def normalize_order(order: Any) -> tuple[str, str, float, float, float]:
+    """Return normalized (action, side, shares, price, fee) for a betting order row."""
     action = (getattr(order, "action", "BUY") or "BUY").upper()
     side = (getattr(order, "side", "yes") or "yes").lower()
 
@@ -25,7 +25,9 @@ def normalize_order(order: Any) -> tuple[str, str, float, float]:
     if price > 1.0:
         price = price / 100.0
 
-    return action, side, shares, price
+    fee = float(getattr(order, "fee_paid", 0) or 0)
+
+    return action, side, shares, price, fee
 
 
 @dataclass
@@ -40,7 +42,7 @@ class InventoryPosition:
     warnings: list[str] = field(default_factory=list)
 
     def apply_order(self, order: Any, *, ticker: str = "") -> float:
-        action, side, shares, price = normalize_order(order)
+        action, side, shares, price, fee = normalize_order(order)
         if shares <= EPSILON:
             return 0.0
 
@@ -50,7 +52,7 @@ class InventoryPosition:
             sell_qty = min(shares, held_qty)
             if sell_qty > EPSILON:
                 avg_entry = held_cost / held_qty if held_qty > EPSILON else 0.0
-                realized_delta = (price - avg_entry) * sell_qty
+                realized_delta = (price - avg_entry) * sell_qty - fee
                 self.realized_pnl += realized_delta
                 self.realized_trades += 1
                 self._set_held(side, held_qty - sell_qty, held_cost - avg_entry * sell_qty)
@@ -62,7 +64,7 @@ class InventoryPosition:
                 )
         else:
             held_qty, held_cost = self._held_for(side)
-            self._set_held(side, held_qty + shares, held_cost + shares * price)
+            self._set_held(side, held_qty + shares, held_cost + shares * price + fee)
 
         self.max_position = max(self.max_position, self.yes_qty, self.no_qty)
         return realized_delta
