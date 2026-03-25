@@ -19,7 +19,7 @@ envVarGroups:
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: GEMINI_API_KEY_HAIFENG
         sync: false
       - key: GEMINI_API_KEY_JIBANG
@@ -32,7 +32,7 @@ envVarGroups:
         sync: false
 
 services:
-  # ── Trading Worker — Haifeng (DRY RUN) ────────────────────────
+  # ── Trading Worker — Haifeng (LIVE) ───────────────────────────
   - type: worker
     name: kalshi-trading-worker-haifeng
     runtime: python
@@ -59,7 +59,7 @@ services:
       - key: WORKER_PEER_INSTANCES
         value: Jibang
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -108,8 +108,8 @@ services:
         sync: false
       - fromGroup: kalshi-trading-shared
 
-  # ── Trading Worker — Jibang (DRY RUN) ─────────────────────────
-  # DRY RUN MODE - No live trading
+  # ── Trading Worker — Jibang (LIVE) ────────────────────────────
+  # LIVE MODE - Real trading enabled
   - type: worker
     name: kalshi-trading-worker-jibang
     runtime: python
@@ -136,7 +136,7 @@ services:
       - key: WORKER_PEER_INSTANCES
         value: Haifeng
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -170,7 +170,7 @@ services:
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -204,7 +204,7 @@ services:
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -238,7 +238,7 @@ services:
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
-        value: "true"
+        value: "false"
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
