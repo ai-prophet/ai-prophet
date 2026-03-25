@@ -1741,8 +1741,13 @@ function TimelineTab({
 
                         {/* Show SELL part with side */}
                         <span className="text-loss">
-                          SELL {adjustment.sell.order?.count || 0} {adjustment.sell.side ? adjustment.sell.side.toUpperCase() : ""}
+                          SELL {adjustment.sell.order?.count || 0}
                         </span>
+                        {adjustment.sell.side && (
+                          <span className={adjustment.sell.side.toUpperCase() === "YES" ? "text-profit" : "text-loss"}>
+                            {adjustment.sell.side.toUpperCase()}
+                          </span>
+                        )}
                         {adjustment.sell.order && (
                           <span className={`text-[9px] ${
                             adjustment.sell.order.filled === adjustment.sell.order.count ? 'text-profit-dim' : 'text-txt-muted'
@@ -1755,8 +1760,13 @@ function TimelineTab({
 
                         {/* Show BUY part with side */}
                         <span className="text-profit">
-                          BUY {adjustment.buy.order?.count || 0} {adjustment.buy.side ? adjustment.buy.side.toUpperCase() : ""}
+                          BUY {adjustment.buy.order?.count || 0}
                         </span>
+                        {adjustment.buy.side && (
+                          <span className={adjustment.buy.side.toUpperCase() === "YES" ? "text-profit" : "text-loss"}>
+                            {adjustment.buy.side.toUpperCase()}
+                          </span>
+                        )}
                         {adjustment.buy.order && (
                           <span className={`text-[9px] ${
                             adjustment.buy.order.filled === adjustment.buy.order.count ? 'text-profit-dim' : 'text-txt-muted'
@@ -1806,15 +1816,21 @@ function TimelineTab({
                       }}
                     >
                       <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
-                      {/* Action badge with YES/NO */}
+                      {/* Action badge */}
                       <span className={`text-[9px] px-1 py-px rounded font-bold ${
                         actionType === "HOLD" ? "bg-yellow-900/30 text-yellow-500" :
                         actionType === "ADJUSTMENT" ? "bg-purple-900/30 text-purple-400" :
                         actionType === "BUY" ? "bg-profit-dim text-profit" :
                         "bg-loss-dim text-loss"
                       }`}>
-                        {actionType === "ADJUSTMENT" ? "ADJUST" : actionType}{side && actionType !== "HOLD" && actionType !== "ADJUSTMENT" ? ` ${side}` : ""}
+                        {actionType === "ADJUSTMENT" ? "ADJUST" : actionType}
                       </span>
+                      {/* Show YES/NO separately with color coding */}
+                      {side && actionType !== "HOLD" && actionType !== "ADJUSTMENT" && (
+                        <span className={side === "YES" ? "text-profit font-bold" : "text-loss font-bold"}>
+                          {side}
+                        </span>
+                      )}
 
                       {/* For adjustments, show the change */}
                       {actionType === "ADJUSTMENT" && evaluation.action?.description && (
