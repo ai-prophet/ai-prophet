@@ -232,7 +232,8 @@ class TestBettingEngineWithPending:
         )
         with patch.object(engine, "_get_adapter") as mock_get_adapter:
             mock_get_adapter.return_value.get_balance.return_value = Decimal("100")
-            side, qty, cash = engine._live_ledger_state("TEST")
+            with patch.object(engine, "_verify_position_with_kalshi", return_value=5.0):
+                side, qty, cash = engine._live_ledger_state("TEST")
 
         assert side == "yes"
         assert qty == 5

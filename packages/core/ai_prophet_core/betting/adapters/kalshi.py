@@ -8,7 +8,6 @@ import os
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlencode
 
 import requests  # type: ignore[import-untyped]
 
@@ -281,10 +280,7 @@ class KalshiAdapter(ExchangeAdapter):
                 query_params = dict(base_params)
                 if cursor:
                     query_params["cursor"] = cursor
-                signed_path = path
-                if query_params:
-                    signed_path = f"{path}?{urlencode(query_params)}"
-                headers = self._sign_request("GET", signed_path)
+                headers = self._sign_request("GET", path)
                 response = self._session.get(
                     self._base_url + path,
                     headers=headers,
