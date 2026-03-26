@@ -272,7 +272,12 @@ class KalshiAdapter(ExchangeAdapter):
             logger.error("KalshiAdapter: failed to fetch market %s - %s", ticker, e)
             return None
 
-    def get_order(self, exchange_order_id: str) -> OrderResult | None:
+    def get_order(
+        self,
+        exchange_order_id: str,
+        *,
+        fallback_request: OrderRequest | None = None,
+    ) -> OrderResult | None:
         """Poll Kalshi for the current status of an order."""
         if self._dry_run:
             return None
@@ -288,7 +293,7 @@ class KalshiAdapter(ExchangeAdapter):
             )
             response.raise_for_status()
             data = response.json()
-            stub_request = OrderRequest(
+            request_for_parse = fallback_request or OrderRequest(
                 order_id="poll",
                 intent_id="poll",
                 market_id="",
@@ -298,7 +303,7 @@ class KalshiAdapter(ExchangeAdapter):
                 shares=Decimal("1"),
                 limit_price=Decimal("0.50"),
             )
-            return self._parse_order_response(stub_request, data)
+            return self._parse_order_response(request_for_parse, data)
         except requests.exceptions.RequestException as e:
             logger.error(
                 "KalshiAdapter: failed to poll order %s - %s",

@@ -382,6 +382,34 @@ def test_parse_order_cancelled_preserves_partial_fills():
     assert result.fill_price == Decimal("0.61")
 
 
+def test_get_order_uses_fallback_request_when_poll_response_omits_fill_fields(monkeypatch):
+    """Polling should not collapse executed orders to the stub 1 @ 50c fallback."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    monkeypatch.setattr(adapter, "_sign_request", lambda *_args, **_kwargs: {})
+
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {"order": {"status": "executed", "order_id": "ex-123"}}
+    monkeypatch.setattr(adapter._session, "get", lambda *_args, **_kwargs: response)
+
+    fallback_request = OrderRequest(
+        order_id="db-order",
+        intent_id="db-order",
+        market_id="kalshi:TEST",
+        exchange_ticker="TEST",
+        action="BUY",
+        side="NO",
+        shares=Decimal("52"),
+        limit_price=Decimal("0.44"),
+    )
+    result = adapter.get_order("ex-123", fallback_request=fallback_request)
+
+    assert result is not None
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_shares == Decimal("52")
+    assert result.fill_price == Decimal("0.44")
+
+
 def test_poll_order_fills_after_retries(monkeypatch):
     """Engine should poll pending orders and detect fill."""
     engine = BettingEngine(db_engine=None, dry_run=False, enabled=True)

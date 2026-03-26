@@ -81,7 +81,12 @@ class ExchangeAdapter(ABC):
     def get_balance(self) -> Decimal:
         ...
 
-    def get_order(self, exchange_order_id: str) -> OrderResult | None:
+    def get_order(
+        self,
+        exchange_order_id: str,
+        *,
+        fallback_request: OrderRequest | None = None,
+    ) -> OrderResult | None:
         """Poll for current order status. Override in subclasses that support it."""
         return None
 

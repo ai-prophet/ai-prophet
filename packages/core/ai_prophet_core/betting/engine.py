@@ -581,7 +581,9 @@ class BettingEngine:
                 and not self.dry_run
             ):
                 order_result = self._poll_order_status(
-                    adapter, order_result,
+                    adapter,
+                    order_result,
+                    fallback_request=order_req,
                 )
 
             status = order_result.status.value
@@ -655,6 +657,8 @@ class BettingEngine:
         self,
         adapter,
         initial_result,
+        *,
+        fallback_request=None,
         max_polls: int = 5,
         interval_sec: float = 2.0,
     ):
@@ -664,7 +668,7 @@ class BettingEngine:
         exchange_oid = initial_result.exchange_order_id
         for attempt in range(max_polls):
             time.sleep(interval_sec)
-            polled = adapter.get_order(exchange_oid)
+            polled = adapter.get_order(exchange_oid, fallback_request=fallback_request)
             if polled is None:
                 break
             if polled.status in (

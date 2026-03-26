@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 UTC = timezone.utc
 from typing import TYPE_CHECKING
@@ -12,6 +13,24 @@ if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
 logger = logging.getLogger(__name__)
+
+
+def _fallback_request_from_db_order(order):
+    """Build a best-effort OrderRequest for polling when Kalshi omits fill fields."""
+    from ai_prophet_core.betting.adapters.base import OrderRequest
+
+    limit_price = Decimal(str(float(order.price_cents or 0) / 100.0))
+    shares = Decimal(str(float(order.count or 0)))
+    return OrderRequest(
+        order_id=order.order_id or "poll",
+        intent_id=order.order_id or "poll",
+        market_id=f"kalshi:{order.ticker}" if getattr(order, "ticker", None) else "",
+        exchange_ticker=order.ticker or "",
+        action=(getattr(order, "action", None) or "BUY").upper(),
+        side=(getattr(order, "side", None) or "yes").upper(),
+        shares=shares if shares > 0 else Decimal("1"),
+        limit_price=limit_price if limit_price > 0 else Decimal("0.50"),
+    )
 
 
 def _sync_pending_order_status(
@@ -54,7 +73,10 @@ def _sync_pending_order_status(
         for order in orders_to_sync:
             try:
                 # Get current order status from Kalshi
-                kalshi_order = adapter.get_order(order.exchange_order_id)
+                kalshi_order = adapter.get_order(
+                    order.exchange_order_id,
+                    fallback_request=_fallback_request_from_db_order(order),
+                )
                 if kalshi_order:
                     # Update DB with actual status
                     old_status = order.status
@@ -183,7 +205,10 @@ def cancel_stale_orders(
                         )
 
                     try:
-                        current_exchange_status = adapter.get_order(order.exchange_order_id)
+                        current_exchange_status = adapter.get_order(
+                            order.exchange_order_id,
+                            fallback_request=_fallback_request_from_db_order(order),
+                        )
                     except Exception as e:
                         logger.warning(
                             "[ORDER_MGMT] Failed to re-check order %s after cancel attempt: %s",
