@@ -1597,9 +1597,9 @@ function TimelineTab({
 
         const resultingPosition = (event.evaluation as any).resultingPosition;
         if (!hasActionableEvaluation && !hasTradeHistory) return true;
-        if (!resultingPosition) return false;
         if (hasCurrentPendingExposure) return true;
         if (hasCurrentOpenPosition) return true;
+        if (!resultingPosition) return false;
 
         return false;
       });
