@@ -154,7 +154,6 @@ def _sync_pending_order_status(
                                     unrealized_pnl=0.0,
                                     max_position=pos.max_position,
                                     realized_trades=pos.realized_trades,
-                                    created_at=now,
                                     updated_at=now,
                                 ))
                                 logger.info("[ORDER_MGMT] Created position for %s: %d %s shares", ticker, int(qty), side)
@@ -512,7 +511,6 @@ def reconcile_positions_with_kalshi(
                                 unrealized_pnl=0.0,
                                 max_position=position_qty,
                                 realized_trades=0,
-                                created_at=datetime.now(UTC),
                                 updated_at=datetime.now(UTC),
                             ))
                             logger.info(

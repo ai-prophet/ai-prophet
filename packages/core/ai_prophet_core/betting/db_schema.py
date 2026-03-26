@@ -79,8 +79,8 @@ class BettingOrder(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
-    signal_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("betting_signals.id"), nullable=False
+    signal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("betting_signals.id"), nullable=True
     )
     order_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     ticker: Mapped[str] = mapped_column(String(255), nullable=False)
