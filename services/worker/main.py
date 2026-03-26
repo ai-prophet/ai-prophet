@@ -488,103 +488,16 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
 
 
 def sync_pending_orders(db_engine, adapter, instance_name: str) -> int:
-    """Sync all PENDING orders with Kalshi to get latest fill counts and statuses.
-
-    CRITICAL: Also re-verify CANCELLED orders that show partial fills, as these
-    may have incorrect filled_shares values that cause position discrepancies.
-
-    Returns: number of orders updated
-    """
+    """Compatibility wrapper around the shared Kalshi order sync helper."""
     if db_engine is None:
         return 0
 
     try:
-        from ai_prophet_core.betting.db import get_session
-        from ai_prophet_core.betting.db_schema import BettingOrder
-        from sqlalchemy import or_, and_
+        from order_management import _sync_pending_order_status
 
-        updated_count = 0
-
-        with get_session(db_engine) as session:
-            # Get all PENDING orders AND CANCELLED orders with non-zero filled_shares
-            # CANCELLED orders with partial fills need verification as they may be wrong
-            orders_to_sync = (
-                session.query(BettingOrder)
-                .filter(BettingOrder.instance_name == instance_name)
-                .filter(
-                    or_(
-                        BettingOrder.status == "PENDING",
-                        and_(
-                            BettingOrder.status == "CANCELLED",
-                            BettingOrder.filled_shares > 0
-                        )
-                    )
-                )
-                .all()
-            )
-
-            logger.info("[SYNC] Syncing %d orders with Kalshi (PENDING + partially-filled CANCELLED)", len(orders_to_sync))
-
-            for order in orders_to_sync:
-                try:
-                    # Poll Kalshi for current order status
-                    exchange_order_id = order.exchange_order_id or order.order_id
-                    result = adapter.get_order(exchange_order_id)
-
-                    if result is None:
-                        logger.warning(
-                            "[SYNC] Could not fetch order %s from Kalshi",
-                            exchange_order_id,
-                        )
-                        continue
-
-                    # Update order status and fill count
-                    old_status = order.status
-                    old_filled = order.filled_shares or 0
-
-                    order.status = result.status.value
-                    order.filled_shares = float(result.filled_shares) if result.filled_shares else 0
-                    order.fee_paid = float(result.fee) if getattr(result, "fee", None) else 0
-
-                    # Update fill_price if we have fills but no price
-                    if order.filled_shares > 0 and (order.fill_price is None or order.fill_price == 0):
-                        if hasattr(result, 'fill_price') and result.fill_price:
-                            order.fill_price = float(result.fill_price)
-                        elif hasattr(result, 'avg_fill_price') and result.avg_fill_price:
-                            order.fill_price = float(result.avg_fill_price)
-
-                    if old_status != order.status or old_filled != order.filled_shares:
-                        # Log critical discrepancies prominently
-                        if old_status == "CANCELLED" and abs(old_filled - order.filled_shares) > 0.1:
-                            logger.warning(
-                                "[SYNC] CRITICAL: CANCELLED order %s had wrong fill count! "
-                                "DB showed %s filled but Kalshi says %s filled. Ticker: %s",
-                                order.order_id[:8], old_filled, order.filled_shares, order.ticker
-                            )
-
-                        logger.info(
-                            "[SYNC] Updated order %s: %s -> %s, filled: %s -> %s",
-                            order.order_id[:8],
-                            old_status,
-                            order.status,
-                            old_filled,
-                            order.filled_shares,
-                        )
-                        updated_count += 1
-
-                except Exception as e:
-                    logger.warning("[SYNC] Failed to sync order %s: %s", order.order_id, e)
-                    continue
-
-            session.commit()
-
-        if updated_count > 0:
-            logger.info("[SYNC] Updated %d orders from Kalshi", updated_count)
-
-        return updated_count
-
+        return _sync_pending_order_status(db_engine, adapter, instance_name)
     except Exception as e:
-        logger.error("[SYNC] Failed to sync pending orders: %s", e)
+        logger.error("[SYNC] Failed to sync orders: %s", e)
         return 0
 
 
@@ -1949,18 +1862,33 @@ def run_cycle(args) -> None:
         # If the market drifted to near-certain territory since it was pulled, skip betting.
         # This is no longer a HOLD state; it's just a cycle skip.
         if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
+            skip_reason = (
+                f"Skipped because the market was near-certain at "
+                f"yes_ask={yes_ask:.1%}, no_ask={no_ask:.1%}."
+            )
             logger.info(
                 "  CYCLE_SKIPPED %s — near-certain price (yes_ask=%.3f, no_ask=%.3f), skipping",
                 ticker, yes_ask, no_ask,
             )
             if db_engine and betting_engine is not None:
+                # Persist a prediction row even when we skip before on_forecast()
+                # so the Timeline reflects every evaluated cycle.
+                betting_engine._save_prediction(
+                    tick_ts=tick_ts,
+                    market_id=market_id,
+                    source=model_spec,
+                    p_yes=p_yes,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                )
                 for ms, pred in model_predictions.items():
                     save_model_run(
                         db_engine, ms, market_id, "CYCLE_SKIPPED", pred.get("confidence"),
                         metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
                                   "analysis": pred.get("analysis", {}),
                                   "sources": pred.get("sources", []),
-                                  "yes_ask": yes_ask, "no_ask": no_ask},
+                                  "yes_ask": yes_ask, "no_ask": no_ask,
+                                  "skip_reason": skip_reason},
                         instance_name=INSTANCE_NAME,
                     )
             all_market_prices[market_id] = (yes_ask, no_ask)
@@ -1970,6 +1898,7 @@ def run_cycle(args) -> None:
             for ms, pred in model_predictions.items():
                 try:
                     betting_engine.strategy._portfolio = portfolio
+                    skip_reason = None
                     strategy_signal = betting_engine.strategy.evaluate(
                         market_id=market_id,
                         p_yes=pred["p_yes"],
@@ -1983,6 +1912,7 @@ def run_cycle(args) -> None:
                         decision = "HOLD"
                     elif strategy_signal.cost > 50.0:
                         decision = "SKIP"
+                        skip_reason = "Skipped because the order would consume more than $50 of capital."
                     elif strategy_signal.side in ["yes", "no"]:
                         decision = f"BUY_{strategy_signal.side.upper()}"
                     else:
@@ -1990,6 +1920,7 @@ def run_cycle(args) -> None:
                 except Exception:
                     decision = "HOLD"
                     strategy_metadata = None
+                    skip_reason = None
 
                 save_model_run(
                     db_engine, ms, market_id, decision, pred.get("confidence"),
@@ -1997,7 +1928,8 @@ def run_cycle(args) -> None:
                               "analysis": pred.get("analysis", {}),
                               "sources": pred.get("sources", []),
                               "yes_ask": yes_ask, "no_ask": no_ask,
-                              "strategy": strategy_metadata},
+                              "strategy": strategy_metadata,
+                              "skip_reason": skip_reason},
                     instance_name=INSTANCE_NAME,
                 )
 

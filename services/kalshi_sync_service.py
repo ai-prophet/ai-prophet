@@ -3,7 +3,7 @@
 Kalshi Sync Service - Independent service to sync positions with Kalshi.
 
 This service runs independently of the main worker on its own interval:
-1. Syncs pending order statuses with Kalshi
+1. Syncs exchange-backed order statuses with Kalshi
 2. Reconciles positions between DB and Kalshi
 3. Updates filled/cancelled orders
 4. Does NOT trigger new predictions or trades
@@ -129,15 +129,15 @@ def sync_with_kalshi(
     }
 
     try:
-        # 1. Sync pending order statuses
-        logger.info("[SYNC] Checking pending order statuses with Kalshi...")
+        # 1. Sync exchange-backed order statuses
+        logger.info("[SYNC] Checking exchange-backed order statuses with Kalshi...")
         updated = _sync_pending_order_status(db_engine, adapter, instance_name)
         results["pending_orders_updated"] = updated
         if updated > 0:
             log_sync_event(
                 db_engine,
                 "INFO",
-                f"Updated {updated} pending order statuses from Kalshi",
+                f"Updated {updated} exchange-backed order statuses from Kalshi",
                 instance_name,
             )
 

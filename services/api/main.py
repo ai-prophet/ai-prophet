@@ -2151,12 +2151,14 @@ def get_cycle_evaluations(
             # Extract reasoning from model metadata if available
             model_reasoning = None
             model_rationale = None
+            model_skip_reason = None
             if row.model_metadata:
                 try:
                     metadata = json.loads(row.model_metadata)
                     model_reasoning = metadata.get("reasoning")
                     # Also check for 'rationale' field in metadata
                     model_rationale = metadata.get("rationale")
+                    model_skip_reason = metadata.get("skip_reason")
                     strategy_metadata = metadata.get("strategy") if isinstance(metadata.get("strategy"), dict) else None
                 except (json.JSONDecodeError, TypeError):
                     strategy_metadata = None
@@ -2205,6 +2207,8 @@ def get_cycle_evaluations(
             # Determine reason for action/inaction
             if action_type == "hold":
                 reason = hold_reason
+            elif action_type == "skip" and model_skip_reason:
+                reason = model_skip_reason
             elif model_reasoning or model_rationale:
                 reason = model_reasoning or model_rationale
             elif action_type == "skip":

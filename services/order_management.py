@@ -19,7 +19,7 @@ def _sync_pending_order_status(
     adapter,
     instance_name: str,
 ) -> int:
-    """Check status of pending orders with Kalshi and update DB accordingly.
+    """Check status of exchange-backed orders with Kalshi and update DB accordingly.
 
     ALSO updates positions in trading_positions table when orders change status.
 
@@ -40,37 +40,54 @@ def _sync_pending_order_status(
     tickers_with_updates = set()
 
     with get_session(db_engine) as session:
-        pending_orders = (
+        orders_to_sync = (
             session.query(BettingOrder)
             .filter(
                 BettingOrder.instance_name == instance_name,
-                BettingOrder.status == "PENDING",
+                BettingOrder.exchange_order_id.isnot(None),
             )
             .all()
         )
 
-        for order in pending_orders:
-            if not order.exchange_order_id:
-                continue
-
+        for order in orders_to_sync:
             try:
                 # Get current order status from Kalshi
                 kalshi_order = adapter.get_order(order.exchange_order_id)
                 if kalshi_order:
                     # Update DB with actual status
-                    if kalshi_order.status.value != "PENDING":
-                        order.status = kalshi_order.status.value
-                        order.filled_shares = float(kalshi_order.filled_shares)
-                        order.fill_price = float(kalshi_order.fill_price)
-                        order.fee_paid = float(kalshi_order.fee or 0)
+                    old_status = order.status
+                    old_filled = float(order.filled_shares or 0)
+                    new_status = kalshi_order.status.value
+                    new_filled = float(kalshi_order.filled_shares or 0)
+                    new_fill_price = float(kalshi_order.fill_price or 0)
+                    new_fee = float(kalshi_order.fee or 0)
+
+                    if (
+                        old_status != new_status
+                        or abs(old_filled - new_filled) > 0.0001
+                        or float(order.fill_price or 0) != new_fill_price
+                        or float(order.fee_paid or 0) != new_fee
+                    ):
+                        previous_status = order.status
+                        order.status = new_status
+                        order.filled_shares = new_filled
+                        order.fill_price = new_fill_price
+                        order.fee_paid = new_fee
                         updated_count += 1
                         tickers_with_updates.add(order.ticker)  # Track which tickers changed
                         logger.info(
-                            "[ORDER_MGMT] Updated order %s status: PENDING -> %s (filled: %d shares)",
+                            "[ORDER_MGMT] Updated order %s status: %s -> %s (filled: %d -> %d shares)",
                             order.order_id[:8],
-                            kalshi_order.status.value,
-                            int(order.filled_shares),
+                            previous_status,
+                            new_status,
+                            int(old_filled),
+                            int(new_filled),
                         )
+                    else:
+                        order.status = new_status
+                        order.filled_shares = new_filled
+                        order.fill_price = new_fill_price
+                        order.fee_paid = new_fee
             except Exception as e:
                 logger.warning(
                     "[ORDER_MGMT] Failed to check order %s status: %s",
@@ -80,7 +97,7 @@ def _sync_pending_order_status(
 
         if updated_count > 0:
             session.commit()
-            logger.info("[ORDER_MGMT] Updated %d pending order statuses from Kalshi", updated_count)
+            logger.info("[ORDER_MGMT] Updated %d order statuses from Kalshi", updated_count)
 
             # CRITICAL: Update positions for tickers that had order changes
             if tickers_with_updates:
@@ -362,7 +379,7 @@ def reconcile_positions_with_kalshi(
     from ai_prophet_core.betting.db import get_session
     from ai_prophet_core.betting.db_schema import BettingOrder
 
-    # First, sync pending order statuses with Kalshi if requested
+    # First, sync exchange-backed order statuses with Kalshi if requested
     if sync_pending_orders:
         _sync_pending_order_status(db_engine, adapter, instance_name)
 
