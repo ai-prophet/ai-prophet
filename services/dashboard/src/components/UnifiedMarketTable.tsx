@@ -85,6 +85,32 @@ function isHoldLikeDecision(decision: string | null | undefined): boolean {
   return normalized === "HOLD";
 }
 
+function normalizeOrderStatus(status: string | null | undefined): string {
+  return status?.toUpperCase() ?? "";
+}
+
+function isTerminalOrderStatus(status: string | null | undefined): boolean {
+  const normalized = normalizeOrderStatus(status);
+  return normalized === "FILLED"
+    || normalized === "DRY_RUN"
+    || normalized === "REJECTED"
+    || normalized === "CANCELLED"
+    || normalized === "ERROR";
+}
+
+function shouldRenderActionableEvaluation(
+  evaluation: CycleEvaluation,
+  hasCurrentPendingExposure: boolean,
+): boolean {
+  const order = evaluation.order;
+  if (!order) return true;
+
+  const filledCount = order.filled ?? 0;
+  if (filledCount > 0) return true;
+
+  return isTerminalOrderStatus(order.status) || hasCurrentPendingExposure;
+}
+
 function buildHoldExplanation(evaluation: CycleEvaluation): string {
   if (evaluation.action?.reason) {
     return evaluation.action.reason;
@@ -1298,13 +1324,9 @@ function countRenderableCycleEvaluations(
 
   return cycleEvaluations.filter((evaluation) => {
     const actionType = evaluation.action?.type?.toLowerCase();
-    const order = evaluation.order;
-    const filledCount = order ? (order.filled ?? order.count) : 0;
 
     if (actionType !== "hold") {
-      if (!order) return true;
-      if (filledCount > 0) return true;
-      return hasCurrentPendingExposure;
+      return shouldRenderActionableEvaluation(evaluation, hasCurrentPendingExposure);
     }
 
     if (!hasActionableEvaluation && !hasTradeHistory) return true;
@@ -1568,13 +1590,9 @@ function TimelineTab({
       .sort((a, b) => b.sortTs - a.sortTs)
       .filter((event) => {
         const actionType = event.evaluation.action?.type?.toLowerCase();
-        const order = event.evaluation.order;
-        const filledCount = order ? (order.filled ?? order.count) : 0;
 
         if (actionType !== "hold") {
-          if (!order) return true;
-          if (filledCount > 0) return true;
-          return hasCurrentPendingExposure;
+          return shouldRenderActionableEvaluation(event.evaluation, hasCurrentPendingExposure);
         }
 
         const resultingPosition = (event.evaluation as any).resultingPosition;
@@ -2005,6 +2023,7 @@ function TimelineTab({
           const adjustmentCount = adjustmentMatch ? adjustmentMatch[3] : null;
           const orderPriceLabel = formatPriceCents(evaluation.order?.price_cents);
           const orderFee = evaluation.order?.fee_paid ?? 0;
+          const orderStatus = normalizeOrderStatus(evaluation.order?.status);
 
           // Check if this is a position adjustment
           const isAdjustment = actionType === "ADJUSTMENT";
@@ -2216,9 +2235,9 @@ function TimelineTab({
                               <span className={`text-[10px] font-mono ${
                                 evaluation.order.filled != null && evaluation.order.filled === evaluation.order.count
                                   ? 'text-profit font-semibold'
-                                  : evaluation.order.filled != null && evaluation.order.filled > 0
+                                : evaluation.order.filled != null && evaluation.order.filled > 0
                                   ? 'text-accent font-semibold'
-                                  : 'text-txt-muted'
+                                : 'text-txt-muted'
                               }`}>
                                 {evaluation.order.filled != null ? (
                                   evaluation.order.filled === evaluation.order.count ? (
@@ -2234,6 +2253,7 @@ function TimelineTab({
                                   'ordered'
                                 )}
                               </span>
+                              {orderStatus && <StatusBadge status={orderStatus} />}
                               {(evaluation as any).previousUnfilledOrder && (
                                 <span className="text-[9px] text-txt-muted italic">
                                   (replaces {(evaluation as any).previousUnfilledOrder.count} unfilled)

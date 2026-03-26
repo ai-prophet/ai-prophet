@@ -385,6 +385,7 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
         from db_models import TradingMarket, TradingPosition
+        from sqlalchemy import or_
 
         now = datetime.now(UTC)
 
@@ -402,7 +403,12 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
             orders = (
                 session.query(BettingOrder)
                 .filter(BettingOrder.instance_name == instance_name)
-                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                .filter(
+                    or_(
+                        BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
+                        BettingOrder.filled_shares > 0,
+                    )
+                )
                 .order_by(BettingOrder.created_at.asc())
                 .all()
             )
@@ -602,12 +608,18 @@ def _load_order_ledger_state(
     try:
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
+        from sqlalchemy import or_
 
         with get_session(db_engine) as session:
             orders = (
                 session.query(BettingOrder)
                 .filter(BettingOrder.instance_name == instance_name)
-                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                .filter(
+                    or_(
+                        BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
+                        BettingOrder.filled_shares > 0,
+                    )
+                )
                 .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
                 .all()
             )
@@ -1200,11 +1212,11 @@ def _gemini_predictor(model_name: str, include_market: bool = False):
     """
     import httpx
 
-    api_key = _instance_specific_setting("GOOGLE_API_KEY") or _instance_specific_setting("GEMINI_API_KEY")
+    # Use GOOGLE_API_KEY as the primary key (Gemini is a Google service)
+    api_key = _instance_specific_setting("GOOGLE_API_KEY")
     if not api_key:
         raise ValueError(
-            f"GOOGLE_API_KEY_{env_suffix(INSTANCE_NAME)} or "
-            f"GEMINI_API_KEY_{env_suffix(INSTANCE_NAME)} env var required for Gemini"
+            f"GOOGLE_API_KEY_{env_suffix(INSTANCE_NAME)} env var required for Gemini"
         )
     base_url = "https://generativelanguage.googleapis.com/v1beta"
     http_client = httpx.Client(timeout=PREDICTOR_TIMEOUT_SEC)
@@ -1289,11 +1301,11 @@ def _remote_predict(
     if anthropic_key:
         api_keys["anthropic"] = anthropic_key
 
-    # Google/Gemini - use instance-specific keys
-    google_key = _instance_specific_setting("GOOGLE_API_KEY") or _instance_specific_setting("GEMINI_API_KEY")
+    # Google/Gemini - use instance-specific keys (GOOGLE_API_KEY is the primary)
+    google_key = _instance_specific_setting("GOOGLE_API_KEY")
     if google_key:
-        api_keys["gemini"] = google_key
         api_keys["google"] = google_key
+        api_keys["gemini"] = google_key  # For backwards compatibility
 
     # xAI/Grok
     xai_key = _instance_setting("XAI_API_KEY", "")

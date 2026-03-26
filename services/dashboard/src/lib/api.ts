@@ -506,15 +506,38 @@ export interface UnifiedMarketRow {
   updated_at: string;
 }
 
+function normalizeTradeStatus(status: string | null | undefined): string {
+  return status?.toUpperCase() ?? "";
+}
+
+function getExecutedTradeQuantity(trade: Trade): number {
+  const filledShares = trade.filled_shares ?? 0;
+  if (filledShares > 0) return filledShares;
+
+  const status = normalizeTradeStatus(trade.status);
+  if (status === "FILLED" || status === "DRY_RUN") {
+    return trade.count;
+  }
+
+  return 0;
+}
+
+function tradeCashFlow(trade: Trade): number {
+  const qty = getExecutedTradeQuantity(trade);
+  if (qty <= 0) return 0;
+
+  const fee = trade.fee_paid || 0;
+  let price = trade.price_cents / 100;
+  if (price > 1.0) price /= 100; // fix corrupted fill_price stored as cents-of-cents
+
+  return trade.action?.toUpperCase() === "SELL"
+    ? (qty * price) - fee
+    : -((qty * price) + fee);
+}
+
 export function liveNetPnl(row: UnifiedMarketRow): number | null {
   if (!row.position && row.trades.length === 0) return null;
-  const cashFlow = row.trades.reduce((sum, t) => {
-    const qty = t.filled_shares || t.count;
-    const fee = t.fee_paid || 0;
-    let price = t.price_cents / 100;
-    if (price > 1.0) price /= 100; // fix corrupted fill_price stored as cents-of-cents
-    return sum + (t.action?.toUpperCase() === "SELL" ? (qty * price) - fee : -((qty * price) + fee));
-  }, 0);
+  const cashFlow = row.trades.reduce((sum, trade) => sum + tradeCashFlow(trade), 0);
   const pos = row.position;
   if (!pos) return cashFlow;
 

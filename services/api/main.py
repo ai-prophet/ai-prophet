@@ -2178,6 +2178,12 @@ def get_cycle_evaluations(
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side}"
                 elif row.order_status == "DRY_RUN":
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side} (dry run)"
+                elif row.order_status == "REJECTED":
+                    action_taken = f"{row.order_action} {row.order_count} {row.order_side} (rejected)"
+                elif row.order_status == "CANCELLED":
+                    action_taken = f"{row.order_action} {row.order_count} {row.order_side} (cancelled)"
+                elif row.order_status == "ERROR":
+                    action_taken = f"{row.order_action} {row.order_count} {row.order_side} (error)"
                 else:
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side} (pending)"
             else:

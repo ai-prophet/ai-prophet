@@ -348,6 +348,40 @@ def test_parse_order_pending_returns_pending():
     assert result.filled_shares == Decimal("0")
 
 
+def test_parse_order_executed_uses_fill_count():
+    """Executed orders should use Kalshi fill_count, not place_count."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {
+        "order": {
+            "status": "executed",
+            "order_id": "ex-789",
+            "fill_count": 6,
+            "avg_price": 94,
+        }
+    }
+    result = adapter._parse_order_response(_make_order(), data)
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_shares == Decimal("6")
+    assert result.fill_price == Decimal("0.94")
+
+
+def test_parse_order_cancelled_preserves_partial_fills():
+    """Cancelled orders can still carry real fills that must be replayed."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {
+        "order": {
+            "status": "canceled",
+            "order_id": "ex-987",
+            "fill_count": 2,
+            "avg_price": 61,
+        }
+    }
+    result = adapter._parse_order_response(_make_order(), data)
+    assert result.status == OrderStatus.CANCELLED
+    assert result.filled_shares == Decimal("2")
+    assert result.fill_price == Decimal("0.61")
+
+
 def test_poll_order_fills_after_retries(monkeypatch):
     """Engine should poll pending orders and detect fill."""
     engine = BettingEngine(db_engine=None, dry_run=False, enabled=True)

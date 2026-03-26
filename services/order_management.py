@@ -21,6 +21,8 @@ def _sync_pending_order_status(
 ) -> int:
     """Check status of pending orders with Kalshi and update DB accordingly.
 
+    ALSO updates positions in trading_positions table when orders change status.
+
     Args:
         db_engine: Database engine
         adapter: Exchange adapter (KalshiAdapter)
@@ -31,8 +33,11 @@ def _sync_pending_order_status(
     """
     from ai_prophet_core.betting.db import get_session
     from ai_prophet_core.betting.db_schema import BettingOrder
-
+    from db_models import TradingPosition
+    from position_replay import replay_orders_by_ticker
+    from datetime import datetime
     updated_count = 0
+    tickers_with_updates = set()
 
     with get_session(db_engine) as session:
         pending_orders = (
@@ -59,6 +64,7 @@ def _sync_pending_order_status(
                         order.fill_price = float(kalshi_order.fill_price)
                         order.fee_paid = float(kalshi_order.fee or 0)
                         updated_count += 1
+                        tickers_with_updates.add(order.ticker)  # Track which tickers changed
                         logger.info(
                             "[ORDER_MGMT] Updated order %s status: PENDING -> %s (filled: %d shares)",
                             order.order_id[:8],
@@ -75,6 +81,79 @@ def _sync_pending_order_status(
         if updated_count > 0:
             session.commit()
             logger.info("[ORDER_MGMT] Updated %d pending order statuses from Kalshi", updated_count)
+
+            # CRITICAL: Update positions for tickers that had order changes
+            if tickers_with_updates:
+                logger.info("[ORDER_MGMT] Updating positions for %d tickers with order changes", len(tickers_with_updates))
+
+                # Get all FILLED orders for affected tickers
+                filled_orders = (
+                    session.query(BettingOrder)
+                    .filter(
+                        BettingOrder.instance_name == instance_name,
+                        BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
+                        BettingOrder.ticker.in_(tickers_with_updates)
+                    )
+                    .order_by(BettingOrder.created_at.asc())
+                    .all()
+                )
+
+                # Replay orders to calculate positions
+                positions = replay_orders_by_ticker(filled_orders)
+                now = datetime.now(UTC)
+
+                # Update trading_positions table
+                for ticker in tickers_with_updates:
+                    market_id = f"kalshi:{ticker}"
+                    pos = positions.get(ticker)
+
+                    # Get existing position entry
+                    existing = session.query(TradingPosition).filter_by(
+                        instance_name=instance_name,
+                        market_id=market_id
+                    ).first()
+
+                    if pos:
+                        side, qty, avg_price = pos.current_position()
+
+                        if side and qty > 0.001:
+                            # Position exists - update or create
+                            if existing:
+                                existing.contract = side
+                                existing.quantity = int(qty)
+                                existing.avg_price = round(avg_price, 4)
+                                existing.realized_pnl = round(pos.realized_pnl, 4)
+                                existing.realized_trades = pos.realized_trades
+                                existing.updated_at = now
+                                logger.info("[ORDER_MGMT] Updated position for %s: %d %s shares", ticker, int(qty), side)
+                            else:
+                                session.add(TradingPosition(
+                                    instance_name=instance_name,
+                                    market_id=market_id,
+                                    contract=side,
+                                    quantity=int(qty),
+                                    avg_price=round(avg_price, 4),
+                                    realized_pnl=round(pos.realized_pnl, 4),
+                                    unrealized_pnl=0.0,
+                                    max_position=pos.max_position,
+                                    realized_trades=pos.realized_trades,
+                                    created_at=now,
+                                    updated_at=now,
+                                ))
+                                logger.info("[ORDER_MGMT] Created position for %s: %d %s shares", ticker, int(qty), side)
+                        else:
+                            # Position closed - delete if exists
+                            if existing:
+                                session.delete(existing)
+                                logger.info("[ORDER_MGMT] Deleted closed position for %s", ticker)
+                    else:
+                        # No position - delete if exists
+                        if existing:
+                            session.delete(existing)
+                            logger.info("[ORDER_MGMT] Deleted position for %s (no orders)", ticker)
+
+                session.commit()
+                logger.info("[ORDER_MGMT] Updated positions for %d tickers", len(tickers_with_updates))
 
     return updated_count
 
@@ -352,6 +431,92 @@ def reconcile_positions_with_kalshi(
                 kalshi_qty,
                 drift,
             )
+
+    # AUTO-CORRECT DRIFTS: Trust Kalshi as the source of truth
+    if drifts:
+        logger.warning("[ORDER_MGMT] Found %d position drifts - AUTO-CORRECTING by trusting Kalshi", len(drifts))
+
+        from db_models import TradingPosition, SystemLog
+        from datetime import datetime
+
+        corrected = 0
+        with get_session(db_engine) as session:
+            for ticker, (db_qty, kalshi_qty) in drifts.items():
+                market_id = f"kalshi:{ticker}"
+
+                # Get existing position entry
+                existing_pos = session.query(TradingPosition).filter_by(
+                    instance_name=instance_name,
+                    market_id=market_id
+                ).first()
+
+                if kalshi_qty == 0:
+                    # Kalshi shows no position - delete local position
+                    if existing_pos:
+                        session.delete(existing_pos)
+                        logger.info(
+                            "[ORDER_MGMT] AUTO-CORRECTED: Deleted position for %s (Kalshi=0, was DB=%d)",
+                            ticker, db_qty
+                        )
+                        corrected += 1
+                else:
+                    # Find the Kalshi position details
+                    kalshi_pos_details = None
+                    for pos in kalshi_positions_raw:
+                        if pos.get("ticker") == ticker:
+                            kalshi_pos_details = pos
+                            break
+
+                    if kalshi_pos_details:
+                        position_fp = float(kalshi_pos_details.get("position_fp", 0))
+                        position_side = "yes" if position_fp > 0 else "no"
+                        position_qty = abs(int(position_fp))
+                        avg_price = float(kalshi_pos_details.get("average_price_fp", 0.5))
+
+                        if existing_pos:
+                            # Update existing position
+                            existing_pos.contract = position_side
+                            existing_pos.quantity = position_qty
+                            existing_pos.avg_price = avg_price
+                            existing_pos.updated_at = datetime.now(UTC)
+                            logger.info(
+                                "[ORDER_MGMT] AUTO-CORRECTED: %s DB=%d → Kalshi=%d %s shares",
+                                ticker, db_qty, position_qty, position_side
+                            )
+                        else:
+                            # Create new position
+                            session.add(TradingPosition(
+                                instance_name=instance_name,
+                                market_id=market_id,
+                                contract=position_side,
+                                quantity=position_qty,
+                                avg_price=avg_price,
+                                realized_pnl=0.0,
+                                unrealized_pnl=0.0,
+                                max_position=position_qty,
+                                realized_trades=0,
+                                created_at=datetime.now(UTC),
+                                updated_at=datetime.now(UTC),
+                            ))
+                            logger.info(
+                                "[ORDER_MGMT] AUTO-CORRECTED: Created %s position: %d %s shares",
+                                ticker, position_qty, position_side
+                            )
+                        corrected += 1
+
+            if corrected > 0:
+                # Log the correction event
+                session.add(SystemLog(
+                    instance_name=instance_name,
+                    level="WARNING",
+                    message=f"Auto-corrected {corrected} position drifts by syncing with Kalshi",
+                    component="order_mgmt",
+                    created_at=datetime.now(UTC),
+                ))
+                session.commit()
+                logger.info("[ORDER_MGMT] Successfully corrected %d/%d position drifts", corrected, len(drifts))
+                # Clear drifts since they're fixed
+                drifts = {}
 
     if not drifts:
         logger.info("[ORDER_MGMT] Position reconciliation OK - no drifts detected")

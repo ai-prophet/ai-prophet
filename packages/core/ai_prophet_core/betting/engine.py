@@ -427,8 +427,14 @@ class BettingEngine:
 
             if held_side != want_side:
                 held_count = live_qty
-                # Use the correct price for the side being sold
-                sell_price = yes_ask if held_side == "yes" else no_ask
+                # When selling, use the opposite side's ask as an approximation of our bid
+                # (Since we don't have bid prices, this is the best we can do)
+                # If selling YES, use (1 - no_ask) as the YES bid
+                # If selling NO, use (1 - yes_ask) as the NO bid
+                if held_side == "yes":
+                    sell_price = max(0.01, 1.0 - no_ask)  # YES bid ≈ 1 - NO ask
+                else:
+                    sell_price = max(0.01, 1.0 - yes_ask)  # NO bid ≈ 1 - YES ask
                 sell_price_cents = max(1, min(99, round(sell_price * 100)))
 
                 # SAFETY CHECK: Verify we actually have shares to sell
@@ -441,17 +447,9 @@ class BettingEngine:
                     # Skip the sell, just buy the wanted side
                     action = "BUY"
                     effective_side = want_side.upper()
-                elif count <= held_count:
-                    # Just sell some of the existing opposite position
-                    action = "SELL"
-                    effective_side = held_side.upper()
-                    price_cents = sell_price_cents
-                    logger.info(
-                        "[BETTING] NET: selling %d %s instead of buying %d %s on %s",
-                        count, held_side.upper(), count, want_side.upper(), ticker,
-                    )
                 else:
-                    # Sell all existing, then buy remainder on new side
+                    # When flipping positions, ALWAYS sell ALL existing opposite position first,
+                    # then buy the full target position on the new side
                     sell_order_id = str(uuid.uuid4())
                     sell_req = OrderRequest(
                         order_id=sell_order_id,
@@ -467,9 +465,14 @@ class BettingEngine:
                     try:
                         sell_result = adapter.submit_order(sell_req)
                         sell_status = sell_result.status.value
+                        # Enhanced logging for position flips
                         logger.info(
-                            "[BETTING] NET: sold %d %s on %s → %s",
-                            held_count, held_side.upper(), ticker, sell_status,
+                            "[BETTING] POSITION FLIP STEP 1/2: SELL %d %s on %s @ $%.2f → %s",
+                            held_count, held_side.upper(), ticker, sell_price, sell_status,
+                        )
+                        logger.info(
+                            "[BETTING] POSITION FLIP STEP 2/2: Will BUY %d %s to complete flip",
+                            count, want_side.upper(),
                         )
                         self._save_order(
                             signal_id=None,  # NET sells are not driven by a signal for this market
@@ -489,16 +492,21 @@ class BettingEngine:
                         logger.error("[BETTING] NET sell failed: %s", e)
                         sell_status = "ERROR"
 
-                    count = count - held_count
-                    if count <= 0:
+                    # If sell failed, don't continue with the buy
+                    if sell_status == "ERROR":
                         return BetResult(
                             market_id=market_id,
                             signal=signal,
-                            order_placed=sell_status != "ERROR",
+                            order_placed=False,
                             order_id=sell_order_id,
                             status=sell_status,
                         )
-                    # Continue to buy remaining on new side
+
+                    # After selling all opposite position, we buy the full requested amount
+                    # Keep count unchanged - we want the full target position
+                    # The sell was just to clear the opposite position first
+
+                    # Continue to buy the full requested amount on new side
                     action = "BUY"
                     effective_side = want_side.upper()
                     # Refresh cash after the NET sell — proceeds are now persisted
@@ -595,11 +603,25 @@ class BettingEngine:
             exchange_oid = None
             error = str(e)
 
-        logger.info(
-            "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s, fee=%s)",
-            order_id[:8], action, effective_side, count, ticker,
-            price_cents, status, filled_shares, fill_price, fee_paid,
+        # Check if this was part of a position flip
+        is_flip_completion = (
+            action == "BUY" and
+            signal.side.lower() != (live_side or "").lower() and
+            live_side is not None
         )
+
+        if is_flip_completion:
+            logger.info(
+                "[BETTING] POSITION FLIP COMPLETE: Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s, fee=%s)",
+                order_id[:8], action, effective_side, count, ticker,
+                price_cents, status, filled_shares, fill_price, fee_paid,
+            )
+        else:
+            logger.info(
+                "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s, fee=%s)",
+                order_id[:8], action, effective_side, count, ticker,
+                price_cents, status, filled_shares, fill_price, fee_paid,
+            )
 
         self._save_order(
             signal_id=signal_id,

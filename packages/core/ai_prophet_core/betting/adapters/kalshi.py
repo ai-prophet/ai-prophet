@@ -352,15 +352,34 @@ class KalshiAdapter(ExchangeAdapter):
         else:
             status = OrderStatus.REJECTED
 
-        if status == OrderStatus.FILLED:
-            filled_count = order_data.get("place_count", int(request.shares))
-            avg_price_cents = order_data.get(
-                "avg_price", int(round(float(request.limit_price) * 100))
-            )
-            fill_price = Decimal(str(avg_price_cents)) / Decimal("100")
-            filled_shares = Decimal(str(filled_count))
-            notional = filled_shares * fill_price
+        filled_count = order_data.get("fill_count")
+        if filled_count is None:
+            initial_count = order_data.get("initial_count")
+            remaining_count = order_data.get("remaining_count")
+            if initial_count is not None and remaining_count is not None:
+                filled_count = Decimal(str(initial_count)) - Decimal(str(remaining_count))
+            elif status == OrderStatus.FILLED:
+                filled_count = order_data.get("place_count", int(request.shares))
+            else:
+                filled_count = 0
 
+        filled_shares = Decimal(str(filled_count))
+
+        avg_price_cents = order_data.get("avg_price")
+        if avg_price_cents is None and filled_shares > 0:
+            taker_fill_cost = Decimal(str(order_data.get("taker_fill_cost") or 0))
+            maker_fill_cost = Decimal(str(order_data.get("maker_fill_cost") or 0))
+            total_fill_cost = taker_fill_cost + maker_fill_cost
+            if total_fill_cost > 0:
+                avg_price_cents = total_fill_cost / filled_shares
+
+        if avg_price_cents is None:
+            avg_price_cents = int(round(float(request.limit_price) * 100))
+
+        fill_price = Decimal(str(avg_price_cents)) / Decimal("100")
+        notional = filled_shares * fill_price
+
+        if status == OrderStatus.FILLED:
             return OrderResult(
                 order_id=request.order_id,
                 intent_id=request.intent_id,
@@ -379,6 +398,10 @@ class KalshiAdapter(ExchangeAdapter):
                 order_id=request.order_id,
                 intent_id=request.intent_id,
                 status=status,
+                filled_shares=filled_shares,
+                fill_price=fill_price,
+                notional=notional,
+                fee=fee,
                 exchange_order_id=exchange_order_id,
                 raw_response=data,
             )
@@ -387,6 +410,10 @@ class KalshiAdapter(ExchangeAdapter):
             order_id=request.order_id,
             intent_id=request.intent_id,
             status=status,
+            filled_shares=filled_shares,
+            fill_price=fill_price,
+            notional=notional,
+            fee=fee,
             rejection_reason=order_data.get("reason", f"Status: {kalshi_status}"),
             exchange_order_id=exchange_order_id,
             raw_response=data,

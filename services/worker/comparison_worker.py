@@ -110,12 +110,10 @@ def _remote_predict(model_spec: str, market_info: dict) -> dict:
         api_keys["openai"] = OPENAI_API_KEY
     if ANTHROPIC_API_KEY:
         api_keys["anthropic"] = ANTHROPIC_API_KEY
+    # Google/Gemini - use GOOGLE_API_KEY as the primary
     if GOOGLE_API_KEY:
         api_keys["google"] = GOOGLE_API_KEY
-        api_keys["gemini"] = GOOGLE_API_KEY
-    elif GEMINI_API_KEY:
-        api_keys["google"] = GEMINI_API_KEY
-        api_keys["gemini"] = GEMINI_API_KEY
+        api_keys["gemini"] = GOOGLE_API_KEY  # For backwards compatibility
     if XAI_API_KEY:
         api_keys["xai"] = XAI_API_KEY
 

@@ -69,10 +69,23 @@ class InventoryPosition:
         self.max_position = max(self.max_position, self.yes_qty, self.no_qty)
         return realized_delta
 
+    def get_both_positions(self) -> tuple[float, float, float, float]:
+        """Return both YES and NO positions separately.
+
+        Returns: (yes_qty, yes_avg_price, no_qty, no_avg_price)
+        """
+        yes_qty = 0.0 if self.yes_qty < EPSILON else self.yes_qty
+        no_qty = 0.0 if self.no_qty < EPSILON else self.no_qty
+        yes_avg = self.yes_cost / yes_qty if yes_qty > EPSILON else 0.0
+        no_avg = self.no_cost / no_qty if no_qty > EPSILON else 0.0
+        return yes_qty, yes_avg, no_qty, no_avg
+
     def current_position(self) -> tuple[str | None, float, float]:
         yes_qty = 0.0 if self.yes_qty < EPSILON else self.yes_qty
         no_qty = 0.0 if self.no_qty < EPSILON else self.no_qty
 
+        # For Kalshi markets, YES and NO are separate contracts that don't net out
+        # Return the larger position as the primary, but don't cancel them
         if yes_qty > 0 and no_qty == 0:
             return "yes", yes_qty, self.yes_cost / yes_qty if yes_qty > EPSILON else 0.0
         if no_qty > 0 and yes_qty == 0:
@@ -80,16 +93,16 @@ class InventoryPosition:
         if yes_qty == 0 and no_qty == 0:
             return None, 0.0, 0.0
 
-        # Net YES and NO against each other: YES+NO pairs cancel at settlement.
-        # Report only the net directional exposure so the strategy sees true risk.
-        net = yes_qty - no_qty
-        if net > EPSILON:
+        # IMPORTANT: YES and NO positions should NOT net out for Kalshi markets
+        # They are separate contracts, not opposite sides of the same position
+        # Return the larger position as primary (for backward compatibility)
+        # but both positions exist independently
+        if yes_qty >= no_qty:
             avg = self.yes_cost / yes_qty if yes_qty > EPSILON else 0.0
-            return "yes", net, avg
-        if net < -EPSILON:
+            return "yes", yes_qty, avg
+        else:
             avg = self.no_cost / no_qty if no_qty > EPSILON else 0.0
-            return "no", -net, avg
-        return None, 0.0, 0.0  # perfectly hedged
+            return "no", no_qty, avg
 
     def _held_for(self, side: str) -> tuple[float, float]:
         if side == "yes":

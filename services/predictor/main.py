@@ -279,10 +279,8 @@ def _predict_anthropic(model_name: str, market_info: dict, include_market: bool,
 def _instance_gemini_key(instance_name: str | None) -> str:
     normalized = normalize_instance_name(instance_name)
     suffix = env_suffix(normalized)
-    return (
-        os.getenv(f"GOOGLE_API_KEY_{suffix}", "")
-        or os.getenv(f"GEMINI_API_KEY_{suffix}", "")
-    )
+    # Use GOOGLE_API_KEY as the primary key (Gemini is a Google service)
+    return os.getenv(f"GOOGLE_API_KEY_{suffix}", "")
 
 
 def _predict_gemini(
@@ -292,13 +290,13 @@ def _predict_gemini(
     instance_name: str | None,
     api_keys: dict,
 ) -> dict:
-    # Try to get API key from request first, then fall back to instance-based env vars
-    api_key = api_keys.get("gemini") or api_keys.get("google") or _instance_gemini_key(instance_name)
+    # Try to get API key from request first (accept either name), then fall back to instance-based env vars
+    api_key = api_keys.get("google") or api_keys.get("gemini") or _instance_gemini_key(instance_name)
     if not api_key:
         normalized = normalize_instance_name(instance_name)
         suffix = env_suffix(normalized)
         raise ValueError(
-            f"Google/Gemini API key required (pass in request or set GOOGLE_API_KEY_{suffix} env var)"
+            f"Google API key required (pass in request or set GOOGLE_API_KEY_{suffix} env var)"
         )
 
     http_client = _get_gemini_http_client()
