@@ -33,8 +33,8 @@ def create_db_engine(
     use_null_pool = kwargs.pop("poolclass", None) is NullPool or \
         os.getenv("DB_NULL_POOL", "").lower() in ("1", "true")
     connect_args = {
-        "connect_timeout": 10,
-        "options": "-c statement_timeout=30000 -c lock_timeout=10000",
+        "connect_timeout": 30,  # Increased from 10 to 30 seconds
+        "options": "-c statement_timeout=60000 -c lock_timeout=20000",  # Increased timeouts
     }
     if use_null_pool:
         # NullPool: no persistent connections — connect/disconnect per request.
@@ -44,17 +44,18 @@ def create_db_engine(
         logger.warning("Using NullPool - this will be very slow! Consider using a small pool instead.")
         return create_engine(url, echo=echo, poolclass=NullPool, connect_args=connect_args, **kwargs)
 
-    # Use a very small pool optimized for pgBouncer transaction mode
-    pool_size = kwargs.pop("pool_size", 1)
-    max_overflow = kwargs.pop("max_overflow", 0)
+    # Use a reasonable pool size for concurrent operations
+    # Default to 5 connections with 10 overflow for better concurrency
+    pool_size = kwargs.pop("pool_size", int(os.getenv("DB_POOL_SIZE", "5")))
+    max_overflow = kwargs.pop("max_overflow", int(os.getenv("DB_MAX_OVERFLOW", "10")))
     return create_engine(
         url,
         echo=echo,
         pool_size=pool_size,
         max_overflow=max_overflow,
         pool_pre_ping=True,
-        pool_recycle=60,            # 1 min — pgBouncer transaction mode closes idle connections quickly
-        pool_timeout=10,            # fail fast if pool is exhausted
+        pool_recycle=300,           # 5 min — increase from 1 min for better connection reuse
+        pool_timeout=30,            # increased from 10 to 30 seconds for busy periods
         connect_args=connect_args,
         **kwargs,
     )

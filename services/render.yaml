@@ -70,9 +70,13 @@ services:
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
       - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-441548451945.us-west1.run.app
+        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
       - fromGroup: kalshi-trading-shared
 
   # ── Kalshi Sync Service — Haifeng ────────────────────────────
@@ -86,9 +90,9 @@ services:
     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
     startCommand: python services/kalshi_sync_service.py --instance Haifeng
     envVars:
-      - key: KALSHI_API_KEY_ID
+      - key: KALSHI_API_KEY_ID_HAIFENG
         sync: false
-      - key: KALSHI_PRIVATE_KEY_B64
+      - key: KALSHI_PRIVATE_KEY_B64_HAIFENG
         sync: false
       - fromGroup: kalshi-trading-shared
 
@@ -103,9 +107,9 @@ services:
     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
     startCommand: python services/kalshi_sync_service.py --instance Jibang
     envVars:
-      - key: KALSHI_API_KEY_ID
+      - key: KALSHI_API_KEY_ID_JIBANG
         sync: false
-      - key: KALSHI_PRIVATE_KEY_B64
+      - key: KALSHI_PRIVATE_KEY_B64_JIBANG
         sync: false
       - fromGroup: kalshi-trading-shared
 
@@ -143,9 +147,13 @@ services:
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
       - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-441548451945.us-west1.run.app
+        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — GPT-5.4 (dry-run) ──────────────────────
@@ -177,9 +185,13 @@ services:
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
       - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-441548451945.us-west1.run.app
+        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Grok 4 (dry-run) ────────────────────────
@@ -211,9 +223,13 @@ services:
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
       - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-441548451945.us-west1.run.app
+        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Claude Opus 4.6 (dry-run) ───────────────
@@ -245,9 +261,13 @@ services:
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
       - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-441548451945.us-west1.run.app
+        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "10"
       - fromGroup: kalshi-trading-shared
 
   # ── API Backend ──────────────────────────────────────────────

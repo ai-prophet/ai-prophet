@@ -351,18 +351,22 @@ def run_sync_loop(
 ) -> None:
     """Main sync loop."""
     from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
-    from ai_prophet_core.betting.config import KalshiConfig
+    from ai_prophet_core.betting.config import DEFAULT_KALSHI_BASE_URL, KALSHI_BASE_URL_ENV
     from ai_prophet_core.betting.db import create_db_engine
 
     # Initialize database
     db_engine = create_db_engine()
 
-    # Initialize Kalshi adapter
-    kalshi_config = KalshiConfig.from_env()
+    # Initialize Kalshi adapter with instance-aware credentials so each sync
+    # service talks to the correct Kalshi account.
     adapter = KalshiAdapter(
-        api_key_id=kalshi_config.api_key_id,
-        private_key_base64=kalshi_config.private_key_base64,
-        base_url=kalshi_config.base_url,
+        api_key_id=get_instance_env("KALSHI_API_KEY_ID", instance_name, default="") or "",
+        private_key_base64=get_instance_env("KALSHI_PRIVATE_KEY_B64", instance_name, default="") or "",
+        base_url=get_instance_env(
+            KALSHI_BASE_URL_ENV,
+            instance_name,
+            default=DEFAULT_KALSHI_BASE_URL,
+        ) or DEFAULT_KALSHI_BASE_URL,
         dry_run=dry_run,
     )
 
