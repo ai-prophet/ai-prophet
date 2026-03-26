@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy.engine import Engine
 
 from .config import MAX_MARKETS_PER_TICK, MAX_ORDER_COST, KalshiConfig
+from .db import get_session  # Re-exported for tests and legacy patch points.
 from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
 
 logger = logging.getLogger(__name__)
@@ -358,6 +359,29 @@ class BettingEngine:
                 except Exception:
                     cash = Decimal("0")
 
+            # Enhancement: In LIVE mode, ALWAYS use Kalshi as the source of truth
+            if not self.dry_run:
+                kalshi_position = self._verify_position_with_kalshi(ticker)
+                if kalshi_position is not None:
+                    # Use Kalshi's position as ground truth
+                    kalshi_side = "yes" if kalshi_position >= 0 else "no"
+                    kalshi_qty = abs(kalshi_position)
+
+                    # Auto-correct DB if there's a mismatch
+                    pos = positions.get(ticker)
+                    if pos is not None:
+                        side, qty, _ = pos.current_position()
+                        if side != kalshi_side or abs(qty - kalshi_qty) > 0.001:
+                            logger.error(
+                                "[BETTING] CRITICAL: Position mismatch for %s: DB=%s:%d, Kalshi=%s:%d - AUTO-CORRECTING",
+                                ticker, side, qty, kalshi_side, kalshi_qty
+                            )
+                            # Immediately sync this position to DB
+                            self._force_sync_position(ticker, kalshi_side, kalshi_qty)
+
+                    # ALWAYS use Kalshi's position, it's the only truth
+                    return kalshi_side if kalshi_qty > 0 else None, max(0, round(kalshi_qty)), cash
+
             pos = positions.get(ticker)
             if pos is None:
                 return None, 0, cash
@@ -366,6 +390,63 @@ class BettingEngine:
         except Exception as e:
             logger.warning("[BETTING] _live_ledger_state query failed for %s: %s", ticker, e)
             return None, 0, Decimal("0")
+
+    def _verify_position_with_kalshi(self, ticker: str) -> float | None:
+        """Quick poll to verify exact position from Kalshi before trading.
+
+        Returns signed quantity: positive for YES, negative for NO, or None if error.
+        """
+        try:
+            positions = self._get_adapter().get_positions()
+            for pos in positions:
+                if pos.get("ticker") == ticker:
+                    return float(pos.get("position_fp", 0) or 0)
+            return 0.0  # No position found means zero position
+        except Exception as e:
+            logger.warning("[BETTING] Failed to verify position with Kalshi for %s: %s", ticker, e)
+            return None
+
+    def _force_sync_position(self, ticker: str, kalshi_side: str, kalshi_qty: float) -> None:
+        """Force immediate position sync when mismatch detected.
+
+        This ensures our DB matches Kalshi's truth immediately, not at next sync.
+        """
+        if self._engine is None:
+            return
+
+        try:
+            import sys, os
+            _services = os.path.join(os.path.dirname(__file__), "../../../../services")
+            if _services not in sys.path:
+                sys.path.insert(0, _services)
+            from kalshi_state import record_kalshi_state, sync_trading_positions_from_snapshots
+            from ai_prophet_core.betting.db import get_session
+
+            with get_session(self._engine) as session:
+                # Record current Kalshi state
+                record_kalshi_state(session, self._get_adapter(), self.instance_name)
+                # Immediately sync positions from the snapshots
+                updated = sync_trading_positions_from_snapshots(session, self.instance_name)
+
+                if updated > 0:
+                    logger.info(
+                        "[BETTING] Force-synced %d position(s) for %s to match Kalshi truth",
+                        updated, ticker
+                    )
+
+                    # Also log this critical event
+                    from db_models import SystemLog
+                    session.add(SystemLog(
+                        instance_name=self.instance_name,
+                        level="ERROR",
+                        message=f"AUTO-CORRECTED position for {ticker}: now {kalshi_side}:{kalshi_qty}",
+                        component="position_sync",
+                        created_at=datetime.now(UTC),
+                    ))
+                    session.commit()
+
+        except Exception as e:
+            logger.error("[BETTING] Failed to force sync position for %s: %s", ticker, e)
 
     def _place_and_log_order(
         self,
@@ -625,6 +706,15 @@ class BettingEngine:
                 price_cents, status, filled_shares, fill_price, fee_paid,
             )
 
+        # Enhancement: Verify balance after fills in LIVE mode
+        if not self.dry_run and status == "FILLED" and action == "BUY":
+            self._verify_balance_after_fill(
+                ticker=ticker,
+                order_id=order_id,
+                expected_cost=filled_shares * fill_price + fee_paid,
+                pre_order_balance=float(live_cash)
+            )
+
         self._save_order(
             signal_id=signal_id,
             order_id=order_id,
@@ -653,24 +743,194 @@ class BettingEngine:
             error=error,
         )
 
+    def _verify_balance_after_fill(
+        self,
+        ticker: str,
+        order_id: str,
+        expected_cost: float,
+        pre_order_balance: float
+    ) -> None:
+        """Verify balance changed correctly after a filled order.
+
+        Balance discrepancies should NOT exist - if they do, it's a CRITICAL error.
+        Only called for FILLED BUY orders in LIVE mode.
+        """
+        try:
+            # Poll balance multiple times to ensure Kalshi has updated
+            max_retries = 3
+            new_balance = None
+
+            for retry in range(max_retries):
+                time.sleep(1.0 if retry == 0 else 2.0)  # Wait 1s first, then 2s between retries
+                new_balance = float(self._get_adapter().get_balance())
+
+                # Expected balance = pre-order balance - order cost
+                expected_balance = pre_order_balance - expected_cost
+                discrepancy = abs(new_balance - expected_balance)
+
+                if discrepancy <= 0.01:
+                    # Balance is correct!
+                    logger.info(
+                        "[BETTING] Balance VERIFIED after order %s: $%.2f → $%.2f (cost=$%.2f)",
+                        order_id[:8], pre_order_balance, new_balance, expected_cost
+                    )
+                    return
+
+                if retry < max_retries - 1:
+                    logger.debug(
+                        "[BETTING] Balance check %d/%d: Expected $%.2f, got $%.2f - retrying...",
+                        retry + 1, max_retries, expected_balance, new_balance
+                    )
+
+            # CRITICAL ERROR - Balance mismatch after all retries
+            logger.error(
+                "[BETTING] CRITICAL BALANCE ERROR after order %s for %s: "
+                "Expected $%.2f (%.2f - %.2f), got $%.2f (DISCREPANCY=$%.2f). "
+                "This should NOT happen with proper sync!",
+                order_id[:8], ticker,
+                expected_balance, pre_order_balance, expected_cost,
+                new_balance, abs(new_balance - expected_balance)
+            )
+
+            # Force immediate full reconciliation
+            self._force_full_reconciliation(
+                ticker=ticker,
+                order_id=order_id,
+                expected_balance=expected_balance,
+                actual_balance=new_balance,
+                discrepancy=abs(new_balance - expected_balance)
+            )
+
+        except Exception as e:
+            logger.error(
+                "[BETTING] CRITICAL: Failed to verify balance after order %s: %s. "
+                "Manual intervention may be required!",
+                order_id[:8], e
+            )
+
+    def _force_full_reconciliation(
+        self,
+        ticker: str,
+        order_id: str,
+        expected_balance: float,
+        actual_balance: float,
+        discrepancy: float
+    ) -> None:
+        """Force a full reconciliation when balance discrepancy detected.
+
+        This is a CRITICAL operation - balance mismatches should never happen.
+        """
+        if self._engine is None:
+            return
+
+        try:
+            import sys, os
+            _services = os.path.join(os.path.dirname(__file__), "../../../../services")
+            if _services not in sys.path:
+                sys.path.insert(0, _services)
+            from kalshi_state import record_kalshi_state
+            from order_management import reconcile_positions_with_kalshi
+            from db_models import SystemLog
+            from ai_prophet_core.betting.db import get_session
+
+            logger.error("[BETTING] FORCING FULL RECONCILIATION due to balance discrepancy")
+
+            # 1. Record complete Kalshi state
+            with get_session(self._engine) as session:
+                record_kalshi_state(session, self._get_adapter(), self.instance_name)
+
+            # 2. Full position reconciliation
+            drifts = reconcile_positions_with_kalshi(
+                self._engine,
+                self._get_adapter(),
+                self.instance_name,
+                tolerance_contracts=0,  # Zero tolerance during critical reconciliation
+                sync_pending_orders=True
+            )
+
+            # 3. Log critical event
+            with get_session(self._engine) as session:
+                session.add(SystemLog(
+                    instance_name=self.instance_name,
+                    level="CRITICAL",
+                    message=(
+                        f"BALANCE DISCREPANCY DETECTED: Expected ${expected_balance:.2f}, "
+                        f"got ${actual_balance:.2f} (diff=${discrepancy:.2f}) after order {order_id[:8]} "
+                        f"for {ticker}. Full reconciliation performed. Found {len(drifts)} position drifts."
+                    ),
+                    component="balance_reconciliation",
+                    created_at=datetime.now(UTC),
+                ))
+                session.commit()
+
+            # 4. Stop trading if discrepancy is too large (> $10)
+            if discrepancy > 10.0:
+                logger.critical(
+                    "[BETTING] EMERGENCY: Balance discrepancy > $10. "
+                    "DISABLING TRADING. Manual intervention required!"
+                )
+                self.enabled = False  # Disable engine
+
+                with get_session(self._engine) as session:
+                    session.add(SystemLog(
+                        instance_name=self.instance_name,
+                        level="EMERGENCY",
+                        message=f"TRADING DISABLED due to ${discrepancy:.2f} balance discrepancy",
+                        component="emergency_stop",
+                        created_at=datetime.now(UTC),
+                    ))
+                    session.commit()
+
+        except Exception as e:
+            logger.critical(
+                "[BETTING] CRITICAL: Failed to perform reconciliation: %s. "
+                "MANUAL INTERVENTION REQUIRED!",
+                e
+            )
+
     def _poll_order_status(
         self,
         adapter,
         initial_result,
         *,
         fallback_request=None,
-        max_polls: int = 5,
-        interval_sec: float = 2.0,
+        max_polls: int = 10,  # Increased from 5
+        interval_sec: float = 1.0,  # Start with 1 second
     ):
-        """Poll exchange for order fill status after a PENDING submission."""
+        """Poll exchange for order fill status after a PENDING submission.
+
+        Uses exponential backoff: 1s, 1s, 2s, 3s, 5s, 8s, 13s, 20s, 30s, 45s
+        Total time: ~130 seconds for all 10 polls
+        """
         from .adapters.base import OrderStatus
 
         exchange_oid = initial_result.exchange_order_id
-        for attempt in range(max_polls):
-            time.sleep(interval_sec)
-            polled = adapter.get_order(exchange_oid, fallback_request=fallback_request)
+
+        # Enhanced polling with exponential backoff
+        poll_intervals = [1, 1, 2, 3, 5, 8, 13, 20, 30, 45]  # Fibonacci-like sequence
+
+        for attempt in range(min(max_polls, len(poll_intervals))):
+            # Use exponential backoff for polling intervals
+            sleep_time = poll_intervals[attempt] if attempt < len(poll_intervals) else interval_sec
+            time.sleep(sleep_time)
+
+            try:
+                polled = adapter.get_order(exchange_oid, fallback_request=fallback_request)
+            except Exception as e:
+                logger.warning(
+                    "[BETTING] Poll %d/%d failed for %s: %s",
+                    attempt + 1, max_polls, exchange_oid, e
+                )
+                continue
+
             if polled is None:
-                break
+                logger.debug(
+                    "[BETTING] Poll %d/%d for %s returned None (order may not exist)",
+                    attempt + 1, max_polls, exchange_oid
+                )
+                continue
+
+            # Check for terminal states
             if polled.status in (
                 OrderStatus.FILLED,
                 OrderStatus.CANCELLED,
@@ -679,15 +939,44 @@ class BettingEngine:
                 # Preserve original order/intent IDs
                 polled.order_id = initial_result.order_id
                 polled.intent_id = initial_result.intent_id
-                return polled
-            logger.debug(
-                "[BETTING] Poll %d/%d for %s: still %s",
-                attempt + 1, max_polls, exchange_oid, polled.status.value,
-            )
 
-        logger.info(
-            "[BETTING] Order %s still pending after %d polls",
-            exchange_oid, max_polls,
+                # Log successful resolution
+                if polled.status == OrderStatus.FILLED:
+                    logger.info(
+                        "[BETTING] Order %s FILLED after %d polls (%.1f seconds)",
+                        exchange_oid, attempt + 1, sum(poll_intervals[:attempt+1])
+                    )
+                else:
+                    logger.info(
+                        "[BETTING] Order %s %s after %d polls",
+                        exchange_oid, polled.status.value, attempt + 1
+                    )
+                return polled
+
+            # Check for partial fills
+            if polled.filled_shares and float(polled.filled_shares) > 0:
+                logger.info(
+                    "[BETTING] Poll %d/%d for %s: PARTIAL FILL %d shares, status=%s",
+                    attempt + 1, max_polls, exchange_oid,
+                    int(polled.filled_shares), polled.status.value
+                )
+                # Update the initial result with partial fill info
+                initial_result.filled_shares = polled.filled_shares
+                initial_result.fill_price = polled.fill_price
+                initial_result.fee = polled.fee
+            else:
+                logger.debug(
+                    "[BETTING] Poll %d/%d for %s: still %s (next poll in %ds)",
+                    attempt + 1, max_polls, exchange_oid, polled.status.value,
+                    poll_intervals[attempt + 1] if attempt + 1 < len(poll_intervals) else interval_sec
+                )
+
+        # Final status check and warning
+        total_time = sum(poll_intervals[:max_polls])
+        logger.warning(
+            "[BETTING] Order %s still PENDING after %d polls (%.1f seconds total). "
+            "Will continue monitoring in background sync.",
+            exchange_oid, max_polls, total_time
         )
         return initial_result
 

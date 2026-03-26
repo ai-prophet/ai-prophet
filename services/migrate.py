@@ -24,6 +24,9 @@ from ai_prophet_core.betting.db_schema import Base as CoreBase
 
 # Import service-specific models so they register with the Base metadata
 from db_models import (  # noqa: F401
+    KalshiBalanceSnapshot,
+    KalshiOrderSnapshot,
+    KalshiPositionSnapshot,
     MarketPriceSnapshot,
     ModelRun,
     SystemLog,

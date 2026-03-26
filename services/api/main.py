@@ -24,6 +24,7 @@ import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from dotenv import load_dotenv
@@ -58,11 +59,21 @@ from ai_prophet_core.betting.db_schema import (
 # Import dashboard-specific models
 from db_models import (
     AlertDismissal,
+    KalshiBalanceSnapshot,
+    KalshiOrderSnapshot,
+    KalshiPositionSnapshot,
     MarketPriceSnapshot,
     ModelRun,
     SystemLog,
     TradingMarket,
     TradingPosition,
+)
+from kalshi_state import (
+    build_pending_orders_by_ticker,
+    build_position_views,
+    get_latest_balance_snapshot,
+    get_latest_position_snapshots,
+    get_latest_order_snapshots,
 )
 
 # ── App setup ─────────────────────────────────────────────────────
@@ -516,6 +527,12 @@ def get_trades(
                 ):
                     market_titles[m.market_id] = m.title
 
+            kalshi_order_map: dict[str, KalshiOrderSnapshot] = {}
+            trade_tickers = {row.ticker for row in rows if row.ticker}
+            if trade_tickers:
+                for snap in get_latest_order_snapshots(session, resolved_instance, tickers=trade_tickers):
+                    kalshi_order_map[snap.order_id] = snap
+
             results = []
             for row in rows:
                 prediction = None
@@ -565,6 +582,15 @@ def get_trades(
                         }
 
                 market_title = market_titles.get(f"kalshi:{row.ticker}")
+                live_order = kalshi_order_map.get(row.exchange_order_id or "")
+                status = live_order.status if live_order else row.status
+                filled_shares = live_order.fill_count if live_order else row.filled_shares
+                fee_paid = live_order.fee_paid if live_order else row.fee_paid
+                display_price_cents = row.price_cents
+                fill_price = row.fill_price
+                if live_order and live_order.avg_fill_price is not None and live_order.fill_count > 0:
+                    display_price_cents = int(round(live_order.avg_fill_price * 100))
+                    fill_price = live_order.avg_fill_price
 
                 results.append({
                     "id": row.id,
@@ -573,11 +599,11 @@ def get_trades(
                     "action": row.action,
                     "side": row.side,
                     "count": row.count,
-                    "price_cents": row.price_cents,
-                    "status": row.status,
-                    "filled_shares": row.filled_shares,
-                    "fill_price": row.fill_price,
-                    "fee_paid": row.fee_paid,
+                    "price_cents": display_price_cents,
+                    "status": status,
+                    "filled_shares": filled_shares,
+                    "fill_price": fill_price,
+                    "fee_paid": fee_paid,
                     "exchange_order_id": row.exchange_order_id,
                     "dry_run": row.dry_run,
                     "created_at": row.created_at.isoformat(),
@@ -750,30 +776,13 @@ def get_markets(
         )
         # Build set of market_ids that have an active position
         # (these are shown regardless of spread)
-        active_positions: set[str] = {
-            p.market_id
-            for p in _instance_query(session, TradingPosition, resolved_instance)
-            .with_entities(TradingPosition.market_id)
-            .all()
-        }
-
-        # Bulk-load pending orders for all markets
-        pending_orders_by_ticker: dict[str, list[dict]] = defaultdict(list)
-        pending_orders = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .filter(BettingOrder.status == "PENDING")
-            .all()
+        kalshi_position_views = build_position_views(session, resolved_instance)
+        active_positions: set[str] = {p.market_id for p in kalshi_position_views}
+        pending_orders_by_ticker = build_pending_orders_by_ticker(
+            session,
+            resolved_instance,
+            tickers=(row.ticker for row in rows),
         )
-        for order in pending_orders:
-            pending_orders_by_ticker[order.ticker].append({
-                "order_id": order.order_id,
-                "action": order.action,
-                "side": order.side,
-                "count": order.count,
-                "filled_shares": float(order.filled_shares) if order.filled_shares else 0,
-                "price_cents": order.price_cents,
-                "created_at": order.created_at.isoformat(),
-            })
 
         # Bulk-load all recent model runs for these markets (avoid N+1)
         market_ids_for_runs = [r.market_id for r in rows]
@@ -884,12 +893,16 @@ def get_positions(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        query = _instance_query(session, TradingPosition, resolved_instance).order_by(TradingPosition.updated_at.desc())
+        kalshi_positions = build_position_views(session, resolved_instance)
 
-        # Get total count before pagination
-        total = query.count()
-
-        rows = query.offset(offset).limit(limit).all()
+        if kalshi_positions:
+            kalshi_positions.sort(key=lambda row: row.updated_at, reverse=True)
+            total = len(kalshi_positions)
+            rows = kalshi_positions[offset:offset + limit]
+        else:
+            query = _instance_query(session, TradingPosition, resolved_instance).order_by(TradingPosition.updated_at.desc())
+            total = query.count()
+            rows = query.offset(offset).limit(limit).all()
 
         # Bulk-load market info for all positions (avoid N+1)
         pos_market_ids = [r.market_id for r in rows]
@@ -921,9 +934,9 @@ def get_positions(
                     continue
 
             results.append({
-                "id": row.id,
+                "id": getattr(row, "id", 0),
                 "market_id": row.market_id,
-                "ticker": ticker,
+                "ticker": ticker or getattr(row, "ticker", None),
                 "event_ticker": event_ticker,
                 "market_title": market_title,
                 "contract": row.contract,
@@ -1189,17 +1202,44 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
 
     engine = get_db()
     with get_session(engine) as session:
-        # Fetch all filled orders (limited to recent 1000 for performance)
-        orders = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
-            .order_by(BettingOrder.created_at.desc())
-            .limit(1000)
-            .all()
-        )
+        latest_kalshi_orders = get_latest_order_snapshots(session, resolved_instance)
+        orders = [
+            SimpleNamespace(
+                ticker=row.ticker,
+                action=row.action,
+                side=row.side,
+                count=row.initial_count,
+                price_cents=int(round((row.avg_fill_price or row.limit_price or 0.0) * 100)),
+                fee_paid=row.fee_paid,
+                created_at=row.created_ts or row.last_update_ts or row.captured_at,
+                status=row.status,
+                filled_shares=row.fill_count,
+            )
+            for row in latest_kalshi_orders
+            if row.fill_count > 0
+        ]
 
-        # Fetch positions for realized/unrealized PnL
-        positions = _instance_query(session, TradingPosition, resolved_instance).all()
+        if not orders:
+            orders = (
+                _instance_query(session, BettingOrder, resolved_instance)
+                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                .order_by(BettingOrder.created_at.desc())
+                .limit(1000)
+                .all()
+            )
+
+        position_views = build_position_views(session, resolved_instance)
+        positions = [
+            SimpleNamespace(
+                market_id=row.market_id,
+                quantity=row.quantity,
+                avg_price=row.avg_price,
+                realized_pnl=row.realized_pnl,
+            )
+            for row in position_views
+        ]
+        if not positions:
+            positions = _instance_query(session, TradingPosition, resolved_instance).all()
         # Fetch only markets with positions or recent trades (limited for performance)
         position_market_ids = {p.market_id for p in positions}
         markets = (
@@ -2107,6 +2147,8 @@ def get_cycle_evaluations(
                 bp.yes_ask as pred_yes_ask,
                 bp.no_ask as pred_no_ask,
                 bo.id as order_id,
+                bo.order_id as local_order_id,
+                bo.exchange_order_id as exchange_order_id,
                 bo.action as order_action,
                 bo.side as order_side,
                 bo.count as order_count,
@@ -2153,12 +2195,23 @@ def get_cycle_evaluations(
                 "offset": offset
             }
         )
+        rows = result.fetchall()
 
-        for row in result:
+        timeline_tickers = {row.market_ticker for row in rows if row.market_ticker}
+        latest_order_snaps = get_latest_order_snapshots(session, resolved_instance, tickers=timeline_tickers)
+        snap_by_exchange = {snap.order_id: snap for snap in latest_order_snaps}
+        snap_by_client = {snap.client_order_id: snap for snap in latest_order_snaps if snap.client_order_id}
+
+        for row in rows:
             market_ticker = row.market_ticker
             parsed_p_yes = row.pred_p_yes
             parsed_yes_ask = row.pred_yes_ask
             parsed_no_ask = row.pred_no_ask
+            live_order = None
+            if row.exchange_order_id:
+                live_order = snap_by_exchange.get(row.exchange_order_id)
+            if live_order is None and row.local_order_id:
+                live_order = snap_by_client.get(row.local_order_id)
 
             model_reasoning = None
             model_rationale = None
@@ -2270,11 +2323,11 @@ def get_cycle_evaluations(
                 "order": {
                     "action": row.order_action,
                     "side": row.order_side,
-                    "count": row.order_count,
-                    "filled": row.order_filled,
-                    "price_cents": row.order_price,
-                    "status": row.order_status,
-                    "fee_paid": float(row.order_fee or 0),
+                    "count": live_order.initial_count if live_order else row.order_count,
+                    "filled": live_order.fill_count if live_order else row.order_filled,
+                    "price_cents": int(round((live_order.avg_fill_price or live_order.limit_price or 0) * 100)) if live_order else row.order_price,
+                    "status": live_order.status if live_order else row.order_status,
+                    "fee_paid": float(live_order.fee_paid if live_order else (row.order_fee or 0)),
                 } if row.order_id else None,
             })
 
@@ -2495,49 +2548,40 @@ def get_system_logs(
 
 @app.get("/kalshi/balance")
 def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any]:
-    """Fetch Kalshi account balance (works in both live and dry-run modes).
-
-    In dry-run mode, computes a virtual balance from the configured
-    WORKER_STARTING_CASH baseline (the real Kalshi balance is not used
-    because DRY_RUN orders never touch the real account):
-      starting_cash - capital_deployed + realized_pnl
-
-    In live mode, returns the real Kalshi account balance directly.
-    """
+    """Return the latest recorded Kalshi balance snapshot for the instance."""
     try:
         resolved_instance = _instance_name(instance_name)
         dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
+        engine = get_db()
+        with get_session(engine) as session:
+            snapshot = get_latest_balance_snapshot(session, resolved_instance)
 
-        # Check which credentials are being used
-        suffix = resolved_instance.replace(" ", "_").upper()
-        using_instance_specific = f"KALSHI_API_KEY_ID_{suffix}" in os.environ
-        credentials_type = "instance-specific" if using_instance_specific else "generic"
-
-        if dry_run:
-            starting_cash = float(_instance_setting("WORKER_STARTING_CASH", resolved_instance, "10000"))
-            db_engine = get_db()
-            with get_session(db_engine) as session:
-                positions = _instance_query(session, TradingPosition, resolved_instance).all()
-                capital_deployed = sum(p.avg_price * p.quantity for p in positions)
-                realized_pnl = sum(p.realized_pnl for p in positions)
-            balance = starting_cash - capital_deployed + realized_pnl
-        else:
+        if snapshot is None:
             adapter = _build_kalshi_adapter(resolved_instance)
-            balance = float(adapter.get_balance())
-            adapter.close()
+            try:
+                raw = adapter.get_balance_details()
+            finally:
+                adapter.close()
+            balance = float(raw.get("balance", 0)) / 100.0
+            portfolio_value = float(raw.get("portfolio_value", 0)) / 100.0
+            timestamp = datetime.now(UTC).isoformat()
+        else:
+            balance = snapshot.balance
+            portfolio_value = snapshot.portfolio_value
+            timestamp = snapshot.snapshot_ts.isoformat()
 
         return {
             "balance": balance,
+            "portfolio_value": portfolio_value,
             "dry_run": dry_run,
-            "instance": resolved_instance,
-            "credentials_type": credentials_type,
             "instance_name": resolved_instance,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": timestamp,
         }
     except Exception as e:
         logger.error("Failed to fetch Kalshi balance: %s", e)
         return {
             "balance": 0.0,
+            "portfolio_value": 0.0,
             "dry_run": True,
             "error": str(e),
             "instance_name": _instance_name(instance_name),
@@ -2550,19 +2594,40 @@ def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any
 
 @app.get("/kalshi/positions")
 def get_kalshi_positions(instance_name: str | None = Query(None)) -> dict[str, Any]:
-    """Fetch live Kalshi positions (works in both live and dry-run modes)."""
+    """Return the latest recorded Kalshi positions for the instance."""
     try:
         resolved_instance = _instance_name(instance_name)
         dry_run = _instance_bool_setting("LIVE_BETTING_DRY_RUN", resolved_instance, True)
-        adapter = _build_kalshi_adapter(resolved_instance)
-        positions = adapter.get_positions()
-        adapter.close()
+        engine = get_db()
+        with get_session(engine) as session:
+            snapshots = get_latest_position_snapshots(session, resolved_instance)
+
+        if snapshots:
+            positions = [
+                json.loads(snapshot.raw_json) if snapshot.raw_json else {
+                    "ticker": snapshot.ticker,
+                    "position_fp": snapshot.signed_quantity,
+                    "market_exposure_dollars": snapshot.market_exposure,
+                    "realized_pnl_dollars": snapshot.realized_pnl,
+                    "fees_paid_dollars": snapshot.fees_paid,
+                    "resting_orders_count": snapshot.resting_orders_count,
+                }
+                for snapshot in snapshots.values()
+            ]
+            timestamp = max(snapshot.snapshot_ts for snapshot in snapshots.values()).isoformat()
+        else:
+            adapter = _build_kalshi_adapter(resolved_instance)
+            try:
+                positions = adapter.get_positions()
+            finally:
+                adapter.close()
+            timestamp = datetime.now(UTC).isoformat()
 
         return {
             "positions": positions,
             "dry_run": dry_run,
             "instance_name": resolved_instance,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": timestamp,
         }
     except Exception as e:
         logger.error("Failed to fetch Kalshi positions: %s", e)
@@ -2675,6 +2740,9 @@ def clear_all_data(instance_name: str | None = Query(None)) -> dict[str, Any]:
         deleted["betting_predictions"] = _instance_query(session, BettingPrediction, resolved_instance).delete()
         deleted["trading_positions"] = _instance_query(session, TradingPosition, resolved_instance).delete()
         deleted["trading_markets"] = _instance_query(session, TradingMarket, resolved_instance).delete()
+        deleted["kalshi_balance_snapshots"] = _instance_query(session, KalshiBalanceSnapshot, resolved_instance).delete()
+        deleted["kalshi_position_snapshots"] = _instance_query(session, KalshiPositionSnapshot, resolved_instance).delete()
+        deleted["kalshi_order_snapshots"] = _instance_query(session, KalshiOrderSnapshot, resolved_instance).delete()
         deleted["model_runs"] = _instance_query(session, ModelRun, resolved_instance).delete()
         deleted["system_logs"] = _instance_query(session, SystemLog, resolved_instance).delete()
         session.commit()
@@ -2707,53 +2775,29 @@ def get_order_monitoring(instance_name: str | None = Query(None)) -> dict[str, A
     one_hour_ago = now - timedelta(hours=1)
 
     with get_session(engine) as session:
-        # Get all pending orders
-        pending_orders = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .filter(BettingOrder.status == "PENDING")
-            .order_by(BettingOrder.created_at.desc())
-            .all()
-        )
+        latest_orders = get_latest_order_snapshots(session, resolved_instance)
+        if not latest_orders:
+            latest_orders = []
+        pending_orders = [o for o in latest_orders if o.status == "PENDING" and o.remaining_count > 0]
+        stale_orders = [
+            o for o in pending_orders
+            if (o.created_ts or o.last_update_ts or o.captured_at) < one_hour_ago
+        ]
+        cancelled_orders = [
+            o for o in latest_orders
+            if o.status == "CANCELLED" and (o.last_update_ts or o.created_ts or o.captured_at) >= now - timedelta(hours=24)
+        ][:20]
 
-        # Get stale orders (pending > 1 hour)
-        stale_orders = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .filter(
-                BettingOrder.status == "PENDING",
-                BettingOrder.created_at < one_hour_ago,
-            )
-            .all()
-        )
-
-        # Get recently cancelled orders (last 24h)
-        cancelled_orders = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .filter(
-                BettingOrder.status == "CANCELLED",
-                BettingOrder.created_at >= now - timedelta(hours=24),
-            )
-            .order_by(BettingOrder.created_at.desc())
-            .limit(20)
-            .all()
-        )
-
-        # Order status breakdown
-        status_counts = (
-            _instance_query(session, BettingOrder, resolved_instance)
-            .with_entities(
-                BettingOrder.status,
-                func.count(BettingOrder.id).label("count"),
-            )
-            .group_by(BettingOrder.status)
-            .all()
-        )
+        status_breakdown: dict[str, int] = defaultdict(int)
+        for order in latest_orders:
+            status_breakdown[order.status] += 1
 
         # Get market titles for context
         market_titles = {}
         for order in pending_orders:
             if order.ticker not in market_titles:
                 market = (
-                    session.query(TradingMarket)
+                    _instance_query(session, TradingMarket, resolved_instance)
                     .filter(TradingMarket.ticker == order.ticker)
                     .first()
                 )
@@ -2765,17 +2809,18 @@ def get_order_monitoring(instance_name: str | None = Query(None)) -> dict[str, A
         # Format pending orders with age
         pending_list = []
         for order in pending_orders:
-            age_minutes = (now - order.created_at).total_seconds() / 60
-            filled = order.filled_shares or 0
+            created_at = order.created_ts or order.last_update_ts or order.captured_at
+            age_minutes = (now - created_at).total_seconds() / 60
+            filled = order.fill_count or 0
             pending_list.append({
-                "order_id": order.order_id,
+                "order_id": order.client_order_id or order.order_id,
                 "ticker": order.ticker,
                 "market_title": market_titles.get(order.ticker, order.ticker),
                 "side": order.side,
-                "count": order.count,
+                "count": order.initial_count,
                 "filled_shares": filled,
-                "price_cents": order.price_cents,
-                "created_at": order.created_at.isoformat(),
+                "price_cents": int(round((order.limit_price or 0.0) * 100)),
+                "created_at": created_at.isoformat(),
                 "age_minutes": round(age_minutes, 1),
                 "is_stale": age_minutes > 60,
             })
@@ -2783,36 +2828,35 @@ def get_order_monitoring(instance_name: str | None = Query(None)) -> dict[str, A
         # Format stale orders
         stale_list = []
         for order in stale_orders:
-            age_minutes = (now - order.created_at).total_seconds() / 60
+            created_at = order.created_ts or order.last_update_ts or order.captured_at
+            age_minutes = (now - created_at).total_seconds() / 60
             stale_list.append({
-                "order_id": order.order_id,
+                "order_id": order.client_order_id or order.order_id,
                 "ticker": order.ticker,
                 "side": order.side,
-                "count": order.count,
-                "created_at": order.created_at.isoformat(),
+                "count": order.initial_count,
+                "created_at": created_at.isoformat(),
                 "age_hours": round(age_minutes / 60, 1),
             })
 
         # Format recent cancellations
         cancelled_list = []
         for order in cancelled_orders:
+            created_at = order.created_ts or order.last_update_ts or order.captured_at
             cancelled_list.append({
-                "order_id": order.order_id,
+                "order_id": order.client_order_id or order.order_id,
                 "ticker": order.ticker,
                 "side": order.side,
-                "count": order.count,
-                "created_at": order.created_at.isoformat(),
+                "count": order.initial_count,
+                "created_at": created_at.isoformat(),
             })
-
-        # Format status breakdown
-        status_breakdown = {status: count for status, count in status_counts}
 
     return {
         "instance_name": resolved_instance,
         "pending_orders": pending_list,
         "stale_orders": stale_list,
         "recent_cancellations": cancelled_list,
-        "status_breakdown": status_breakdown,
+        "status_breakdown": dict(status_breakdown),
         "alert_level": "critical" if len(stale_list) > 5 else "warning" if len(stale_list) > 0 else "ok",
         "timestamp": now.isoformat(),
     }

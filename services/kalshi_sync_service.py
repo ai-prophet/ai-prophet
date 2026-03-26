@@ -126,10 +126,23 @@ def sync_with_kalshi(
         "stale_orders_cancelled": 0,
         "position_drifts": {},
         "errors": [],
+        "realtime_polls": 0,  # Track realtime polling
     }
 
     try:
-        # 1. Sync exchange-backed order statuses
+        # 1. Enhanced: Poll all pending orders immediately for real-time updates
+        logger.info("[SYNC] Polling all pending orders for real-time status updates...")
+        realtime_updated = _poll_pending_orders_realtime(db_engine, adapter, instance_name)
+        results["realtime_polls"] = realtime_updated
+        if realtime_updated > 0:
+            log_sync_event(
+                db_engine,
+                "INFO",
+                f"Real-time polling updated {realtime_updated} pending orders",
+                instance_name,
+            )
+
+        # 2. Sync exchange-backed order statuses (catches any missed by realtime polling)
         logger.info("[SYNC] Checking exchange-backed order statuses with Kalshi...")
         updated = _sync_pending_order_status(db_engine, adapter, instance_name)
         results["pending_orders_updated"] = updated
@@ -205,6 +218,103 @@ def sync_with_kalshi(
     return results
 
 
+def _poll_pending_orders_realtime(
+    db_engine,
+    adapter,
+    instance_name: str,
+) -> int:
+    """Poll all pending orders for immediate status updates.
+
+    This provides real-time order status updates independent of the snapshot sync.
+    Critical for catching fills/cancellations as they happen.
+
+    Returns:
+        Number of orders updated
+    """
+    from ai_prophet_core.betting.db import get_session
+    from ai_prophet_core.betting.db_schema import BettingOrder
+
+    updated_count = 0
+
+    try:
+        with get_session(db_engine) as session:
+            # Get all pending orders
+            pending_orders = (
+                session.query(BettingOrder)
+                .filter(
+                    BettingOrder.instance_name == instance_name,
+                    BettingOrder.status == "PENDING"
+                )
+                .all()
+            )
+
+            if not pending_orders:
+                logger.debug("[REALTIME] No pending orders to poll")
+                return 0
+
+            logger.info("[REALTIME] Polling %d pending orders for status updates", len(pending_orders))
+
+            for order in pending_orders:
+                if not order.exchange_order_id:
+                    logger.debug("[REALTIME] Skipping order %s - no exchange ID", order.order_id[:8])
+                    continue
+
+                try:
+                    # Poll Kalshi directly for current status
+                    order_status = adapter.get_order(order.exchange_order_id)
+
+                    if order_status is None:
+                        logger.debug("[REALTIME] No status returned for order %s", order.order_id[:8])
+                        continue
+
+                    # Check if status changed from PENDING
+                    new_status = order_status.status.value
+                    if new_status != "PENDING":
+                        # Update order with latest information
+                        order.status = new_status
+                        order.filled_shares = float(order_status.filled_shares or 0)
+                        order.fill_price = float(order_status.fill_price or 0)
+                        order.fee_paid = float(order_status.fee or 0)
+                        updated_count += 1
+
+                        logger.info(
+                            "[REALTIME] Order %s updated: %s → %s (filled=%d shares @ $%.2f)",
+                            order.order_id[:8],
+                            "PENDING",
+                            new_status,
+                            order.filled_shares,
+                            order.fill_price
+                        )
+                    elif order_status.filled_shares and float(order_status.filled_shares) > float(order.filled_shares or 0):
+                        # Partial fill update
+                        order.filled_shares = float(order_status.filled_shares)
+                        order.fill_price = float(order_status.fill_price or 0)
+                        order.fee_paid = float(order_status.fee or 0)
+                        updated_count += 1
+
+                        logger.info(
+                            "[REALTIME] Order %s partial fill: %d shares @ $%.2f",
+                            order.order_id[:8],
+                            order.filled_shares,
+                            order.fill_price
+                        )
+
+                except Exception as e:
+                    logger.warning(
+                        "[REALTIME] Failed to poll order %s: %s",
+                        order.order_id[:8], e
+                    )
+
+            if updated_count > 0:
+                session.commit()
+                logger.info("[REALTIME] Updated %d orders from real-time polling", updated_count)
+
+    except Exception as e:
+        logger.error("[REALTIME] Error during real-time polling: %s", e, exc_info=True)
+
+    return updated_count
+
+
 def _update_market_prices(db_engine, adapter, instance_name: str) -> None:
     """Update market prices from Kalshi for active positions."""
     try:
@@ -274,12 +384,11 @@ def _update_market_prices(db_engine, adapter, instance_name: str) -> None:
 
 
 def _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name: str) -> None:
-    """Emit an alert if local position views diverge from live Kalshi."""
+    """Emit an alert only when the cached snapshot itself diverges from live Kalshi."""
     try:
         from ai_prophet_core.betting.db import get_session
-        from ai_prophet_core.betting.db_schema import BettingOrder
         from db_models import TradingPosition
-        from position_replay import load_replayable_orders, replay_orders_by_ticker
+        from kalshi_state import get_latest_position_snapshots
 
         live_positions = {}
         for pos in adapter.get_positions():
@@ -292,46 +401,50 @@ def _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name: str)
             live_positions[ticker] = int(round(signed_qty))
 
         with get_session(db_engine) as session:
-            order_rows = load_replayable_orders(session, BettingOrder, instance_name)
-            snapshot_rows = (
+            kalshi_snapshots = get_latest_position_snapshots(session, instance_name)
+            snapshot_positions = {}
+            for row in (
                 session.query(TradingPosition)
                 .filter(TradingPosition.instance_name == instance_name)
                 .all()
-            )
-
-        ledger_positions = {}
-        for ticker, pos in replay_orders_by_ticker(order_rows).items():
-            side, qty, _avg = pos.current_position()
-            if side is None or qty <= 1e-9:
-                continue
-            signed_qty = qty if side == "yes" else -qty
-            ledger_positions[ticker] = int(round(signed_qty))
-
-        snapshot_positions = {}
-        for row in snapshot_rows:
-            ticker = row.market_id.split("kalshi:", 1)[1] if row.market_id.startswith("kalshi:") else row.market_id
-            signed_qty = row.quantity if (row.contract or "").lower() == "yes" else -row.quantity
-            if abs(signed_qty) <= 1e-9:
-                continue
-            snapshot_positions[ticker] = int(round(signed_qty))
+            ):
+                ticker = row.market_id.split("kalshi:", 1)[1] if row.market_id.startswith("kalshi:") else row.market_id
+                signed_qty = row.quantity if (row.contract or "").lower() == "yes" else -row.quantity
+                if abs(signed_qty) <= 1e-9:
+                    continue
+                snapshot_positions[ticker] = int(round(signed_qty))
 
         mismatches = []
-        all_tickers = set(live_positions.keys()) | set(snapshot_positions.keys()) | set(ledger_positions.keys())
+        all_tickers = set(live_positions.keys()) | set(snapshot_positions.keys()) | set(kalshi_snapshots.keys())
         for ticker in sorted(all_tickers):
             live_qty = live_positions.get(ticker, 0)
             snapshot_qty = snapshot_positions.get(ticker, 0)
-            ledger_qty = ledger_positions.get(ticker, 0)
-            if live_qty != snapshot_qty or live_qty != ledger_qty:
-                mismatches.append(
-                    f"{ticker}: ledger={ledger_qty} snapshot={snapshot_qty} live={live_qty}"
-                )
+            # Fix: Safely get snapshot and handle None case
+            kalshi_snapshot = kalshi_snapshots.get(ticker)
+            kalshi_snapshot_qty = int(round(kalshi_snapshot.signed_quantity)) if kalshi_snapshot else 0
+            if live_qty != snapshot_qty or live_qty != kalshi_snapshot_qty:
+                mismatches.append(f"{ticker}: snapshot={snapshot_qty} recorded={kalshi_snapshot_qty} live={live_qty}")
 
         if mismatches:
             message = "Kalshi position mismatch: " + ", ".join(mismatches[:10])
-            logger.error("[SYNC] %s", message)
-            log_sync_event(db_engine, "ERROR", message, instance_name)
+            logger.critical("[SYNC] CRITICAL: %s - AUTO-CORRECTING NOW", message)
+
+            # IMMEDIATELY fix the mismatches - Kalshi is ALWAYS right
+            from kalshi_state import sync_trading_positions_from_snapshots
+            with get_session(db_engine) as session:
+                corrected = sync_trading_positions_from_snapshots(session, instance_name)
+                if corrected > 0:
+                    logger.info("[SYNC] AUTO-CORRECTED %d positions to match Kalshi truth", corrected)
+                    session.add(SystemLog(
+                        instance_name=instance_name,
+                        level="CRITICAL",
+                        message=f"AUTO-CORRECTED {corrected} position mismatches: {message}",
+                        component="position_auto_correct",
+                        created_at=datetime.now(UTC),
+                    ))
+                    session.commit()
         else:
-            logger.info("[SYNC] local ledger and trading_positions match live Kalshi positions")
+            logger.info("[SYNC] ✓ All positions match between DB and live Kalshi")
 
     except Exception as e:
         logger.error("[SYNC] Failed to compare trading_positions against live Kalshi: %s", e)
@@ -353,9 +466,21 @@ def run_sync_loop(
     from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
     from ai_prophet_core.betting.config import DEFAULT_KALSHI_BASE_URL, KALSHI_BASE_URL_ENV
     from ai_prophet_core.betting.db import create_db_engine
+    from ai_prophet_core.betting.db_schema import Base as CoreBase
+    from db_models import (  # noqa: F401
+        KalshiBalanceSnapshot,
+        KalshiOrderSnapshot,
+        KalshiPositionSnapshot,
+        MarketPriceSnapshot,
+        ModelRun,
+        SystemLog,
+        TradingMarket,
+        TradingPosition,
+    )
 
     # Initialize database
     db_engine = create_db_engine()
+    CoreBase.metadata.create_all(db_engine, checkfirst=True)
 
     # Initialize Kalshi adapter with instance-aware credentials so each sync
     # service talks to the correct Kalshi account.

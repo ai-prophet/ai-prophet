@@ -38,112 +38,24 @@ def _sync_pending_order_status(
     adapter,
     instance_name: str,
 ) -> int:
-    """Check status of exchange-backed orders with Kalshi and update DB accordingly.
-
-    ALSO updates positions in trading_positions table when orders change status.
-
-    Args:
-        db_engine: Database engine
-        adapter: Exchange adapter (KalshiAdapter)
-        instance_name: Instance name to filter orders
-
-    Returns:
-        Number of orders updated
-    """
+    """Refresh local betting_orders from the latest recorded Kalshi snapshots."""
     from ai_prophet_core.betting.db import get_session
     from ai_prophet_core.betting.db_schema import BettingOrder
-    from position_replay import (
-        load_replayable_orders,
-        replay_orders_by_ticker,
-        sync_replayed_positions,
+    from kalshi_state import (
+        record_kalshi_state,
+        sync_betting_orders_from_snapshots,
+        sync_trading_positions_from_snapshots,
     )
-    updated_count = 0
-    tickers_with_updates = set()
 
     with get_session(db_engine) as session:
-        orders_to_sync = (
-            session.query(BettingOrder)
-            .filter(
-                BettingOrder.instance_name == instance_name,
-                BettingOrder.exchange_order_id.isnot(None),
-            )
-            .all()
-        )
+        record_kalshi_state(session, adapter, instance_name)
+        updated_count = sync_betting_orders_from_snapshots(session, BettingOrder, instance_name)
+        position_updates = sync_trading_positions_from_snapshots(session, instance_name)
 
-        for order in orders_to_sync:
-            try:
-                # Get current order status from Kalshi
-                kalshi_order = adapter.get_order(
-                    order.exchange_order_id,
-                    fallback_request=_fallback_request_from_db_order(order),
-                )
-                if kalshi_order:
-                    # Update DB with actual status
-                    old_status = order.status
-                    old_filled = float(order.filled_shares or 0)
-                    new_status = kalshi_order.status.value
-                    new_filled = float(kalshi_order.filled_shares or 0)
-                    new_fill_price = float(kalshi_order.fill_price or 0)
-                    new_fee = float(kalshi_order.fee or 0)
-
-                    if (
-                        old_status != new_status
-                        or abs(old_filled - new_filled) > 0.0001
-                        or float(order.fill_price or 0) != new_fill_price
-                        or float(order.fee_paid or 0) != new_fee
-                    ):
-                        previous_status = order.status
-                        order.status = new_status
-                        order.filled_shares = new_filled
-                        order.fill_price = new_fill_price
-                        order.fee_paid = new_fee
-                        updated_count += 1
-                        tickers_with_updates.add(order.ticker)  # Track which tickers changed
-                        logger.info(
-                            "[ORDER_MGMT] Updated order %s status: %s -> %s (filled: %d -> %d shares)",
-                            order.order_id[:8],
-                            previous_status,
-                            new_status,
-                            int(old_filled),
-                            int(new_filled),
-                        )
-                    else:
-                        order.status = new_status
-                        order.filled_shares = new_filled
-                        order.fill_price = new_fill_price
-                        order.fee_paid = new_fee
-            except Exception as e:
-                logger.warning(
-                    "[ORDER_MGMT] Failed to check order %s status: %s",
-                    order.order_id[:8],
-                    e,
-                )
-
-        if updated_count > 0:
-            session.commit()
-            logger.info("[ORDER_MGMT] Updated %d order statuses from Kalshi", updated_count)
-
-            # CRITICAL: Update positions for tickers that had order changes
-            if tickers_with_updates:
-                logger.info("[ORDER_MGMT] Updating positions for %d tickers with order changes", len(tickers_with_updates))
-
-                replayable_orders = load_replayable_orders(
-                    session,
-                    BettingOrder,
-                    instance_name,
-                    tickers=tickers_with_updates,
-                )
-                positions = replay_orders_by_ticker(replayable_orders)
-                sync_replayed_positions(
-                    session,
-                    instance_name,
-                    positions,
-                    tickers=tickers_with_updates,
-                    log=logger,
-                )
-
-                session.commit()
-                logger.info("[ORDER_MGMT] Updated positions for %d tickers", len(tickers_with_updates))
+    if updated_count > 0:
+        logger.info("[ORDER_MGMT] Updated %d order statuses from Kalshi snapshots", updated_count)
+    if position_updates > 0:
+        logger.info("[ORDER_MGMT] Updated %d trading_positions rows from Kalshi snapshots", position_updates)
 
     return updated_count
 
@@ -304,6 +216,7 @@ def cancel_partially_filled_orders(
                 )
 
             try:
+                current_exchange_status = None
                 # Try to cancel on exchange
                 if order.exchange_order_id and unfilled > 0:
                     try:
@@ -315,8 +228,33 @@ def cancel_partially_filled_orders(
                             e,
                         )
 
-                # Mark as cancelled in database
-                order.status = "CANCELLED"
+                    try:
+                        current_exchange_status = adapter.get_order(
+                            order.exchange_order_id,
+                            fallback_request=_fallback_request_from_db_order(order),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "[ORDER_MGMT] Failed to re-check order %s after cancel attempt: %s",
+                            order.order_id[:8],
+                            e,
+                        )
+
+                if current_exchange_status is not None:
+                    order.status = current_exchange_status.status.value
+                    order.filled_shares = float(current_exchange_status.filled_shares or 0)
+                    if current_exchange_status.fill_price is not None:
+                        order.fill_price = float(current_exchange_status.fill_price)
+                    order.fee_paid = float(current_exchange_status.fee or 0)
+                    if order.status == "PENDING":
+                        logger.info(
+                            "[ORDER_MGMT] Order %s is still pending on Kalshi; leaving it pending in DB",
+                            order.order_id[:8],
+                        )
+                        continue
+
+                if order.status != "CANCELLED":
+                    order.status = "CANCELLED"
                 cancelled_count += 1
 
             except Exception as e:
@@ -340,7 +278,7 @@ def reconcile_positions_with_kalshi(
     tolerance_contracts: int = 5,
     sync_pending_orders: bool = True,
 ) -> dict[str, tuple[int, int]]:
-    """Compare database positions with Kalshi reality and report discrepancies.
+    """Compare cached trading_positions with the latest recorded Kalshi state.
 
     Args:
         db_engine: Database engine
@@ -353,51 +291,29 @@ def reconcile_positions_with_kalshi(
         Dict of ticker -> (db_qty, kalshi_qty) for positions with drift > tolerance
     """
     from ai_prophet_core.betting.db import get_session
-    from ai_prophet_core.betting.db_schema import BettingOrder
     from db_models import SystemLog, TradingPosition
+    from kalshi_state import (
+        build_position_views,
+        record_kalshi_state,
+        sync_trading_positions_from_snapshots,
+    )
 
     # First, sync exchange-backed order statuses with Kalshi if requested
     if sync_pending_orders:
         _sync_pending_order_status(db_engine, adapter, instance_name)
 
-    # Get database positions by replaying orders
-    from position_replay import load_replayable_orders, replay_orders_by_ticker
-
     with get_session(db_engine) as session:
-        orders = load_replayable_orders(session, BettingOrder, instance_name)
+        record_kalshi_state(session, adapter, instance_name)
+        kalshi_views = build_position_views(session, instance_name)
         snapshot_rows = (
             session.query(TradingPosition)
             .filter(TradingPosition.instance_name == instance_name)
             .all()
         )
-
-    db_positions = replay_orders_by_ticker(orders)
-
-    # Get Kalshi positions
-    try:
-        kalshi_data = adapter._session.get(
-            adapter._base_url + "/trade-api/v2/portfolio/positions",
-            headers=adapter._sign_request("GET", "/trade-api/v2/portfolio/positions"),
-            timeout=30,
-        )
-        kalshi_data.raise_for_status()
-        kalshi_positions_raw = kalshi_data.json().get("market_positions", [])
-    except Exception as e:
-        logger.error("[ORDER_MGMT] Failed to fetch Kalshi positions: %s", e)
-        return {}
-
-    # Parse Kalshi positions
-    kalshi_positions = {}
-    kalshi_position_details: dict[str, dict] = {}
-    for pos in kalshi_positions_raw:
-        ticker = pos.get("ticker")
-        if not ticker:
-            continue
-        position_fp = float(pos.get("position_fp", 0) or 0)
-        signed_qty = int(round(position_fp))
-        if signed_qty != 0:
-            kalshi_positions[ticker] = signed_qty
-            kalshi_position_details[ticker] = pos
+        kalshi_positions = {
+            view.ticker: int(round(view.quantity if view.contract == "yes" else -view.quantity))
+            for view in kalshi_views
+        }
 
     snapshot_positions = {}
     for row in snapshot_rows:
@@ -407,18 +323,10 @@ def reconcile_positions_with_kalshi(
 
     # Compare
     drifts = {}
-    all_tickers = set(db_positions.keys()) | set(kalshi_positions.keys())
+    all_tickers = set(snapshot_positions.keys()) | set(kalshi_positions.keys())
 
     for ticker in all_tickers:
-        # Get DB position
-        db_pos = db_positions.get(ticker)
-        if db_pos:
-            side, qty, _ = db_pos.current_position()
-            db_qty = int(round(qty)) if qty > 0 else 0
-            if side == "no":
-                db_qty = -db_qty
-        else:
-            db_qty = 0
+        db_qty = snapshot_positions.get(ticker, 0)
 
         # Get Kalshi position
         kalshi_qty = kalshi_positions.get(ticker, 0)
@@ -436,89 +344,28 @@ def reconcile_positions_with_kalshi(
             )
 
     if drifts:
-        logger.warning("[ORDER_MGMT] Found %d position drifts - AUTO-CORRECTING by trusting Kalshi", len(drifts))
-
-    # Always hard-sync the cached trading_positions snapshot to live Kalshi.
-    # This fixes stale rows even when the replayed ledger already matches live.
-    corrected = 0
-    snapshot_targets = set(snapshot_positions.keys()) | set(kalshi_positions.keys())
+        logger.critical(
+            "[ORDER_MGMT] CRITICAL: Found %d position drifts - This should NOT happen! AUTO-CORRECTING immediately",
+            len(drifts)
+        )
     with get_session(db_engine) as session:
-        existing_positions = {
-            (row.market_id.split("kalshi:", 1)[1] if row.market_id.startswith("kalshi:") else row.market_id): row
-            for row in (
-                session.query(TradingPosition)
-                .filter(TradingPosition.instance_name == instance_name)
-                .all()
-            )
-        }
-
-        for ticker in sorted(snapshot_targets):
-            market_id = f"kalshi:{ticker}"
-            existing_pos = existing_positions.get(ticker)
-            snapshot_qty = snapshot_positions.get(ticker, 0)
-            live_qty = kalshi_positions.get(ticker, 0)
-            if snapshot_qty == live_qty:
-                continue
-
-            if live_qty == 0:
-                if existing_pos:
-                    session.delete(existing_pos)
-                    logger.info(
-                        "[ORDER_MGMT] AUTO-CORRECTED: Deleted position for %s (Kalshi=0, was DB=%d)",
-                        ticker,
-                        snapshot_qty,
-                    )
-                    corrected += 1
-                continue
-
-            kalshi_pos_details = kalshi_position_details.get(ticker)
-            position_side = "yes" if live_qty > 0 else "no"
-            position_qty = abs(live_qty)
-            avg_price = float((kalshi_pos_details or {}).get("average_price_fp", 0.5))
-
-            if existing_pos:
-                existing_pos.contract = position_side
-                existing_pos.quantity = position_qty
-                existing_pos.avg_price = avg_price
-                existing_pos.updated_at = datetime.now(UTC)
-                logger.info(
-                    "[ORDER_MGMT] AUTO-CORRECTED: %s DB=%d → Kalshi=%d %s shares",
-                    ticker,
-                    snapshot_qty,
-                    position_qty,
-                    position_side,
-                )
-            else:
-                session.add(TradingPosition(
-                    instance_name=instance_name,
-                    market_id=market_id,
-                    contract=position_side,
-                    quantity=position_qty,
-                    avg_price=avg_price,
-                    realized_pnl=0.0,
-                    unrealized_pnl=0.0,
-                    max_position=position_qty,
-                    realized_trades=0,
-                    updated_at=datetime.now(UTC),
-                ))
-                logger.info(
-                    "[ORDER_MGMT] AUTO-CORRECTED: Created %s position: %d %s shares",
-                    ticker,
-                    position_qty,
-                    position_side,
-                )
-            corrected += 1
+        corrected = sync_trading_positions_from_snapshots(session, instance_name)
 
         if corrected > 0:
+            drift_details = ", ".join([f"{t}: DB={d[0]} Kalshi={d[1]}" for t, d in list(drifts.items())[:5]])
             session.add(SystemLog(
                 instance_name=instance_name,
-                level="WARNING",
-                message=f"Auto-corrected {corrected} position snapshots by syncing with Kalshi",
+                level="CRITICAL",
+                message=f"AUTO-CORRECTED {corrected} CRITICAL position drifts: {drift_details}",
                 component="order_mgmt",
                 created_at=datetime.now(UTC),
             ))
             session.commit()
-            logger.info("[ORDER_MGMT] Successfully corrected %d position snapshots", corrected)
+            logger.info("[ORDER_MGMT] ✓ Successfully AUTO-CORRECTED %d position drifts", corrected)
+
+            # If we had to correct positions, force a full state snapshot
+            logger.info("[ORDER_MGMT] Recording full Kalshi state after position corrections...")
+            record_kalshi_state(session, adapter, instance_name)
 
     if not drifts:
         logger.info("[ORDER_MGMT] Position reconciliation OK - no drifts detected")

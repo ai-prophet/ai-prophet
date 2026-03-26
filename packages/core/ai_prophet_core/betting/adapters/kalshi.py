@@ -6,8 +6,9 @@ import base64
 import logging
 import os
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urlencode
 
 import requests  # type: ignore[import-untyped]
 
@@ -210,6 +211,12 @@ class KalshiAdapter(ExchangeAdapter):
 
     def get_balance(self) -> Decimal:
         """Fetch available balance from Kalshi (always real, even in dry-run)."""
+        data = self.get_balance_details()
+        balance_cents = data.get("balance", 0)
+        return Decimal(str(balance_cents)) / Decimal("100")
+
+    def get_balance_details(self) -> dict[str, Any]:
+        """Fetch raw balance details from Kalshi."""
         path = "/trade-api/v2/portfolio/balance"
         headers = self._sign_request("GET", path)
 
@@ -220,29 +227,81 @@ class KalshiAdapter(ExchangeAdapter):
                 timeout=self._timeout,
             )
             response.raise_for_status()
-            data = response.json()
-            balance_cents = data.get("balance", 0)
-            return Decimal(str(balance_cents)) / Decimal("100")
+            return response.json()
         except requests.exceptions.RequestException as e:
             logger.error("KalshiAdapter: failed to fetch balance - %s", e)
-            return Decimal("0")
+            return {"balance": 0, "portfolio_value": 0}
 
     def get_positions(self) -> list[dict[str, Any]]:
         """Fetch current positions from Kalshi (always real, even in dry-run)."""
-        path = "/trade-api/v2/portfolio/positions"
-        headers = self._sign_request("GET", path)
+        return self._get_paginated_items(
+            "/trade-api/v2/portfolio/positions",
+            items_key="market_positions",
+        )
+
+    def get_orders(self, *, status: str | None = None, ticker: str | None = None) -> list[dict[str, Any]]:
+        """Fetch current order states from Kalshi."""
+        params: dict[str, Any] = {}
+        if status:
+            params["status"] = status
+        if ticker:
+            params["ticker"] = ticker
+        return self._get_paginated_items(
+            "/trade-api/v2/portfolio/orders",
+            items_key="orders",
+            params=params,
+        )
+
+    def get_historical_orders(self, *, ticker: str | None = None) -> list[dict[str, Any]]:
+        """Fetch archived order states from Kalshi's historical store."""
+        params: dict[str, Any] = {}
+        if ticker:
+            params["ticker"] = ticker
+        return self._get_paginated_items(
+            "/trade-api/v2/historical/orders",
+            items_key="orders",
+            params=params,
+        )
+
+    def _get_paginated_items(
+        self,
+        path: str,
+        *,
+        items_key: str,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        base_params = {"limit": 200}
+        if params:
+            base_params.update({k: v for k, v in params.items() if v not in (None, "")})
+        cursor: str | None = None
+        items: list[dict[str, Any]] = []
 
         try:
-            response = self._session.get(
-                self._base_url + path,
-                headers=headers,
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("market_positions", [])
+            while True:
+                query_params = dict(base_params)
+                if cursor:
+                    query_params["cursor"] = cursor
+                signed_path = path
+                if query_params:
+                    signed_path = f"{path}?{urlencode(query_params)}"
+                headers = self._sign_request("GET", signed_path)
+                response = self._session.get(
+                    self._base_url + path,
+                    headers=headers,
+                    params=query_params,
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                page_items = data.get(items_key, [])
+                if isinstance(page_items, list):
+                    items.extend(page_items)
+                cursor = data.get("cursor")
+                if not cursor or not page_items:
+                    break
+            return items
         except requests.exceptions.RequestException as e:
-            logger.error("KalshiAdapter: failed to fetch positions - %s", e)
+            logger.error("KalshiAdapter: failed GET %s - %s", path, e)
             return []
 
     def get_market(self, ticker: str) -> dict[str, Any] | None:
@@ -383,10 +442,17 @@ class KalshiAdapter(ExchangeAdapter):
             status = OrderStatus.REJECTED
 
         filled_count = order_data.get("fill_count")
+        fill_count_fp = order_data.get("fill_count_fp")
+        if fill_count_fp is not None:
+            filled_count = fill_count_fp
         if filled_count is None:
             initial_count = order_data.get("initial_count")
             remaining_count = order_data.get("remaining_count")
-            if initial_count is not None and remaining_count is not None:
+            initial_count_fp = order_data.get("initial_count_fp")
+            remaining_count_fp = order_data.get("remaining_count_fp")
+            if initial_count_fp is not None and remaining_count_fp is not None:
+                filled_count = Decimal(str(initial_count_fp)) - Decimal(str(remaining_count_fp))
+            elif initial_count is not None and remaining_count is not None:
                 filled_count = Decimal(str(initial_count)) - Decimal(str(remaining_count))
             elif status == OrderStatus.FILLED:
                 filled_count = order_data.get("place_count", int(request.shares))
@@ -396,17 +462,34 @@ class KalshiAdapter(ExchangeAdapter):
         filled_shares = Decimal(str(filled_count))
 
         avg_price_cents = order_data.get("avg_price")
-        if avg_price_cents is None and filled_shares > 0:
-            taker_fill_cost = Decimal(str(order_data.get("taker_fill_cost") or 0))
-            maker_fill_cost = Decimal(str(order_data.get("maker_fill_cost") or 0))
+        avg_price_dollars = order_data.get("avg_price_dollars")
+        if avg_price_dollars is not None:
+            fill_price = Decimal(str(avg_price_dollars))
+        else:
+            if avg_price_cents is None and filled_shares > 0:
+                taker_fill_cost = Decimal(str(order_data.get("taker_fill_cost_dollars") or order_data.get("taker_fill_cost") or 0))
+                maker_fill_cost = Decimal(str(order_data.get("maker_fill_cost_dollars") or order_data.get("maker_fill_cost") or 0))
+                total_fill_cost = taker_fill_cost + maker_fill_cost
+                # Fix: Check for zero division
+                if total_fill_cost > 0 and filled_shares > 0:
+                    fill_price = total_fill_cost / filled_shares
+                else:
+                    fill_price = Decimal("0")
+            else:
+                fill_price = Decimal("0")
+
+            if fill_price <= 0:
+                if avg_price_cents is None:
+                    avg_price_cents = int(round(float(request.limit_price) * 100))
+                fill_price = Decimal(str(avg_price_cents)) / Decimal("100")
+
+        if avg_price_cents is None and filled_shares > 0 and avg_price_dollars is None:
+            taker_fill_cost = Decimal(str(order_data.get("taker_fill_cost_dollars") or order_data.get("taker_fill_cost") or 0))
+            maker_fill_cost = Decimal(str(order_data.get("maker_fill_cost_dollars") or order_data.get("maker_fill_cost") or 0))
             total_fill_cost = taker_fill_cost + maker_fill_cost
-            if total_fill_cost > 0:
+            # Fix: Check for zero division
+            if total_fill_cost > 0 and filled_shares > 0:
                 avg_price_cents = total_fill_cost / filled_shares
-
-        if avg_price_cents is None:
-            avg_price_cents = int(round(float(request.limit_price) * 100))
-
-        fill_price = Decimal(str(avg_price_cents)) / Decimal("100")
         notional = filled_shares * fill_price
 
         if status == OrderStatus.FILLED:
@@ -451,10 +534,18 @@ class KalshiAdapter(ExchangeAdapter):
 
     @staticmethod
     def _coerce_money_amount(key: str, value: Any) -> Decimal:
-        amount = Decimal(str(value))
-        if key.endswith("_cents") or key.endswith("_cent"):
-            return amount / Decimal("100")
-        return amount
+        # Fix: Handle non-numeric values safely
+        try:
+            # Handle None, empty string, or "N/A" type values
+            if value in (None, "", "N/A", "null"):
+                return Decimal("0")
+            amount = Decimal(str(value))
+            if key.endswith("_cents") or key.endswith("_cent"):
+                return amount / Decimal("100")
+            return amount
+        except (ValueError, TypeError, InvalidOperation):
+            logger.debug("Failed to parse fee value %s=%s, treating as 0", key, value)
+            return Decimal("0")
 
     def _extract_fee(self, order_data: dict[str, Any]) -> Decimal:
         total = Decimal("0")

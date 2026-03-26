@@ -12,12 +12,16 @@ import pytest
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
+from sqlalchemy import create_engine
 
 UTC = timezone.utc
 
 from ai_prophet_core.betting import BettingEngine, RebalancingStrategy
 from ai_prophet_core.betting.adapters.base import OrderResult, OrderStatus
+from ai_prophet_core.betting.db import get_session
+from ai_prophet_core.betting.db_schema import Base, BettingOrder
 from ai_prophet_core.betting.strategy import PortfolioSnapshot
+from db_models import TradingPosition
 
 
 class TestPendingOrderHandling:
@@ -176,136 +180,185 @@ class TestBettingEngineWithPending:
         assert result.status == "FILLED"
 
     def test_ledger_state_excludes_pending(self):
-        """Test that _live_ledger_state only counts FILLED orders."""
-        with patch("ai_prophet_core.betting.engine.get_session") as mock_session:
-            # Mock the session context manager
-            mock_ctx = MagicMock()
-            mock_session.return_value.__enter__.return_value = mock_ctx
-
-            # Mock query to check the filter
-            mock_query = MagicMock()
-            mock_ctx.query.return_value = mock_query
-            mock_filter1 = MagicMock()
-            mock_query.filter.return_value = mock_filter1
-            mock_filter2 = MagicMock()
-            mock_filter1.filter.return_value = mock_filter2
-            mock_order = MagicMock()
-            mock_filter2.order_by.return_value = mock_order
-            mock_order.all.return_value = []  # No orders
-
-            # Create engine
-            engine = BettingEngine(
-                strategy=RebalancingStrategy(),
-                db_engine=MagicMock(),  # Mock DB engine
-                dry_run=False,  # Test LIVE mode filter
+        """Test that _live_ledger_state excludes pending quantity from holdings."""
+        engine_db = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine_db)
+        with get_session(engine_db) as session:
+            session.add(
+                BettingOrder(
+                    instance_name="Haifeng",
+                    signal_id=None,
+                    order_id="filled-1",
+                    ticker="TEST",
+                    action="BUY",
+                    side="YES",
+                    count=5,
+                    price_cents=50,
+                    status="FILLED",
+                    filled_shares=5,
+                    fill_price=0.5,
+                    fee_paid=0,
+                    exchange_order_id="ex-filled",
+                    dry_run=False,
+                    created_at=datetime(2026, 3, 26, 20, 0, tzinfo=UTC),
+                )
             )
+            session.add(
+                BettingOrder(
+                    instance_name="Haifeng",
+                    signal_id=None,
+                    order_id="pending-1",
+                    ticker="TEST",
+                    action="BUY",
+                    side="YES",
+                    count=99,
+                    price_cents=60,
+                    status="PENDING",
+                    filled_shares=0,
+                    fill_price=0,
+                    fee_paid=0,
+                    exchange_order_id="ex-pending",
+                    dry_run=False,
+                    created_at=datetime(2026, 3, 26, 20, 5, tzinfo=UTC),
+                )
+            )
+            session.commit()
 
-            # Call _live_ledger_state
-            with patch("ai_prophet_core.betting.engine._get_position_replay") as mock_replay:
-                mock_replay.return_value = (lambda x: {}, lambda x: (0, 0, 0))
-                side, qty, cash = engine._live_ledger_state("TEST")
+        engine = BettingEngine(
+            strategy=RebalancingStrategy(),
+            db_engine=engine_db,
+            dry_run=False,
+            instance_name="Haifeng",
+        )
+        with patch.object(engine, "_get_adapter") as mock_get_adapter:
+            mock_get_adapter.return_value.get_balance.return_value = Decimal("100")
+            side, qty, cash = engine._live_ledger_state("TEST")
 
-            # Verify that only FILLED orders were queried (not PENDING)
-            # In LIVE mode, should only query for FILLED status
-            filter_calls = mock_filter1.filter.call_args_list
-            assert len(filter_calls) > 0
-            # Check that the status filter includes only FILLED (not PENDING)
-            status_filter = filter_calls[0][0][0]
-            # The actual SQLAlchemy filter object is complex, but we can at least
-            # verify the method was called
+        assert side == "yes"
+        assert qty == 5
+        assert cash == Decimal("100")
 
 
 class TestOrderManagementSync:
     """Test order management and sync utilities."""
 
     def test_sync_pending_order_status(self):
-        """Test syncing pending order status with exchange."""
+        """Test syncing pending orders from Kalshi snapshots."""
         from services.order_management import _sync_pending_order_status
 
-        with patch("services.order_management.get_session") as mock_session:
-            # Mock pending orders in DB
-            mock_order = MagicMock()
-            mock_order.exchange_order_id = "kalshi-123"
-            mock_order.order_id = "order-456"
-            mock_order.status = "PENDING"
-            mock_order.filled_shares = 0
+        class _Adapter:
+            def get_balance_details(self):
+                return {"balance": 10000, "portfolio_value": 10500}
 
-            mock_ctx = MagicMock()
-            mock_session.return_value.__enter__.return_value = mock_ctx
-            mock_query = MagicMock()
-            mock_ctx.query.return_value = mock_query
-            mock_filter1 = MagicMock()
-            mock_query.filter.return_value = mock_filter1
-            mock_filter2 = MagicMock()
-            mock_filter1.filter.return_value = mock_filter2
-            mock_filter2.all.return_value = [mock_order]
+            def get_positions(self):
+                return [
+                    {
+                        "ticker": "TEST",
+                        "position_fp": "10.00",
+                        "market_exposure_dollars": "5.0000",
+                        "realized_pnl_dollars": "0.0000",
+                        "fees_paid_dollars": "0.1000",
+                        "total_cost_dollars": "5.0000",
+                        "total_cost_shares_fp": "10.00",
+                        "resting_orders_count": 0,
+                    }
+                ]
 
-            # Mock adapter to return filled status
-            mock_adapter = MagicMock()
-            mock_adapter.get_order.return_value = OrderResult(
-                order_id="order-456",
-                intent_id="bet-test",
-                status=OrderStatus.FILLED,
-                filled_shares=Decimal("10"),
-                fill_price=Decimal("0.50"),
-                exchange_order_id="kalshi-123",
+            def get_orders(self, *, status=None, ticker=None):
+                if status == "executed":
+                    return [{
+                        "order_id": "kalshi-123",
+                        "client_order_id": "order-456",
+                        "ticker": "TEST",
+                        "side": "yes",
+                        "action": "buy",
+                        "status": "executed",
+                        "fill_count_fp": "10.00",
+                        "initial_count_fp": "10.00",
+                        "remaining_count_fp": "0.00",
+                        "yes_price_dollars": "0.5000",
+                        "taker_fill_cost_dollars": "5.0000",
+                        "created_time": "2026-03-26T20:00:00Z",
+                        "last_update_time": "2026-03-26T20:10:00Z",
+                    }]
+                return []
+
+            def get_historical_orders(self, *, ticker=None):
+                return []
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        with get_session(engine) as session:
+            session.add(
+                BettingOrder(
+                    instance_name="TestInstance",
+                    signal_id=None,
+                    order_id="order-456",
+                    ticker="TEST",
+                    action="BUY",
+                    side="YES",
+                    count=10,
+                    price_cents=50,
+                    status="PENDING",
+                    filled_shares=0,
+                    fill_price=0,
+                    fee_paid=0,
+                    exchange_order_id="kalshi-123",
+                    dry_run=False,
+                    created_at=datetime(2026, 3, 26, 20, 0, tzinfo=UTC),
+                )
             )
+            session.commit()
 
-            # Run sync
-            updated = _sync_pending_order_status(
-                MagicMock(),  # db_engine
-                mock_adapter,
-                "TestInstance",
-            )
-
-            # Verify order was updated
-            assert mock_order.status == "FILLED"
-            assert mock_order.filled_shares == 10.0
-            assert mock_order.fill_price == 0.50
+        updated = _sync_pending_order_status(engine, _Adapter(), "TestInstance")
+        assert updated == 1
+        with get_session(engine) as session:
+            order = session.query(BettingOrder).filter(BettingOrder.order_id == "order-456").one()
+            assert order.status == "FILLED"
+            assert order.filled_shares == 10.0
+            assert order.fill_price == 0.50
 
     def test_reconcile_positions_only_counts_filled(self):
-        """Test that position reconciliation only counts FILLED orders."""
+        """Test reconciliation mirrors latest Kalshi snapshot state."""
         from services.order_management import reconcile_positions_with_kalshi
 
-        with patch("services.order_management.get_session") as mock_session:
-            with patch("services.order_management._sync_pending_order_status") as mock_sync:
-                with patch("services.order_management.replay_orders_by_ticker") as mock_replay:
-                    # Mock DB session
-                    mock_ctx = MagicMock()
-                    mock_session.return_value.__enter__.return_value = mock_ctx
-                    mock_query = MagicMock()
-                    mock_ctx.query.return_value = mock_query
-                    mock_filter1 = MagicMock()
-                    mock_query.filter.return_value = mock_filter1
-                    mock_filter2 = MagicMock()
-                    mock_filter1.filter.return_value = mock_filter2
-                    mock_order = MagicMock()
-                    mock_filter2.order_by.return_value = mock_order
-                    mock_order.all.return_value = []  # No orders
+        class _Adapter:
+            def get_balance_details(self):
+                return {"balance": 10000, "portfolio_value": 10500}
 
-                    # Mock replay to return empty positions
-                    mock_replay.return_value = {}
+            def get_positions(self):
+                return [{
+                    "ticker": "TEST",
+                    "position_fp": "-2.00",
+                    "market_exposure_dollars": "1.2000",
+                    "realized_pnl_dollars": "0.0000",
+                    "fees_paid_dollars": "0.0200",
+                    "total_cost_dollars": "1.0000",
+                    "total_cost_shares_fp": "2.00",
+                    "resting_orders_count": 0,
+                }]
 
-                    # Mock adapter
-                    mock_adapter = MagicMock()
-                    mock_adapter._session = MagicMock()
-                    mock_response = MagicMock()
-                    mock_response.json.return_value = {"market_positions": []}
-                    mock_adapter._session.get.return_value = mock_response
-                    mock_adapter._sign_request.return_value = {}
+            def get_orders(self, *, status=None, ticker=None):
+                return []
 
-                    # Run reconciliation
-                    drifts = reconcile_positions_with_kalshi(
-                        MagicMock(),  # db_engine
-                        mock_adapter,
-                        "TestInstance",
-                    )
+            def get_historical_orders(self, *, ticker=None):
+                return []
 
-                    # Verify sync was called
-                    mock_sync.assert_called_once()
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
 
-                    # Should have no drifts with empty positions
-                    assert drifts == {}
+        drifts = reconcile_positions_with_kalshi(
+            engine,
+            _Adapter(),
+            "TestInstance",
+            tolerance_contracts=0,
+            sync_pending_orders=False,
+        )
+        assert drifts == {"TEST": (0, -2)}
+        with get_session(engine) as session:
+            pos = session.query(TradingPosition).filter(TradingPosition.market_id == "kalshi:TEST").one()
+            assert pos.contract == "no"
+            assert pos.quantity == 2.0
 
 
 class TestKalshiSyncService:

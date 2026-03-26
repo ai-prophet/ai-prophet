@@ -142,3 +142,84 @@ class MarketPriceSnapshot(Base):
         Index("ix_price_snap_instance_ticker", "instance_name", "ticker"),
         Index("ix_price_snap_instance_ts", "instance_name", "timestamp"),
     )
+
+
+class KalshiBalanceSnapshot(Base):
+    """Append-only snapshots of live Kalshi balance state."""
+
+    __tablename__ = "kalshi_balance_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    balance: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    portfolio_value: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    updated_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "snapshot_ts", name="uq_kalshi_balance_snapshot_instance_ts"),
+        Index("ix_kalshi_balance_snapshot_instance_ts", "instance_name", "snapshot_ts"),
+    )
+
+
+class KalshiPositionSnapshot(Base):
+    """Append-only snapshots of live Kalshi positions."""
+
+    __tablename__ = "kalshi_position_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    ticker: Mapped[str] = mapped_column(String(255), nullable=False)
+    market_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    signed_quantity: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    market_exposure: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    fees_paid: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    total_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_cost_shares: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_traded: Mapped[float | None] = mapped_column(Float, nullable=True)
+    resting_orders_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "ticker", "snapshot_ts", name="uq_kalshi_position_snapshot_instance_ticker_ts"),
+        Index("ix_kalshi_position_snapshot_instance_ticker_ts", "instance_name", "ticker", "snapshot_ts"),
+        Index("ix_kalshi_position_snapshot_instance_ts", "instance_name", "snapshot_ts"),
+    )
+
+
+class KalshiOrderSnapshot(Base):
+    """Deduplicated snapshots of live and historical Kalshi order states."""
+
+    __tablename__ = "kalshi_order_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    order_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    client_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ticker: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    initial_count: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    fill_count: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    remaining_count: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_paid: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="portfolio")
+    created_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_update_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "order_id", "last_update_ts", name="uq_kalshi_order_snapshot_instance_order_update"),
+        Index("ix_kalshi_order_snapshot_instance_ticker", "instance_name", "ticker"),
+        Index("ix_kalshi_order_snapshot_instance_status", "instance_name", "status"),
+        Index("ix_kalshi_order_snapshot_instance_update", "instance_name", "last_update_ts"),
+    )

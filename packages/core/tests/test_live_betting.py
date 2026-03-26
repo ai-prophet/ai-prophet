@@ -410,6 +410,48 @@ def test_get_order_uses_fallback_request_when_poll_response_omits_fill_fields(mo
     assert result.fill_price == Decimal("0.44")
 
 
+def test_parse_order_executed_uses_fixed_point_fields():
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {
+        "order": {
+            "status": "executed",
+            "order_id": "ex-fixed",
+            "fill_count_fp": "2.00",
+            "taker_fill_cost_dollars": "1.2000",
+            "taker_fees_dollars": "0.0300",
+        }
+    }
+    result = adapter._parse_order_response(_make_order(), data)
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_shares == Decimal("2.00")
+    assert result.fill_price == Decimal("0.6")
+    assert result.fee == Decimal("0.03")
+
+
+def test_get_orders_paginates(monkeypatch):
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    monkeypatch.setattr(adapter, "_sign_request", lambda *_args, **_kwargs: {})
+
+    first = Mock()
+    first.raise_for_status.return_value = None
+    first.json.return_value = {
+        "orders": [{"order_id": "one"}],
+        "cursor": "next-page",
+    }
+    second = Mock()
+    second.raise_for_status.return_value = None
+    second.json.return_value = {
+        "orders": [{"order_id": "two"}],
+        "cursor": "",
+    }
+
+    responses = iter([first, second])
+    monkeypatch.setattr(adapter._session, "get", lambda *_args, **_kwargs: next(responses))
+
+    orders = adapter.get_orders(status="resting")
+    assert [order["order_id"] for order in orders] == ["one", "two"]
+
+
 def test_poll_order_fills_after_retries(monkeypatch):
     """Engine should poll pending orders and detect fill."""
     engine = BettingEngine(db_engine=None, dry_run=False, enabled=True)
