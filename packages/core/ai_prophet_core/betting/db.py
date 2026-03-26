@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.exc import DisconnectionError, OperationalError
+from sqlalchemy.exc import DisconnectionError, OperationalError, TimeoutError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -71,28 +72,53 @@ def _get_factory(engine: Engine) -> sessionmaker:
     return _session_factories[key]
 
 
+def _session_retry_settings() -> tuple[int, float]:
+    retries = max(0, int(os.getenv("DB_SESSION_ACQUIRE_RETRIES", "2")))
+    backoff_sec = max(0.0, float(os.getenv("DB_SESSION_ACQUIRE_BACKOFF_SEC", "1.5")))
+    return retries, backoff_sec
+
+
 @contextmanager
 def get_session(engine: Engine):
-    """Yield a DB session. Retries once on transient connection errors.
+    """Yield a DB session. Retries on transient connection/pool pressure errors.
 
-    On OperationalError / DisconnectionError the failed session is discarded,
-    the pool connection is invalidated, and a fresh session is created for a
-    single retry — all before yielding, so the @contextmanager contract
+    On OperationalError / DisconnectionError / TimeoutError the failed session
+    is discarded and retried before yielding, so the @contextmanager contract
     (exactly one yield) is preserved.
     """
     factory = _get_factory(engine)
-    session = factory()
-    try:
-        # Test the connection before yielding — if it's dead, the retry
-        # below creates a fresh session before the caller ever sees it.
-        session.connection()
-    except (OperationalError, DisconnectionError) as exc:
-        logger.warning("DB connection stale, retrying with fresh session: %s", exc)
-        session.close()
-        engine.dispose()  # drop all pooled connections
+    retries, backoff_sec = _session_retry_settings()
+    max_attempts = retries + 1
+    session = None
+
+    for attempt in range(1, max_attempts + 1):
         session = factory()
+        try:
+            # Test the connection before yielding so pool exhaustion or stale
+            # connections are retried before the caller touches the session.
+            session.connection()
+            break
+        except (OperationalError, DisconnectionError, TimeoutError) as exc:
+            session.close()
+            if isinstance(exc, (OperationalError, DisconnectionError)):
+                engine.dispose()  # drop pooled stale connections before retry
+
+            if attempt >= max_attempts:
+                raise
+
+            wait_sec = backoff_sec * attempt
+            logger.warning(
+                "DB session acquisition attempt %d/%d failed, retrying in %.1fs: %s",
+                attempt,
+                max_attempts,
+                wait_sec,
+                exc,
+            )
+            if wait_sec > 0:
+                time.sleep(wait_sec)
 
     try:
+        assert session is not None
         yield session
         session.commit()
     except Exception:
