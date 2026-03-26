@@ -47,10 +47,32 @@ class SharedEnvConfig:
     @staticmethod
     def get_kalshi_config():
         """Get Kalshi API configuration from shared env vars."""
+        # Check instance-specific variables first
+        instance_name = os.getenv("TRADING_INSTANCE_NAME", "Haifeng").upper()
+
+        # Try instance-specific, then shared, then general
+        api_key_id = (
+            os.getenv(f"KALSHI_API_KEY_ID_{instance_name}") or
+            SharedEnvConfig.get_env("KALSHI_API_KEY_ID") or
+            ""
+        )
+
+        private_key = (
+            os.getenv(f"KALSHI_PRIVATE_KEY_B64_{instance_name}") or
+            SharedEnvConfig.get_env("KALSHI_PRIVATE_KEY_B64") or
+            ""
+        )
+
+        base_url = (
+            os.getenv(f"KALSHI_BASE_URL_{instance_name}") or
+            SharedEnvConfig.get_env("KALSHI_BASE_URL", "https://api.elections.kalshi.com") or
+            "https://api.elections.kalshi.com"
+        )
+
         return {
-            "api_key_id": SharedEnvConfig.get_env("KALSHI_API_KEY_ID"),
-            "private_key_base64": SharedEnvConfig.get_env("KALSHI_PRIVATE_KEY_B64"),
-            "base_url": SharedEnvConfig.get_env("KALSHI_BASE_URL", "https://api.markets.kalshi.com"),
+            "api_key_id": api_key_id,
+            "private_key_base64": private_key,
+            "base_url": base_url,
         }
 
     @staticmethod
