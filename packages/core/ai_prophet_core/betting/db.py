@@ -45,10 +45,10 @@ def create_db_engine(
         logger.warning("Using NullPool - this will be very slow! Consider using a small pool instead.")
         return create_engine(url, echo=echo, poolclass=NullPool, connect_args=connect_args, **kwargs)
 
-    # Use a reasonable pool size for concurrent operations
-    # Default to 5 connections with 10 overflow for better concurrency
-    pool_size = kwargs.pop("pool_size", int(os.getenv("DB_POOL_SIZE", "5")))
-    max_overflow = kwargs.pop("max_overflow", int(os.getenv("DB_MAX_OVERFLOW", "10")))
+    # Keep the default pool conservative so multiple workers/services do not
+    # exhaust the session pooler during bursts or rolling deploys.
+    pool_size = kwargs.pop("pool_size", int(os.getenv("DB_POOL_SIZE", "2")))
+    max_overflow = kwargs.pop("max_overflow", int(os.getenv("DB_MAX_OVERFLOW", "2")))
     return create_engine(
         url,
         echo=echo,

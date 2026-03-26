@@ -311,6 +311,31 @@ class KalshiAdapter(ExchangeAdapter):
             )
             return None
 
+    def cancel_order(self, exchange_order_id: str) -> bool:
+        """Cancel a live order on Kalshi."""
+        if self._dry_run:
+            return True
+
+        path = f"/trade-api/v2/portfolio/orders/{exchange_order_id}"
+        headers = self._sign_request("DELETE", path)
+
+        try:
+            response = self._session.delete(
+                self._base_url + path,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            logger.info("KalshiAdapter: cancelled order %s", exchange_order_id)
+            return True
+        except requests.exceptions.RequestException as e:
+            logger.warning(
+                "KalshiAdapter: failed to cancel order %s - %s",
+                exchange_order_id,
+                e,
+            )
+            return False
+
     def close(self) -> None:
         self._session.close()
 

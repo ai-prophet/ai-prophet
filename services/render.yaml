@@ -74,9 +74,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "5"
+        value: "2"
       - key: DB_MAX_OVERFLOW
-        value: "10"
+        value: "2"
       - fromGroup: kalshi-trading-shared
 
   # ── Kalshi Sync Service — Haifeng ────────────────────────────
@@ -151,9 +151,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "5"
+        value: "2"
       - key: DB_MAX_OVERFLOW
-        value: "10"
+        value: "2"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — GPT-5.4 (dry-run) ──────────────────────
@@ -189,9 +189,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "5"
+        value: "2"
       - key: DB_MAX_OVERFLOW
-        value: "10"
+        value: "2"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Grok 4 (dry-run) ────────────────────────
@@ -227,9 +227,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "5"
+        value: "2"
       - key: DB_MAX_OVERFLOW
-        value: "10"
+        value: "2"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Claude Opus 4.6 (dry-run) ───────────────
@@ -265,9 +265,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "5"
+        value: "2"
       - key: DB_MAX_OVERFLOW
-        value: "10"
+        value: "2"
       - fromGroup: kalshi-trading-shared
 
   # ── API Backend ──────────────────────────────────────────────
