@@ -45,7 +45,12 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from position_replay import replay_orders_by_ticker, summarize_replayed_positions
+from position_replay import (
+    load_replayable_orders,
+    replay_orders_by_ticker,
+    summarize_replayed_positions,
+    sync_replayed_positions,
+)
 
 load_dotenv()
 
@@ -283,17 +288,10 @@ def _update_positions(db_engine) -> None:
     try:
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
-        from db_models import TradingMarket, TradingPosition
+        from db_models import TradingMarket
 
-        now = datetime.now(UTC)
         with get_session(db_engine) as session:
-            orders = (
-                session.query(BettingOrder)
-                .filter(BettingOrder.instance_name == INSTANCE_NAME)
-                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
-                .order_by(BettingOrder.created_at.asc())
-                .all()
-            )
+            orders = load_replayable_orders(session, BettingOrder, INSTANCE_NAME)
             markets_by_ticker = {
                 m.ticker: m
                 for m in session.query(TradingMarket)
@@ -303,62 +301,15 @@ def _update_positions(db_engine) -> None:
             }
 
         positions = replay_orders_by_ticker(orders)
-        active_market_ids = {
-            f"kalshi:{ticker}"
-            for ticker, pos in positions.items()
-            if pos.current_position()[0] is not None and pos.current_position()[1] >= 0.001
-        }
 
         with get_session(db_engine) as session:
-            (
-                session.query(TradingPosition)
-                .filter(TradingPosition.instance_name == INSTANCE_NAME)
-                .filter(
-                    ~TradingPosition.market_id.in_(active_market_ids)
-                    if active_market_ids
-                    else True
-                )
-                .delete(synchronize_session=False)
+            sync_replayed_positions(
+                session,
+                INSTANCE_NAME,
+                positions,
+                markets_by_ticker=markets_by_ticker,
+                log=logger,
             )
-            for ticker, pos in positions.items():
-                side, qty, avg_price = pos.current_position()
-                if side is None or qty < 0.001:
-                    continue
-                market_id = f"kalshi:{ticker}"
-                market = markets_by_ticker.get(ticker)
-                current_bid = None
-                if market:
-                    current_bid = (
-                        market.yes_bid or (1.0 - market.no_ask if market.no_ask else None)
-                        if side == "yes"
-                        else market.no_bid or (1.0 - market.yes_ask if market.yes_ask else None)
-                    )
-                unrealized = 0.0 if current_bid is None else (current_bid - avg_price) * qty
-                existing = session.query(TradingPosition).filter_by(
-                    instance_name=INSTANCE_NAME, market_id=market_id
-                ).first()
-                if existing:
-                    existing.contract = side
-                    existing.quantity = qty
-                    existing.avg_price = round(avg_price, 4)
-                    existing.realized_pnl = round(pos.realized_pnl, 4)
-                    existing.unrealized_pnl = round(unrealized, 4)
-                    existing.max_position = max(existing.max_position or 0.0, pos.max_position, qty)
-                    existing.realized_trades = pos.realized_trades
-                    existing.updated_at = now
-                else:
-                    session.add(TradingPosition(
-                        instance_name=INSTANCE_NAME,
-                        market_id=market_id,
-                        contract=side,
-                        quantity=qty,
-                        avg_price=round(avg_price, 4),
-                        realized_pnl=round(pos.realized_pnl, 4),
-                        unrealized_pnl=round(unrealized, 4),
-                        max_position=max(pos.max_position, qty),
-                        realized_trades=pos.realized_trades,
-                        updated_at=now,
-                    ))
         logger.info("Updated %d positions", len(positions))
     except Exception as e:
         logger.warning("Failed to update positions: %s", e)
@@ -370,15 +321,7 @@ def _build_ledger_state(db_engine) -> dict | None:
         from ai_prophet_core.betting.db_schema import BettingOrder
 
         with get_session(db_engine) as session:
-            # Only count FILLED and DRY_RUN orders, not PENDING
-            # This ensures consistency with the main worker's ledger state
-            orders = (
-                session.query(BettingOrder)
-                .filter(BettingOrder.instance_name == INSTANCE_NAME)
-                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
-                .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
-                .all()
-            )
+            orders = load_replayable_orders(session, BettingOrder, INSTANCE_NAME)
         positions = replay_orders_by_ticker(orders)
         capital_deployed, total_realized, open_position_count = summarize_replayed_positions(positions)
         cash = (

@@ -48,7 +48,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from instance_config import env_suffix, get_current_instance_name, get_instance_env
-from position_replay import replay_orders_by_ticker, summarize_replayed_positions
+from position_replay import (
+    load_replayable_orders,
+    replay_orders_by_ticker,
+    summarize_replayed_positions,
+    sync_replayed_positions,
+)
 
 load_dotenv()
 
@@ -384,10 +389,7 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
     try:
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
-        from db_models import TradingMarket, TradingPosition
-        from sqlalchemy import or_
-
-        now = datetime.now(UTC)
+        from db_models import TradingMarket
 
         with get_session(db_engine) as session:
             market_rows = (
@@ -399,88 +401,16 @@ def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
                 market.ticker: market for market in market_rows if market.ticker
             }
 
-            # Get all filled/dry-run orders grouped by ticker
-            orders = (
-                session.query(BettingOrder)
-                .filter(BettingOrder.instance_name == instance_name)
-                .filter(
-                    or_(
-                        BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
-                        BettingOrder.filled_shares > 0,
-                    )
-                )
-                .order_by(BettingOrder.created_at.asc())
-                .all()
-            )
+            orders = load_replayable_orders(session, BettingOrder, instance_name)
 
             positions = replay_orders_by_ticker(orders)
-            for ticker, pos in positions.items():
-                for warning in pos.warnings:
-                    logger.warning("Position replay warning for %s (%s): %s", ticker, instance_name, warning)
-
-            active_market_ids = {
-                f"kalshi:{ticker}"
-                for ticker, pos in positions.items()
-                if pos.current_position()[0] is not None and pos.current_position()[1] >= 0.001
-            }
-
-            # Drop orphaned snapshot rows so the dashboard mirrors the cleaned
-            # order ledger exactly after repairs or manual data cleanup.
-            (
-                session.query(TradingPosition)
-                .filter(TradingPosition.instance_name == instance_name)
-                .filter(~TradingPosition.market_id.in_(active_market_ids) if active_market_ids else True)
-                .delete(synchronize_session=False)
+            sync_replayed_positions(
+                session,
+                instance_name,
+                positions,
+                markets_by_ticker=markets_by_ticker,
+                log=logger,
             )
-
-            # Upsert into trading_positions
-            for ticker, pos in positions.items():
-                side, qty, avg_price = pos.current_position()
-                if side is None or qty < 0.001:
-                    continue
-
-                market_id = f"kalshi:{ticker}"
-                market = markets_by_ticker.get(ticker)
-
-                current_bid = None
-                if market is not None:
-                    if side == "yes":
-                        current_bid = market.yes_bid
-                        if current_bid is None and market.no_ask is not None:
-                            current_bid = 1.0 - market.no_ask
-                    else:
-                        current_bid = market.no_bid
-                        if current_bid is None and market.yes_ask is not None:
-                            current_bid = 1.0 - market.yes_ask
-
-                unrealized = 0.0 if current_bid is None else (current_bid - avg_price) * qty
-
-                existing = session.query(TradingPosition).filter_by(
-                    instance_name=instance_name,
-                    market_id=market_id
-                ).first()
-                if existing:
-                    existing.contract = side
-                    existing.quantity = qty
-                    existing.avg_price = round(avg_price, 4)
-                    existing.realized_pnl = round(pos.realized_pnl, 4)
-                    existing.unrealized_pnl = round(unrealized, 4)
-                    existing.max_position = max(existing.max_position or 0.0, pos.max_position, qty)
-                    existing.realized_trades = pos.realized_trades
-                    existing.updated_at = now
-                else:
-                    session.add(TradingPosition(
-                        instance_name=instance_name,
-                        market_id=market_id,
-                        contract=side,
-                        quantity=qty,
-                        avg_price=round(avg_price, 4),
-                        realized_pnl=round(pos.realized_pnl, 4),
-                        unrealized_pnl=round(unrealized, 4),
-                        max_position=max(pos.max_position, qty),
-                        realized_trades=pos.realized_trades,
-                        updated_at=now,
-                    ))
 
         logger.info("Updated %d positions from order history", len(positions))
     except Exception as e:

@@ -74,7 +74,7 @@ services:
       - fromGroup: kalshi-trading-shared
 
   # ── Kalshi Sync Service — Haifeng ────────────────────────────
-  # Independent service to sync positions with Kalshi every 30 minutes
+  # Independent service to sync positions with Kalshi on SYNC_INTERVAL_SEC
   - type: worker
     name: kalshi-sync-service-haifeng
     runtime: python
@@ -82,10 +82,10 @@ services:
     plan: starter
     rootDir: .
     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
-    startCommand: python services/kalshi_sync_service.py --instance Haifeng --interval 1800
+    startCommand: python services/kalshi_sync_service.py --instance Haifeng
     envVars:
       - key: SYNC_INTERVAL_SEC
-        value: "1800"  # 30 minutes
+        value: "600"  # 10 minutes
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -93,7 +93,7 @@ services:
       - fromGroup: kalshi-trading-shared
 
   # ── Kalshi Sync Service — Jibang ─────────────────────────────
-  # Independent service to sync positions with Kalshi every 30 minutes
+  # Independent service to sync positions with Kalshi on SYNC_INTERVAL_SEC
   - type: worker
     name: kalshi-sync-service-jibang
     runtime: python
@@ -101,10 +101,10 @@ services:
     plan: starter
     rootDir: .
     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
-    startCommand: python services/kalshi_sync_service.py --instance Jibang --interval 1800
+    startCommand: python services/kalshi_sync_service.py --instance Jibang
     envVars:
       - key: SYNC_INTERVAL_SEC
-        value: "1800"  # 30 minutes
+        value: "600"  # 10 minutes
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64

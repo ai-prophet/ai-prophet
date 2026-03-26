@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -127,6 +128,128 @@ def replay_orders_by_ticker(orders: Iterable[Any]) -> dict[str, InventoryPositio
         pos = positions.setdefault(ticker, InventoryPosition())
         pos.apply_order(order, ticker=ticker)
     return positions
+
+
+def load_replayable_orders(
+    session: Any,
+    betting_order_model: Any,
+    instance_name: str,
+    *,
+    tickers: Iterable[str] | None = None,
+) -> list[Any]:
+    """Load all orders whose executed quantity should affect replayed inventory."""
+    from sqlalchemy import or_
+
+    query = (
+        session.query(betting_order_model)
+        .filter(betting_order_model.instance_name == instance_name)
+        .filter(
+            or_(
+                betting_order_model.status.in_(["FILLED", "DRY_RUN"]),
+                betting_order_model.filled_shares > 0,
+            )
+        )
+    )
+
+    ticker_list = sorted({ticker for ticker in (tickers or []) if ticker})
+    if tickers is not None:
+        if not ticker_list:
+            return []
+        query = query.filter(betting_order_model.ticker.in_(ticker_list))
+
+    return query.order_by(betting_order_model.created_at.asc(), betting_order_model.id.asc()).all()
+
+
+def sync_replayed_positions(
+    session: Any,
+    instance_name: str,
+    positions: dict[str, InventoryPosition],
+    *,
+    markets_by_ticker: dict[str, Any] | None = None,
+    tickers: Iterable[str] | None = None,
+    log: Any | None = None,
+) -> None:
+    """Persist replayed positions into trading_positions using one shared policy."""
+    from db_models import TradingPosition
+
+    markets_by_ticker = markets_by_ticker or {}
+    now = datetime.now(UTC)
+
+    if tickers is None:
+        target_tickers = set(positions.keys())
+        existing_rows = (
+            session.query(TradingPosition)
+            .filter(TradingPosition.instance_name == instance_name)
+            .all()
+        )
+        for row in existing_rows:
+            ticker = row.market_id.split("kalshi:", 1)[1] if row.market_id.startswith("kalshi:") else row.market_id
+            target_tickers.add(ticker)
+    else:
+        target_tickers = {ticker for ticker in tickers if ticker}
+        if not target_tickers:
+            return
+        market_ids = [f"kalshi:{ticker}" for ticker in sorted(target_tickers)]
+        existing_rows = (
+            session.query(TradingPosition)
+            .filter(TradingPosition.instance_name == instance_name)
+            .filter(TradingPosition.market_id.in_(market_ids))
+            .all()
+        )
+
+    existing_by_ticker = {
+        (row.market_id.split("kalshi:", 1)[1] if row.market_id.startswith("kalshi:") else row.market_id): row
+        for row in existing_rows
+    }
+
+    for ticker in sorted(target_tickers):
+        pos = positions.get(ticker)
+        if pos and log:
+            for warning in pos.warnings:
+                log.warning("Position replay warning for %s (%s): %s", ticker, instance_name, warning)
+
+        existing = existing_by_ticker.get(ticker)
+        side, qty, avg_price = pos.current_position() if pos else (None, 0.0, 0.0)
+        if side is None or qty < 0.001:
+            if existing:
+                session.delete(existing)
+            continue
+
+        market = markets_by_ticker.get(ticker)
+        current_bid = None
+        if market is not None:
+            if side == "yes":
+                current_bid = market.yes_bid
+                if current_bid is None and market.no_ask is not None:
+                    current_bid = 1.0 - market.no_ask
+            else:
+                current_bid = market.no_bid
+                if current_bid is None and market.yes_ask is not None:
+                    current_bid = 1.0 - market.yes_ask
+
+        unrealized = 0.0 if current_bid is None else (current_bid - avg_price) * qty
+        if existing:
+            existing.contract = side
+            existing.quantity = qty
+            existing.avg_price = round(avg_price, 4)
+            existing.realized_pnl = round(pos.realized_pnl, 4)
+            existing.unrealized_pnl = round(unrealized, 4)
+            existing.max_position = max(existing.max_position or 0.0, pos.max_position, qty)
+            existing.realized_trades = pos.realized_trades
+            existing.updated_at = now
+        else:
+            session.add(TradingPosition(
+                instance_name=instance_name,
+                market_id=f"kalshi:{ticker}",
+                contract=side,
+                quantity=qty,
+                avg_price=round(avg_price, 4),
+                realized_pnl=round(pos.realized_pnl, 4),
+                unrealized_pnl=round(unrealized, 4),
+                max_position=max(pos.max_position, qty),
+                realized_trades=pos.realized_trades,
+                updated_at=now,
+            ))
 
 
 def summarize_replayed_positions(

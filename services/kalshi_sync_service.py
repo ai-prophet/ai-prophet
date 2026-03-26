@@ -279,7 +279,7 @@ def _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name: str)
         from ai_prophet_core.betting.db import get_session
         from ai_prophet_core.betting.db_schema import BettingOrder
         from db_models import TradingPosition
-        from position_replay import replay_orders_by_ticker
+        from position_replay import load_replayable_orders, replay_orders_by_ticker
 
         live_positions = {}
         for pos in adapter.get_positions():
@@ -292,15 +292,7 @@ def _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name: str)
             live_positions[ticker] = int(round(signed_qty))
 
         with get_session(db_engine) as session:
-            order_rows = (
-                session.query(BettingOrder)
-                .filter(
-                    BettingOrder.instance_name == instance_name,
-                    BettingOrder.status == "FILLED",
-                )
-                .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
-                .all()
-            )
+            order_rows = load_replayable_orders(session, BettingOrder, instance_name)
             snapshot_rows = (
                 session.query(TradingPosition)
                 .filter(TradingPosition.instance_name == instance_name)

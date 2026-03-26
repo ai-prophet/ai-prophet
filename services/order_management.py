@@ -33,9 +33,11 @@ def _sync_pending_order_status(
     """
     from ai_prophet_core.betting.db import get_session
     from ai_prophet_core.betting.db_schema import BettingOrder
-    from db_models import TradingPosition
-    from position_replay import replay_orders_by_ticker
-    from datetime import datetime
+    from position_replay import (
+        load_replayable_orders,
+        replay_orders_by_ticker,
+        sync_replayed_positions,
+    )
     updated_count = 0
     tickers_with_updates = set()
 
@@ -103,70 +105,20 @@ def _sync_pending_order_status(
             if tickers_with_updates:
                 logger.info("[ORDER_MGMT] Updating positions for %d tickers with order changes", len(tickers_with_updates))
 
-                # Get all FILLED orders for affected tickers
-                filled_orders = (
-                    session.query(BettingOrder)
-                    .filter(
-                        BettingOrder.instance_name == instance_name,
-                        BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
-                        BettingOrder.ticker.in_(tickers_with_updates)
-                    )
-                    .order_by(BettingOrder.created_at.asc())
-                    .all()
+                replayable_orders = load_replayable_orders(
+                    session,
+                    BettingOrder,
+                    instance_name,
+                    tickers=tickers_with_updates,
                 )
-
-                # Replay orders to calculate positions
-                positions = replay_orders_by_ticker(filled_orders)
-                now = datetime.now(UTC)
-
-                # Update trading_positions table
-                for ticker in tickers_with_updates:
-                    market_id = f"kalshi:{ticker}"
-                    pos = positions.get(ticker)
-
-                    # Get existing position entry
-                    existing = session.query(TradingPosition).filter_by(
-                        instance_name=instance_name,
-                        market_id=market_id
-                    ).first()
-
-                    if pos:
-                        side, qty, avg_price = pos.current_position()
-
-                        if side and qty > 0.001:
-                            # Position exists - update or create
-                            if existing:
-                                existing.contract = side
-                                existing.quantity = int(qty)
-                                existing.avg_price = round(avg_price, 4)
-                                existing.realized_pnl = round(pos.realized_pnl, 4)
-                                existing.realized_trades = pos.realized_trades
-                                existing.updated_at = now
-                                logger.info("[ORDER_MGMT] Updated position for %s: %d %s shares", ticker, int(qty), side)
-                            else:
-                                session.add(TradingPosition(
-                                    instance_name=instance_name,
-                                    market_id=market_id,
-                                    contract=side,
-                                    quantity=int(qty),
-                                    avg_price=round(avg_price, 4),
-                                    realized_pnl=round(pos.realized_pnl, 4),
-                                    unrealized_pnl=0.0,
-                                    max_position=pos.max_position,
-                                    realized_trades=pos.realized_trades,
-                                    updated_at=now,
-                                ))
-                                logger.info("[ORDER_MGMT] Created position for %s: %d %s shares", ticker, int(qty), side)
-                        else:
-                            # Position closed - delete if exists
-                            if existing:
-                                session.delete(existing)
-                                logger.info("[ORDER_MGMT] Deleted closed position for %s", ticker)
-                    else:
-                        # No position - delete if exists
-                        if existing:
-                            session.delete(existing)
-                            logger.info("[ORDER_MGMT] Deleted position for %s (no orders)", ticker)
+                positions = replay_orders_by_ticker(replayable_orders)
+                sync_replayed_positions(
+                    session,
+                    instance_name,
+                    positions,
+                    tickers=tickers_with_updates,
+                    log=logger,
+                )
 
                 session.commit()
                 logger.info("[ORDER_MGMT] Updated positions for %d tickers", len(tickers_with_updates))
@@ -383,19 +335,10 @@ def reconcile_positions_with_kalshi(
         _sync_pending_order_status(db_engine, adapter, instance_name)
 
     # Get database positions by replaying orders
-    from position_replay import replay_orders_by_ticker
+    from position_replay import load_replayable_orders, replay_orders_by_ticker
 
     with get_session(db_engine) as session:
-        # Only count FILLED orders for position calculation
-        orders = (
-            session.query(BettingOrder)
-            .filter(
-                BettingOrder.instance_name == instance_name,
-                BettingOrder.status == "FILLED",
-            )
-            .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
-            .all()
-        )
+        orders = load_replayable_orders(session, BettingOrder, instance_name)
 
     db_positions = replay_orders_by_ticker(orders)
 
