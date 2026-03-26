@@ -2091,20 +2091,21 @@ def get_cycle_evaluations(
     with get_session(engine) as session:
         evaluations = []
 
-        # Get ALL predictions - each one represents a cycle evaluation
-        # If there's no associated order, it was a HOLD decision
-        # Join with ModelRun to get the reasoning from metadata_json
+        # Model runs are the authoritative record of whether a market was
+        # evaluated in a cycle. Predictions/orders may be absent for skipped
+        # or failed cycles, so join them on as optional nearby records.
         query = text("""
             SELECT
-                bp.id as pred_id,
-                bp.market_id,
-                bp.p_yes,
-                bp.yes_ask,
-                bp.no_ask,
-                bp.source as model_name,
-                bp.created_at as eval_time,
+                mr.id as eval_id,
+                mr.market_id,
+                mr.model_name,
+                mr.timestamp as eval_time,
                 tm.ticker as market_ticker,
                 tm.title as market_title,
+                bp.id as pred_id,
+                bp.p_yes as pred_p_yes,
+                bp.yes_ask as pred_yes_ask,
+                bp.no_ask as pred_no_ask,
                 bo.id as order_id,
                 bo.action as order_action,
                 bo.side as order_side,
@@ -2115,17 +2116,31 @@ def get_cycle_evaluations(
                 bo.fee_paid as order_fee,
                 mr.metadata_json as model_metadata,
                 mr.decision as model_decision
-            FROM betting_predictions bp
-            LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
-            LEFT JOIN betting_orders bo ON bo.ticker = tm.ticker
-                AND bo.instance_name = bp.instance_name
-                AND bo.created_at BETWEEN bp.created_at - INTERVAL '1 minute' AND bp.created_at + INTERVAL '1 minute'
-            LEFT JOIN model_runs mr ON mr.market_id = bp.market_id
-                AND mr.instance_name = bp.instance_name
-                AND mr.timestamp BETWEEN bp.created_at - INTERVAL '1 minute' AND bp.created_at + INTERVAL '1 minute'
-            WHERE bp.instance_name = :instance
+            FROM model_runs mr
+            LEFT JOIN trading_markets tm ON tm.market_id = mr.market_id AND tm.instance_name = mr.instance_name
+            LEFT JOIN LATERAL (
+                SELECT bp.*
+                FROM betting_predictions bp
+                WHERE bp.instance_name = mr.instance_name
+                  AND bp.market_id = mr.market_id
+                  AND bp.source = mr.model_name
+                  AND bp.created_at BETWEEN mr.timestamp - INTERVAL '2 minutes' AND mr.timestamp + INTERVAL '2 minutes'
+                ORDER BY ABS(EXTRACT(EPOCH FROM (bp.created_at - mr.timestamp))), bp.id DESC
+                LIMIT 1
+            ) bp ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT bo.*
+                FROM betting_orders bo
+                WHERE bo.instance_name = mr.instance_name
+                  AND tm.ticker IS NOT NULL
+                  AND bo.ticker = tm.ticker
+                  AND bo.created_at BETWEEN mr.timestamp - INTERVAL '2 minutes' AND mr.timestamp + INTERVAL '2 minutes'
+                ORDER BY ABS(EXTRACT(EPOCH FROM (bo.created_at - mr.timestamp))), bo.id DESC
+                LIMIT 1
+            ) bo ON TRUE
+            WHERE mr.instance_name = :instance
             AND (:ticker IS NULL OR tm.ticker = :ticker)
-            ORDER BY bp.created_at DESC
+            ORDER BY mr.timestamp DESC, mr.id DESC
             LIMIT :limit OFFSET :offset
         """)
 
@@ -2141,39 +2156,46 @@ def get_cycle_evaluations(
 
         for row in result:
             market_ticker = row.market_ticker
+            parsed_p_yes = row.pred_p_yes
+            parsed_yes_ask = row.pred_yes_ask
+            parsed_no_ask = row.pred_no_ask
 
-            # Calculate edge from p_yes and market prices
-            edge = None
-            if row.p_yes is not None and row.yes_ask is not None:
-                # Edge = prediction - market ask price
-                edge = (row.p_yes - row.yes_ask) * 100  # Convert to percentage
-
-            # Extract reasoning from model metadata if available
             model_reasoning = None
             model_rationale = None
             model_skip_reason = None
+            strategy_metadata = None
             if row.model_metadata:
                 try:
                     metadata = json.loads(row.model_metadata)
                     model_reasoning = metadata.get("reasoning")
-                    # Also check for 'rationale' field in metadata
                     model_rationale = metadata.get("rationale")
                     model_skip_reason = metadata.get("skip_reason")
                     strategy_metadata = metadata.get("strategy") if isinstance(metadata.get("strategy"), dict) else None
+                    if parsed_p_yes is None:
+                        parsed_p_yes = metadata.get("p_yes")
+                    if parsed_yes_ask is None:
+                        parsed_yes_ask = metadata.get("yes_ask")
+                    if parsed_no_ask is None:
+                        parsed_no_ask = metadata.get("no_ask")
                 except (json.JSONDecodeError, TypeError):
                     strategy_metadata = None
-            else:
-                strategy_metadata = None
+
+            p_yes = float(parsed_p_yes) if parsed_p_yes is not None else None
+            yes_ask = float(parsed_yes_ask) if parsed_yes_ask is not None else None
+            no_ask = float(parsed_no_ask) if parsed_no_ask is not None else None
+
+            edge = None
+            if p_yes is not None and yes_ask is not None:
+                edge = (p_yes - yes_ask) * 100
 
             # Determine the action taken based on whether an order exists
-            if row.model_decision == "SKIP":
-                action_taken = "SKIP"
+            if row.model_decision in {"SKIP", "CYCLE_SKIPPED", "NO_PREDICTION"}:
+                action_taken = "NO PREDICTION" if row.model_decision == "NO_PREDICTION" else "SKIP"
                 action_type = "skip"
-            elif row.order_id and strategy_metadata and strategy_metadata.get("flatten_reason") == "WITHIN_SPREAD":
+            elif row.model_decision == "HOLD" and row.order_id and strategy_metadata and strategy_metadata.get("flatten_reason") == "WITHIN_SPREAD":
                 action_taken = "HOLD (within spread)"
                 action_type = "hold"
             elif row.order_id:
-                # An order was placed - use the actual action (buy/sell) regardless of status
                 action_type = row.order_action.lower() if row.order_action else "buy"
 
                 if row.order_status == "FILLED":
@@ -2188,8 +2210,16 @@ def get_cycle_evaluations(
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side} (error)"
                 else:
                     action_taken = f"{row.order_action} {row.order_count} {row.order_side} (pending)"
+            elif row.model_decision and row.model_decision.startswith("BUY_"):
+                action_taken = row.model_decision.replace("_", " ")
+                action_type = "buy"
+            elif row.model_decision and row.model_decision.startswith("SELL_"):
+                action_taken = row.model_decision.replace("_", " ")
+                action_type = "sell"
+            elif row.model_decision == "SKIP":
+                action_taken = "SKIP"
+                action_type = "skip"
             else:
-                # No order = HOLD decision
                 action_taken = "HOLD"
                 action_type = "hold"
 
@@ -2199,9 +2229,9 @@ def get_cycle_evaluations(
                     model_decision=row.model_decision,
                     strategy_metadata=strategy_metadata,
                     has_order=bool(row.order_id),
-                    p_yes=float(row.p_yes) if row.p_yes is not None else None,
-                    yes_ask=float(row.yes_ask) if row.yes_ask is not None else None,
-                    no_ask=float(row.no_ask) if row.no_ask is not None else None,
+                    p_yes=p_yes,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
                 )
 
             # Determine reason for action/inaction
@@ -2219,17 +2249,17 @@ def get_cycle_evaluations(
                 reason = None
 
             evaluations.append({
-                "id": row.pred_id,
+                "id": row.eval_id,
                 "ticker": market_ticker,
                 "market_id": row.market_id,
                 "market_title": row.market_title,
                 "timestamp": row.eval_time.isoformat() if row.eval_time else None,
                 "model": row.model_name,
                 "prediction": {
-                    "p_yes": float(row.p_yes) if row.p_yes else None,
+                    "p_yes": p_yes,
                     "edge": edge,
-                    "yes_ask": float(row.yes_ask) if row.yes_ask else None,
-                    "no_ask": float(row.no_ask) if row.no_ask else None,
+                    "yes_ask": yes_ask,
+                    "no_ask": no_ask,
                 },
                 "action": {
                     "type": action_type,
@@ -2251,9 +2281,9 @@ def get_cycle_evaluations(
         # Get total count for pagination
         count_query = text("""
             SELECT COUNT(*)
-            FROM betting_predictions bp
-            LEFT JOIN trading_markets tm ON tm.market_id = bp.market_id AND tm.instance_name = bp.instance_name
-            WHERE bp.instance_name = :instance
+            FROM model_runs mr
+            LEFT JOIN trading_markets tm ON tm.market_id = mr.market_id AND tm.instance_name = mr.instance_name
+            WHERE mr.instance_name = :instance
             AND (:ticker IS NULL OR tm.ticker = :ticker)
         """)
 

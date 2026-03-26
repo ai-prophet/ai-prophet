@@ -23,6 +23,8 @@ envVarGroups:
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
         value: "false"
+      - key: SYNC_INTERVAL_SEC
+        value: "600"
       - key: GEMINI_API_KEY_HAIFENG
         sync: false
       - key: GEMINI_API_KEY_JIBANG
@@ -84,8 +86,6 @@ services:
     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
     startCommand: python services/kalshi_sync_service.py --instance Haifeng
     envVars:
-      - key: SYNC_INTERVAL_SEC
-        value: "600"  # 10 minutes
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
@@ -103,8 +103,6 @@ services:
     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
     startCommand: python services/kalshi_sync_service.py --instance Jibang
     envVars:
-      - key: SYNC_INTERVAL_SEC
-        value: "600"  # 10 minutes
       - key: KALSHI_API_KEY_ID
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64

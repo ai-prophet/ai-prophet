@@ -377,6 +377,38 @@ def save_model_run(db_engine, model_name: str, market_id: str,
         logger.warning("Failed to save model run: %s", e)
 
 
+def log_cycle_skip_for_models(
+    db_engine,
+    model_names: list[str],
+    market_id: str,
+    *,
+    yes_ask: float | None,
+    no_ask: float | None,
+    reason: str,
+    instance_name: str = INSTANCE_NAME,
+) -> None:
+    """Persist an explicit per-cycle skip row for every configured model."""
+    if db_engine is None:
+        return
+
+    metadata = {
+        "p_yes": None,
+        "yes_ask": yes_ask,
+        "no_ask": no_ask,
+        "skip_reason": reason,
+    }
+    for model_name in model_names:
+        save_model_run(
+            db_engine,
+            model_name,
+            market_id,
+            "CYCLE_SKIPPED",
+            None,
+            metadata=metadata,
+            instance_name=instance_name,
+        )
+
+
 def update_positions(db_engine, instance_name: str = INSTANCE_NAME) -> None:
     """Aggregate betting_orders into trading_positions for the dashboard.
 
@@ -1360,6 +1392,15 @@ def run_cycle(args) -> None:
             else:
                 logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
                 if db_engine is not None:
+                    log_cycle_skip_for_models(
+                        db_engine,
+                        model_specs,
+                        f"kalshi:{ticker}",
+                        yes_ask=None,
+                        no_ask=None,
+                        reason="Skipped because live market data could not be fetched for this cycle.",
+                        instance_name=INSTANCE_NAME,
+                    )
                     _mark_market_resolved(db_engine, adapter, ticker)
 
     # 2. Discover NEW markets — either from Kalshi (fetcher) or from peer instance (mirror)
@@ -1457,25 +1498,9 @@ def run_cycle(args) -> None:
         yes_ask = float(yes_ask)
         no_ask = float(no_ask)
 
-        if yes_ask + no_ask > MAX_SPREAD:
-            logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
-            continue
-
-        # Skip markets where the outcome is nearly certain (≥97% or ≤3%) — no profit opportunity.
-        # Check BOTH yes_ask and no_ask to ensure we don't miss extreme markets
-        if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
-            logger.debug("Skipping %s: near-certain price (yes_ask=%.3f, no_ask=%.3f)", ticker, yes_ask, no_ask)
-            continue
-
-        # Never bet on MENTIONS markets — they track social media activity,
-        # not real-world events, and are not suitable for model prediction.
-        if market.get("category", "").upper() == "MENTIONS":
-            logger.debug("Skipping %s: MENTIONS category excluded from betting", ticker)
-            continue
-
         market_id = f"kalshi:{ticker}"
 
-        # Save market snapshot for dashboard
+        # Save market snapshot for dashboard even when the market is skipped for this cycle.
         if db_engine:
             expiration = None
             exp_str = market.get("close_time")
@@ -1493,6 +1518,57 @@ def run_cycle(args) -> None:
                 volume_24h=float(market.get("volume_24h", 0) or 0),
                 instance_name=INSTANCE_NAME,
             )
+
+        if yes_ask + no_ask > MAX_SPREAD:
+            logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
+            log_cycle_skip_for_models(
+                db_engine,
+                model_specs,
+                market_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+                reason=f"Skipped because the spread ({yes_ask + no_ask:.1%}) exceeded the max allowed spread ({MAX_SPREAD:.1%}).",
+                instance_name=INSTANCE_NAME,
+            )
+            all_market_prices[market_id] = (yes_ask, no_ask)
+            continue
+
+        # Skip markets where the outcome is nearly certain (≥97% or ≤3%) — no profit opportunity.
+        # Check BOTH yes_ask and no_ask to ensure we don't miss extreme markets
+        if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
+            logger.debug("Skipping %s: near-certain price (yes_ask=%.3f, no_ask=%.3f)", ticker, yes_ask, no_ask)
+            log_cycle_skip_for_models(
+                db_engine,
+                model_specs,
+                market_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+                reason=(
+                    f"Skipped because the market was near-certain at "
+                    f"yes_ask={yes_ask:.1%}, no_ask={no_ask:.1%}."
+                ),
+                instance_name=INSTANCE_NAME,
+            )
+            all_market_prices[market_id] = (yes_ask, no_ask)
+            continue
+
+        # Never bet on MENTIONS markets — they track social media activity,
+        # not real-world events, and are not suitable for model prediction.
+        if market.get("category", "").upper() == "MENTIONS":
+            logger.debug("Skipping %s: MENTIONS category excluded from betting", ticker)
+            log_cycle_skip_for_models(
+                db_engine,
+                model_specs,
+                market_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+                reason="Skipped because MENTIONS markets are excluded from betting.",
+                instance_name=INSTANCE_NAME,
+            )
+            all_market_prices[market_id] = (yes_ask, no_ask)
+            continue
+
+        if db_engine:
 
             # Skip if position held and prices unchanged
             try:
@@ -1520,6 +1596,18 @@ def run_cycle(args) -> None:
                                 "  Skipping %s — market prices unchanged "
                                 "(yes=%.2f, no=%.2f)",
                                 ticker, yes_ask, no_ask,
+                            )
+                            log_cycle_skip_for_models(
+                                db_engine,
+                                model_specs,
+                                market_id,
+                                yes_ask=yes_ask,
+                                no_ask=no_ask,
+                                reason=(
+                                    "Skipped because the market price was unchanged since the "
+                                    "last cycle while a position was already open."
+                                ),
+                                instance_name=INSTANCE_NAME,
                             )
                             all_market_prices[market_id] = (yes_ask, no_ask)
                             continue
@@ -1734,6 +1822,15 @@ def run_cycle(args) -> None:
         if not model_predictions:
             logger.warning("  No model predictions for %s, skipping", ticker)
             if db_engine is not None:
+                log_cycle_skip_for_models(
+                    db_engine,
+                    model_specs,
+                    market_id,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                    reason="Skipped because no model predictions were available for this cycle.",
+                    instance_name=INSTANCE_NAME,
+                )
                 log_system_event(
                     db_engine,
                     "WARNING",
