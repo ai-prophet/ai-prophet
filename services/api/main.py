@@ -85,6 +85,7 @@ MIN_PROFITABLE_PRICE = 0.03
 MAX_PROFITABLE_PRICE = 0.97
 MIN_REBALANCE_TRADE = 0.005
 WITHIN_SPREAD_BUFFER = 0.02
+DISPLAY_CUTOFF_UTC = datetime(2026, 3, 24, 23, 0, tzinfo=UTC)  # Mar 24, 2026 6:00 PM America/Chicago
 
 
 def get_db():
@@ -92,6 +93,70 @@ def get_db():
     if _db_engine is None:
         _db_engine = create_db_engine()
     return _db_engine
+
+
+def _display_visible_ts(value: datetime | None) -> bool:
+    return value is not None and value >= DISPLAY_CUTOFF_UTC
+
+
+def _display_visible_market_activity(session, instance_name: str) -> tuple[set[str], set[str]]:
+    visible_tickers = {
+        ticker
+        for (ticker,) in (
+            _instance_query(session, BettingOrder, instance_name)
+            .filter(BettingOrder.created_at >= DISPLAY_CUTOFF_UTC)
+            .with_entities(BettingOrder.ticker)
+            .all()
+        )
+        if ticker
+    }
+    visible_market_ids = {
+        market_id
+        for (market_id,) in (
+            _instance_query(session, ModelRun, instance_name)
+            .filter(ModelRun.timestamp >= DISPLAY_CUTOFF_UTC)
+            .with_entities(ModelRun.market_id)
+            .all()
+        )
+        if market_id
+    }
+    visible_market_ids.update(
+        market_id
+        for (market_id,) in (
+            _instance_query(session, BettingPrediction, instance_name)
+            .filter(BettingPrediction.created_at >= DISPLAY_CUTOFF_UTC)
+            .with_entities(BettingPrediction.market_id)
+            .all()
+        )
+        if market_id
+    )
+    visible_tickers.update(
+        ticker
+        for (ticker,) in (
+            session.query(KalshiOrderSnapshot.ticker)
+            .filter(
+                KalshiOrderSnapshot.instance_name == instance_name,
+                or_(
+                    KalshiOrderSnapshot.created_ts >= DISPLAY_CUTOFF_UTC,
+                    KalshiOrderSnapshot.last_update_ts >= DISPLAY_CUTOFF_UTC,
+                ),
+            )
+            .all()
+        )
+        if ticker
+    )
+    if visible_market_ids:
+        visible_tickers.update(
+            ticker
+            for (ticker,) in (
+                _instance_query(session, TradingMarket, instance_name)
+                .filter(TradingMarket.market_id.in_(visible_market_ids))
+                .with_entities(TradingMarket.ticker)
+                .all()
+            )
+            if ticker
+        )
+    return visible_tickers, visible_market_ids
 
 
 @asynccontextmanager
@@ -472,10 +537,14 @@ def get_trades(
         with get_session(engine) as session:
             local_rows = (
                 _instance_query(session, BettingOrder, resolved_instance)
+                .filter(BettingOrder.created_at >= DISPLAY_CUTOFF_UTC)
                 .order_by(BettingOrder.created_at.desc())
                 .all()
             )
-            latest_snapshots = get_latest_order_snapshots(session, resolved_instance)
+            latest_snapshots = [
+                snap for snap in get_latest_order_snapshots(session, resolved_instance)
+                if _display_visible_ts(snap.created_ts or snap.last_update_ts or snap.captured_at)
+            ]
 
             # Bulk-load signals, predictions, and market titles (avoid N+1)
             signal_ids = [r.signal_id for r in local_rows if r.signal_id]
@@ -803,10 +872,10 @@ def get_markets(
     engine = get_db()
     try:
       with get_session(engine) as session:
+        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
         rows = (
             _instance_query(session, TradingMarket, resolved_instance)
             .order_by(TradingMarket.updated_at.desc())
-            .limit(limit)
             .all()
         )
         # Build set of market_ids that have an active position
@@ -817,18 +886,23 @@ def get_markets(
             session,
             resolved_instance,
             tickers=(row.ticker for row in rows),
+            min_created_ts=DISPLAY_CUTOFF_UTC,
         )
         latest_order_time_by_ticker, kalshi_order_count_by_ticker = build_latest_order_activity_by_ticker(
             session,
             resolved_instance,
             tickers=(row.ticker for row in rows),
+            min_created_ts=DISPLAY_CUTOFF_UTC,
         )
 
         # Bulk-load all recent model runs for these markets (avoid N+1)
         market_ids_for_runs = [r.market_id for r in rows]
         all_recent_runs = (
             _instance_query(session, ModelRun, resolved_instance)
-            .filter(ModelRun.market_id.in_(market_ids_for_runs))
+            .filter(
+                ModelRun.market_id.in_(market_ids_for_runs),
+                ModelRun.timestamp >= DISPLAY_CUTOFF_UTC,
+            )
             .order_by(ModelRun.timestamp.desc())
             .all()
         )
@@ -840,6 +914,8 @@ def get_markets(
         MAX_SPREAD = 1.03
         results = []
         for row in rows:
+            if row.ticker not in visible_tickers and row.market_id not in visible_market_ids:
+                continue
             # Skip high-spread markets that have no position — they were
             # filtered from trading; showing them only causes confusion
             yes_ask = row.yes_ask or 0.0
@@ -915,7 +991,7 @@ def get_markets(
                 "latest_order_time": latest_order_time_by_ticker.get(row.ticker),
                 "kalshi_order_count": kalshi_order_count_by_ticker.get(row.ticker, 0),
             })
-        return results
+        return results[:limit]
     except Exception as e:
         logger.warning("GET /markets DB error: %s", e)
         return []
@@ -935,14 +1011,22 @@ def get_positions(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        kalshi_positions = build_position_views(session, resolved_instance)
+        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
+        kalshi_positions = [
+            row for row in build_position_views(session, resolved_instance)
+            if row.ticker in visible_tickers
+        ]
 
         if kalshi_positions:
             kalshi_positions.sort(key=lambda row: row.updated_at, reverse=True)
             total = len(kalshi_positions)
             rows = kalshi_positions[offset:offset + limit]
         else:
-            query = _instance_query(session, TradingPosition, resolved_instance).order_by(TradingPosition.updated_at.desc())
+            query = (
+                _instance_query(session, TradingPosition, resolved_instance)
+                .filter(TradingPosition.market_id.in_(visible_market_ids) if visible_market_ids else False)
+                .order_by(TradingPosition.updated_at.desc())
+            )
             total = query.count()
             rows = query.offset(offset).limit(limit).all()
 
@@ -965,11 +1049,13 @@ def get_positions(
             session,
             resolved_instance,
             tickers=tickers,
+            min_created_ts=DISPLAY_CUTOFF_UTC,
         )
         pending_orders_by_ticker = build_pending_orders_by_ticker(
             session,
             resolved_instance,
             tickers=tickers,
+            min_created_ts=DISPLAY_CUTOFF_UTC,
         )
 
         results = []
@@ -1048,7 +1134,7 @@ def get_pnl(
     engine = get_db()
     with get_session(engine) as session:
         # Limit orders to recent history based on days parameter (performance optimization)
-        cutoff_date = datetime.now(UTC) - timedelta(days=days)
+        cutoff_date = max(datetime.now(UTC) - timedelta(days=days), DISPLAY_CUTOFF_UTC)
         query = (
             _instance_query(session, BettingOrder, resolved_instance)
             .filter(
@@ -1266,8 +1352,19 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
 
     engine = get_db()
     with get_session(engine) as session:
-        portfolio_summary = build_portfolio_summary(session, resolved_instance)
-        latest_kalshi_orders = get_latest_order_snapshots(session, resolved_instance)
+        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
+        portfolio_summary = build_portfolio_summary(
+            session,
+            resolved_instance,
+            tickers=visible_tickers,
+        )
+        latest_kalshi_orders = [
+            row for row in get_latest_order_snapshots(session, resolved_instance)
+            if (
+                row.ticker in visible_tickers
+                and _display_visible_ts(row.created_ts or row.last_update_ts or row.captured_at)
+            )
+        ]
         orders = [
             SimpleNamespace(
                 ticker=row.ticker,
@@ -1287,13 +1384,21 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
         if not orders:
             orders = (
                 _instance_query(session, BettingOrder, resolved_instance)
-                .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                .filter(
+                    BettingOrder.status.in_(["FILLED", "DRY_RUN"]),
+                    BettingOrder.created_at >= DISPLAY_CUTOFF_UTC,
+                    BettingOrder.ticker.in_(visible_tickers) if visible_tickers else False,
+                )
                 .order_by(BettingOrder.created_at.desc())
                 .limit(1000)
                 .all()
             )
 
-        position_views = build_position_views(session, resolved_instance)
+        position_views = [
+            row
+            for row in build_position_views(session, resolved_instance)
+            if row.ticker in visible_tickers
+        ]
         positions = [
             SimpleNamespace(
                 market_id=row.market_id,
@@ -1304,7 +1409,11 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             for row in position_views
         ]
         if not positions:
-            positions = _instance_query(session, TradingPosition, resolved_instance).all()
+            positions = (
+                _instance_query(session, TradingPosition, resolved_instance)
+                .filter(TradingPosition.market_id.in_(visible_market_ids) if visible_market_ids else False)
+                .all()
+            )
         # Fetch only markets with positions or recent trades (limited for performance)
         position_market_ids = {p.market_id for p in positions}
         markets = (
@@ -1531,12 +1640,14 @@ def get_model_calibration(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
+        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
         # Get resolved markets: expired and last_price is 0 or 1
         resolved_markets = (
             _instance_query(session, TradingMarket, resolved_instance)
             .filter(
                 TradingMarket.expiration < datetime.now(UTC),
                 TradingMarket.last_price.in_([0.0, 1.0]),
+                TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
             )
             .all()
         )
@@ -1554,7 +1665,8 @@ def get_model_calibration(
 
         # Get predictions for resolved markets
         pred_query = _instance_query(session, BettingPrediction, resolved_instance).filter(
-            BettingPrediction.market_id.in_(list(resolved_map.keys()))
+            BettingPrediction.market_id.in_(list(resolved_map.keys())),
+            BettingPrediction.created_at >= DISPLAY_CUTOFF_UTC,
         )
         if model_name:
             pred_query = pred_query.filter(BettingPrediction.source == model_name)
@@ -1697,12 +1809,14 @@ def get_brier_scores(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
+        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
         # 1. Resolved markets: expired with last_price of 0 or 1
         resolved_markets = (
             _instance_query(session, TradingMarket, resolved_instance)
             .filter(
                 TradingMarket.expiration < datetime.now(UTC),
                 TradingMarket.last_price.in_([0.0, 1.0]),
+                TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
             )
             .all()
         )
@@ -1730,7 +1844,10 @@ def get_brier_scores(
         # 2. All predictions for resolved markets (every timestep)
         pred_query = _instance_query(
             session, BettingPrediction, resolved_instance
-        ).filter(BettingPrediction.market_id.in_(list(resolved_map.keys())))
+        ).filter(
+            BettingPrediction.market_id.in_(list(resolved_map.keys())),
+            BettingPrediction.created_at >= DISPLAY_CUTOFF_UTC,
+        )
         if model_name:
             pred_query = pred_query.filter(BettingPrediction.source == model_name)
         predictions = pred_query.order_by(BettingPrediction.created_at.asc()).all()
@@ -1822,11 +1939,13 @@ def get_resolved_markets(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
+        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
         markets = (
             _instance_query(session, TradingMarket, resolved_instance)
             .filter(
                 TradingMarket.expiration < datetime.now(UTC),
                 TradingMarket.last_price.in_([0.0, 1.0]),
+                TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
             )
             .order_by(TradingMarket.expiration.desc())
             .all()
@@ -1916,7 +2035,10 @@ def get_resolved_markets(
             resolved_market_ids = {m.market_id: m.last_price for m in markets}
             predictions = (
                 _instance_query(session, BettingPrediction, resolved_instance)
-                .filter(BettingPrediction.market_id.in_(list(resolved_market_ids.keys())))
+                .filter(
+                    BettingPrediction.market_id.in_(list(resolved_market_ids.keys())),
+                    BettingPrediction.created_at >= DISPLAY_CUTOFF_UTC,
+                )
                 .all()
             )
 
@@ -2255,6 +2377,7 @@ def get_cycle_evaluations(
                 LIMIT 1
             ) bo ON TRUE
             WHERE mr.instance_name = :instance
+            AND mr.timestamp >= :cutoff
             AND (:ticker IS NULL OR tm.ticker = :ticker)
             ORDER BY mr.timestamp DESC, mr.id DESC
             LIMIT :limit OFFSET :offset
@@ -2265,6 +2388,7 @@ def get_cycle_evaluations(
             {
                 "instance": resolved_instance,
                 "ticker": ticker,
+                "cutoff": DISPLAY_CUTOFF_UTC,
                 "limit": limit,
                 "offset": offset
             }
@@ -2411,12 +2535,13 @@ def get_cycle_evaluations(
             FROM model_runs mr
             LEFT JOIN trading_markets tm ON tm.market_id = mr.market_id AND tm.instance_name = mr.instance_name
             WHERE mr.instance_name = :instance
+            AND mr.timestamp >= :cutoff
             AND (:ticker IS NULL OR tm.ticker = :ticker)
         """)
 
         total = session.execute(
             count_query,
-            {"instance": resolved_instance, "ticker": ticker}
+            {"instance": resolved_instance, "ticker": ticker, "cutoff": DISPLAY_CUTOFF_UTC}
         ).scalar() or 0
 
         return {
@@ -2443,7 +2568,10 @@ def get_predictions(
         # Get predictions for this market
         predictions = (
             _instance_query(session, BettingPrediction, resolved_instance)
-            .filter(BettingPrediction.market_id == market_id)
+            .filter(
+                BettingPrediction.market_id == market_id,
+                BettingPrediction.created_at >= DISPLAY_CUTOFF_UTC,
+            )
             .order_by(BettingPrediction.created_at.asc())
             .limit(limit)
             .all()
@@ -2452,7 +2580,10 @@ def get_predictions(
         # Get price snapshots for this market
         snapshots = (
             _instance_query(session, MarketPriceSnapshot, resolved_instance)
-            .filter(MarketPriceSnapshot.market_id == market_id)
+            .filter(
+                MarketPriceSnapshot.market_id == market_id,
+                MarketPriceSnapshot.timestamp >= DISPLAY_CUTOFF_UTC,
+            )
             .order_by(MarketPriceSnapshot.timestamp.asc())
             .limit(limit)
             .all()
@@ -2511,7 +2642,10 @@ def get_market_price_history(
     with get_session(engine) as session:
         snapshots = (
             _instance_query(session, MarketPriceSnapshot, resolved_instance)
-            .filter(MarketPriceSnapshot.market_id == market_id)
+            .filter(
+                MarketPriceSnapshot.market_id == market_id,
+                MarketPriceSnapshot.timestamp >= DISPLAY_CUTOFF_UTC,
+            )
             .order_by(MarketPriceSnapshot.timestamp.asc())
             .limit(limit)
             .all()
@@ -2550,7 +2684,11 @@ def get_model_runs(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        query = _instance_query(session, ModelRun, resolved_instance).order_by(ModelRun.timestamp.desc())
+        query = (
+            _instance_query(session, ModelRun, resolved_instance)
+            .filter(ModelRun.timestamp >= DISPLAY_CUTOFF_UTC)
+            .order_by(ModelRun.timestamp.desc())
+        )
         if model_name:
             query = query.filter(ModelRun.model_name == model_name)
         if market_id:
@@ -2849,7 +2987,10 @@ def get_order_monitoring(instance_name: str | None = Query(None)) -> dict[str, A
     one_hour_ago = now - timedelta(hours=1)
 
     with get_session(engine) as session:
-        latest_orders = get_latest_order_snapshots(session, resolved_instance)
+        latest_orders = [
+            row for row in get_latest_order_snapshots(session, resolved_instance)
+            if _display_visible_ts(row.created_ts or row.last_update_ts or row.captured_at)
+        ]
         if not latest_orders:
             latest_orders = []
         pending_orders = [o for o in latest_orders if o.status == "PENDING" and o.remaining_count > 0]

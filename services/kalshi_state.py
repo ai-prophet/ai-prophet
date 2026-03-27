@@ -307,16 +307,19 @@ def build_latest_order_activity_by_ticker(
     instance_name: str,
     *,
     tickers: Iterable[str] | None = None,
+    min_created_ts: datetime | None = None,
 ) -> tuple[dict[str, str], dict[str, int]]:
     latest_order_snaps = get_latest_order_snapshots(session, instance_name, tickers=tickers)
     latest_order_time_by_ticker: dict[str, str] = {}
     order_count_by_ticker: dict[str, int] = {}
 
     for snap in latest_order_snaps:
-        order_count_by_ticker[snap.ticker] = order_count_by_ticker.get(snap.ticker, 0) + 1
         ts = snap.created_ts or snap.last_update_ts or snap.captured_at
         if ts is None:
             continue
+        if min_created_ts is not None and ts < min_created_ts:
+            continue
+        order_count_by_ticker[snap.ticker] = order_count_by_ticker.get(snap.ticker, 0) + 1
         ts_iso = ts.isoformat()
         current = latest_order_time_by_ticker.get(snap.ticker)
         if current is None or ts_iso > current:
@@ -420,9 +423,21 @@ def build_position_views(session, instance_name: str) -> list[KalshiPositionView
     return views
 
 
-def build_portfolio_summary(session, instance_name: str) -> KalshiPortfolioSummary:
+def build_portfolio_summary(
+    session,
+    instance_name: str,
+    *,
+    tickers: Iterable[str] | None = None,
+) -> KalshiPortfolioSummary:
+    visible_tickers = {ticker for ticker in (tickers or []) if ticker}
     position_views = build_position_views(session, instance_name)
-    pending_by_ticker = build_pending_orders_by_ticker(session, instance_name)
+    if visible_tickers:
+        position_views = [view for view in position_views if view.ticker in visible_tickers]
+    pending_by_ticker = build_pending_orders_by_ticker(
+        session,
+        instance_name,
+        tickers=visible_tickers if visible_tickers else None,
+    )
     latest_balance = get_latest_balance_snapshot(session, instance_name)
 
     market_map = {
@@ -477,11 +492,17 @@ def build_pending_orders_by_ticker(
     instance_name: str,
     *,
     tickers: Iterable[str] | None = None,
+    min_created_ts: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     latest_orders = get_latest_order_snapshots(session, instance_name, tickers=tickers)
     pending_by_ticker: dict[str, list[dict[str, Any]]] = {}
     for order in latest_orders:
         if order.status != "PENDING" or order.remaining_count <= 0:
+            continue
+        created_at = order.created_ts or order.last_update_ts or order.captured_at
+        if created_at is None:
+            continue
+        if min_created_ts is not None and created_at < min_created_ts:
             continue
         pending_by_ticker.setdefault(order.ticker, []).append(
             {
@@ -492,7 +513,7 @@ def build_pending_orders_by_ticker(
                 "count": order.initial_count,
                 "filled_shares": order.fill_count,
                 "price_cents": int(round((order.limit_price or 0.0) * 100)),
-                "created_at": (order.created_ts or order.last_update_ts or order.captured_at).isoformat(),
+                "created_at": created_at.isoformat(),
             }
         )
     for orders in pending_by_ticker.values():
