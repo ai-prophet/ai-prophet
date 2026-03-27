@@ -755,6 +755,10 @@ def get_trades(
                 if merge_key in seen_keys:
                     continue
                 prediction = build_prediction(row)
+                if isinstance(prediction, dict):
+                    source = str(prediction.get("source") or "").lower()
+                    if source.startswith("kalshi:"):
+                        continue
                 market_title = market_titles.get(f"kalshi:{row.ticker}")
                 merged_results.append({
                     "id": row.id,

@@ -1478,6 +1478,7 @@ function SubmittedTradesTimelineTab({
             const isSkip = isSkipLikeDecision(run.decision);
             const label = normalizedDecisionLabel(run.decision);
             const side = decisionSide(run.decision);
+            const showDecisionBadge = !side || label !== "BUY";
             const displayContext = runDisplayContext.get(run.id);
             const pYes = displayContext?.pYes ?? null;
             const edge = displayContext?.edge ?? null;
@@ -1500,11 +1501,13 @@ function SubmittedTradesTimelineTab({
                     </div>
                     <div className="flex-1 min-w-0 overflow-hidden">
                       <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
-                        <span className={`text-[9px] px-1 py-px rounded font-bold ${
-                          isSkip ? "bg-t-border/50 text-txt-muted" : isHold ? "bg-yellow-900/30 text-yellow-500" : "bg-accent-dim text-accent"
-                        }`}>
-                          {label}
-                        </span>
+                        {showDecisionBadge && (
+                          <span className={`text-[9px] px-1 py-px rounded font-bold ${
+                            isSkip ? "bg-t-border/50 text-txt-muted" : isHold ? "bg-yellow-900/30 text-yellow-500" : "bg-accent-dim text-accent"
+                          }`}>
+                            {label}
+                          </span>
+                        )}
                         {side && (
                           <span className={`text-[9px] px-1 py-px rounded font-bold ${
                             side === "YES" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
@@ -1781,7 +1784,7 @@ function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: Model
             <th className="px-2 py-1.5 text-right font-medium">Fee</th>
             <th className="px-2 py-1.5 text-right font-medium">Cash</th>
             <th className="px-2 py-1.5 text-right font-medium">Edge</th>
-            <th className="px-2 py-1.5 text-left font-medium">End Hold</th>
+            <th className="px-2 py-1.5 text-center font-medium">End Hold</th>
             <th className="px-2 py-1.5 text-center font-medium">Status</th>
             <th className="px-2 py-1.5 text-center font-medium">Mode</th>
           </tr>
@@ -1901,8 +1904,8 @@ function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: Model
                     })}
                   </div>
                 </td>
-                <td className="px-2 py-1.5 text-left font-mono text-txt-muted">
-                  <div className="flex flex-col">
+                <td className="px-2 py-1.5 text-center font-mono text-txt-muted">
+                  <div className="flex flex-col items-center">
                     {group.lines.map((item, index) => (
                       <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
                         {item.resultingPosition ? (

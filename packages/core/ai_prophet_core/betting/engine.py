@@ -49,8 +49,16 @@ def _get_position_replay():
     _services = os.path.join(os.path.dirname(__file__), "../../../../services")
     if _services not in sys.path:
         sys.path.insert(0, _services)
-    from position_replay import replay_orders_by_ticker, summarize_replayed_positions
-    _position_replay_cache = (replay_orders_by_ticker, summarize_replayed_positions)
+    from position_replay import (
+        load_replayable_orders,
+        replay_orders_by_ticker,
+        summarize_replayed_positions,
+    )
+    _position_replay_cache = (
+        load_replayable_orders,
+        replay_orders_by_ticker,
+        summarize_replayed_positions,
+    )
     return _position_replay_cache
 
 
@@ -321,29 +329,27 @@ class BettingEngine:
         For LIVE mode: fetches real balance from the adapter (Kalshi already
         deducts for real orders, so we use it directly without subtraction).
 
-        IMPORTANT: Only counts FILLED orders (and DRY_RUN in dry-run mode) for positions.
-        PENDING orders are NOT included in position calculation to avoid discrepancies
-        with partially filled or unfilled orders. Pending orders are cancelled before
-        placing new orders.
+        IMPORTANT: Position replay counts only executed quantity.
+        Untouched PENDING orders do not affect holdings, but partially filled
+        pending orders do count for their filled_shares. Pending orders are
+        cancelled before placing new orders.
         """
         if self._engine is None:
             return None, 0, Decimal(str(self.starting_cash))
         try:
             from .db import get_session
             from .db_schema import BettingOrder
-            replay_orders_by_ticker, summarize_replayed_positions = _get_position_replay()
+            (
+                load_replayable_orders,
+                replay_orders_by_ticker,
+                summarize_replayed_positions,
+            ) = _get_position_replay()
 
             with get_session(self._engine) as session:
-                # Only include FILLED orders (and DRY_RUN in dry-run mode) for position calculation
-                # PENDING orders are not included as they may not fill or may only partially fill
-                status_filter = ["FILLED", "DRY_RUN"] if self.dry_run else ["FILLED"]
-                orders = (
-                    session.query(BettingOrder)
-                    .filter(BettingOrder.instance_name == self.instance_name)
-                    .filter(BettingOrder.status.in_(status_filter))
-                    .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
-                    .all()
-                )
+                # Replay only executed quantity. This still excludes untouched
+                # pending orders, but it includes the filled portion of partially
+                # filled orders so live position checks don't drift mid-fill.
+                orders = load_replayable_orders(session, BettingOrder, self.instance_name)
 
             positions = replay_orders_by_ticker(orders)
             capital_deployed, total_realized, _ = summarize_replayed_positions(positions)
@@ -553,6 +559,8 @@ class BettingEngine:
                     # Rebalancing signals can contain separate sell-down and
                     # buy-on-new-side portions. Respect those exact portions
                     # rather than force-flipping the full opposite position.
+                    from .adapters.base import OrderStatus
+
                     sell_order_id = str(uuid.uuid4())
                     sell_req = OrderRequest(
                         order_id=sell_order_id,
@@ -565,9 +573,25 @@ class BettingEngine:
                         limit_price=Decimal(str(sell_price)),
                     )
                     sell_status = "FILLED"
+                    sell_filled_shares = 0.0
+                    sell_fill_price = sell_price
+                    sell_exchange_oid = None
                     try:
                         sell_result = adapter.submit_order(sell_req)
+                        if (
+                            sell_result.status == OrderStatus.PENDING
+                            and sell_result.exchange_order_id
+                            and not self.dry_run
+                        ):
+                            sell_result = self._poll_order_status(
+                                adapter,
+                                sell_result,
+                                fallback_request=sell_req,
+                            )
                         sell_status = sell_result.status.value
+                        sell_filled_shares = float(sell_result.filled_shares)
+                        sell_fill_price = float(sell_result.fill_price)
+                        sell_exchange_oid = sell_result.exchange_order_id
                         raw_sell_fee = getattr(sell_result, "fee", 0)
                         try:
                             sell_fee_paid = float(raw_sell_fee or 0)
@@ -578,10 +602,6 @@ class BettingEngine:
                             "[BETTING] POSITION FLIP STEP 1/2: SELL %d %s on %s @ $%.2f → %s",
                             intended_sell_count, held_side.upper(), ticker, sell_price, sell_status,
                         )
-                        logger.info(
-                            "[BETTING] POSITION FLIP STEP 2/2: Will BUY %d %s to complete flip",
-                            intended_buy_count, want_side.upper(),
-                        )
                         self._save_order(
                             signal_id=None,  # NET sells are not driven by a signal for this market
                             order_id=sell_order_id,
@@ -590,10 +610,10 @@ class BettingEngine:
                             count=intended_sell_count,
                             price_cents=sell_price_cents,
                             status=sell_status,
-                            filled_shares=float(sell_result.filled_shares),
-                            fill_price=float(sell_result.fill_price),
+                            filled_shares=sell_filled_shares,
+                            fill_price=sell_fill_price,
                             fee_paid=sell_fee_paid,
-                            exchange_order_id=sell_result.exchange_order_id,
+                            exchange_order_id=sell_exchange_oid,
                             action="SELL",
                         )
                     except Exception as e:
@@ -610,6 +630,27 @@ class BettingEngine:
                             status=sell_status,
                         )
 
+                    if sell_status not in {"FILLED", "DRY_RUN"}:
+                        logger.info(
+                            "[BETTING] POSITION FLIP PAUSED: SELL %s is %s (filled=%s/%s); will not BUY %s until sell resolves",
+                            ticker,
+                            sell_status,
+                            sell_filled_shares,
+                            intended_sell_count,
+                            want_side.upper(),
+                        )
+                        return BetResult(
+                            market_id=market_id,
+                            signal=signal,
+                            order_placed=sell_status not in {"CANCELLED", "REJECTED"},
+                            order_id=sell_order_id,
+                            status=sell_status,
+                            filled_shares=sell_filled_shares,
+                            fill_price=sell_fill_price,
+                            fee_paid=sell_fee_paid,
+                            exchange_order_id=sell_exchange_oid,
+                        )
+
                     if intended_buy_count <= 0:
                         return BetResult(
                             market_id=market_id,
@@ -620,6 +661,10 @@ class BettingEngine:
                         )
 
                     # Continue with only the intended buy portion on the new side.
+                    logger.info(
+                        "[BETTING] POSITION FLIP STEP 2/2: Will BUY %d %s to complete flip",
+                        intended_buy_count, want_side.upper(),
+                    )
                     action = "BUY"
                     effective_side = want_side.upper()
                     count = intended_buy_count

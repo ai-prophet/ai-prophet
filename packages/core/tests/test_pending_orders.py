@@ -239,6 +239,141 @@ class TestBettingEngineWithPending:
         assert qty == 5
         assert cash == Decimal("100")
 
+    def test_ledger_state_counts_partially_filled_pending_quantity(self):
+        """Partially filled pending orders should contribute their filled_shares."""
+        engine_db = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine_db)
+        with get_session(engine_db) as session:
+            session.add(
+                BettingOrder(
+                    instance_name="Haifeng",
+                    signal_id=None,
+                    order_id="filled-1",
+                    ticker="TEST",
+                    action="BUY",
+                    side="YES",
+                    count=5,
+                    price_cents=50,
+                    status="FILLED",
+                    filled_shares=5,
+                    fill_price=0.5,
+                    fee_paid=0,
+                    exchange_order_id="ex-filled",
+                    dry_run=False,
+                    created_at=datetime(2026, 3, 26, 20, 0, tzinfo=UTC),
+                )
+            )
+            session.add(
+                BettingOrder(
+                    instance_name="Haifeng",
+                    signal_id=None,
+                    order_id="pending-1",
+                    ticker="TEST",
+                    action="BUY",
+                    side="YES",
+                    count=99,
+                    price_cents=60,
+                    status="PENDING",
+                    filled_shares=3,
+                    fill_price=0.6,
+                    fee_paid=0,
+                    exchange_order_id="ex-pending",
+                    dry_run=False,
+                    created_at=datetime(2026, 3, 26, 20, 5, tzinfo=UTC),
+                )
+            )
+            session.commit()
+
+        engine = BettingEngine(
+            strategy=RebalancingStrategy(),
+            db_engine=engine_db,
+            dry_run=False,
+            instance_name="Haifeng",
+        )
+        with patch.object(engine, "_get_adapter") as mock_get_adapter:
+            mock_get_adapter.return_value.get_balance.return_value = Decimal("100")
+            with patch.object(engine, "_verify_position_with_kalshi", return_value=None):
+                side, qty, cash = engine._live_ledger_state("TEST")
+
+        assert side == "yes"
+        assert qty == 8
+        assert cash == Decimal("100")
+
+    def test_flip_waits_for_pending_sell_before_buying_new_side(self):
+        """Do not start the opposite-side buy until the sell leg is resolved."""
+        engine_db = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine_db)
+        with get_session(engine_db) as session:
+            session.add(
+                BettingOrder(
+                    instance_name="Haifeng",
+                    signal_id=None,
+                    order_id="filled-yes-30",
+                    ticker="TEST",
+                    action="BUY",
+                    side="YES",
+                    count=30,
+                    price_cents=12,
+                    status="FILLED",
+                    filled_shares=30,
+                    fill_price=0.12,
+                    fee_paid=0,
+                    exchange_order_id="ex-filled",
+                    dry_run=False,
+                    created_at=datetime(2026, 3, 27, 7, 0, tzinfo=UTC),
+                )
+            )
+            session.commit()
+
+        engine = BettingEngine(
+            strategy=RebalancingStrategy(),
+            db_engine=engine_db,
+            dry_run=False,
+            instance_name="Haifeng",
+        )
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_balance.return_value = Decimal("100")
+        mock_adapter.submit_order.return_value = OrderResult(
+            order_id="sell-1",
+            intent_id="intent-sell-1",
+            status=OrderStatus.PENDING,
+            filled_shares=Decimal("3"),
+            fill_price=Decimal("0.29"),
+            fee=Decimal("0.05"),
+            exchange_order_id="ex-sell-1",
+        )
+        engine._adapter = mock_adapter
+
+        with patch.object(engine, "_verify_position_with_kalshi", return_value=30.0):
+            with patch.object(
+                engine,
+                "_poll_order_status",
+                return_value=OrderResult(
+                    order_id="sell-1",
+                    intent_id="intent-sell-1",
+                    status=OrderStatus.PENDING,
+                    filled_shares=Decimal("3"),
+                    fill_price=Decimal("0.29"),
+                    fee=Decimal("0.05"),
+                    exchange_order_id="ex-sell-1",
+                ),
+            ):
+                results = engine.process_forecasts(
+                    tick_ts=datetime(2026, 3, 27, 8, 2, tzinfo=UTC),
+                    forecasts={"kalshi:TEST": 0.15},
+                    market_prices={"kalshi:TEST": (0.32, 0.71)},
+                    source="pending-flip-test",
+                )
+
+        assert len(results) == 1
+        assert results[0].status == "PENDING"
+        assert float(results[0].filled_shares) == 3.0
+        assert mock_adapter.submit_order.call_count == 1
+        submitted = mock_adapter.submit_order.call_args[0][0]
+        assert submitted.action == "SELL"
+        assert submitted.side == "YES"
+
 
 class TestOrderManagementSync:
     """Test order management and sync utilities."""
