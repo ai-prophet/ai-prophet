@@ -51,6 +51,13 @@ def _parse_ts(value: Any, fallback: datetime | None = None) -> datetime | None:
     return fallback
 
 
+def _snapshot_order_key(order_id: str, last_update_ts: datetime) -> tuple[str, datetime]:
+    normalized = _parse_ts(last_update_ts, fallback=last_update_ts) or last_update_ts
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=UTC)
+    return order_id, normalized.astimezone(UTC)
+
+
 def _normalize_order_status(status: str | None) -> str:
     raw = (status or "").strip().lower()
     if raw in {"resting", "pending"}:
@@ -156,6 +163,33 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
             if order.get("order_id"):
                 order_payloads.append(("historical", order))
 
+    candidate_keys = {
+        _snapshot_order_key(
+            raw_order.get("order_id"),
+            _parse_ts(
+                raw_order.get("last_update_time"),
+                fallback=_parse_ts(raw_order.get("created_time"), fallback=snapshot_ts),
+            ) or snapshot_ts,
+        )
+        for _, raw_order in order_payloads
+        if raw_order.get("order_id")
+    }
+    order_ids = sorted({order_id for order_id, _ in candidate_keys if order_id})
+    existing_keys: set[tuple[str, datetime]] = set()
+    if order_ids:
+        existing_rows = (
+            session.query(KalshiOrderSnapshot.order_id, KalshiOrderSnapshot.last_update_ts)
+            .filter(
+                KalshiOrderSnapshot.instance_name == instance_name,
+                KalshiOrderSnapshot.order_id.in_(order_ids),
+            )
+            .all()
+        )
+        existing_keys = {
+            _snapshot_order_key(order_id, last_update_ts)
+            for order_id, last_update_ts in existing_rows
+        }
+
     seen: set[tuple[str, datetime]] = set()
     for source, raw_order in order_payloads:
         order_id = raw_order.get("order_id")
@@ -165,8 +199,10 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
             raw_order.get("last_update_time"),
             fallback=_parse_ts(raw_order.get("created_time"), fallback=snapshot_ts),
         ) or snapshot_ts
-        dedupe_key = (order_id, last_update_ts)
+        dedupe_key = _snapshot_order_key(order_id, last_update_ts)
         if dedupe_key in seen:
+            continue
+        if dedupe_key in existing_keys:
             continue
         seen.add(dedupe_key)
 
