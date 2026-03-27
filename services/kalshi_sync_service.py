@@ -6,7 +6,8 @@ This service runs independently of the main worker on its own interval:
 1. Syncs exchange-backed order statuses with Kalshi
 2. Reconciles positions between DB and Kalshi
 3. Updates filled/cancelled orders
-4. Does NOT trigger new predictions or trades
+4. May complete a previously-approved deferred flip buy after its sell leg fills
+5. Does NOT trigger new predictions or fresh model-driven trades
 
 Runs at the next UTC-aligned boundary for the configured interval.
 
@@ -48,6 +49,7 @@ from instance_config import get_current_instance_name, get_instance_env
 from order_management import (
     cancel_stale_orders,
     reconcile_positions_with_kalshi,
+    resume_deferred_flip_buys,
     _sync_pending_order_status,
 )
 
@@ -230,6 +232,7 @@ def sync_with_kalshi(
     results = {
         "pending_orders_updated": 0,
         "stale_orders_cancelled": 0,
+        "deferred_flips_resumed": 0,
         "position_drifts": {},
         "errors": [],
         "realtime_polls": 0,  # Track realtime polling
@@ -277,7 +280,19 @@ def sync_with_kalshi(
                 instance_name,
             )
 
-        # 3. Reconcile positions with Kalshi (but don't sync pending orders again)
+        # 3. Resume any deferred flip buys whose sell leg is now fully resolved.
+        logger.info("[SYNC] Checking for deferred flip buys to resume...")
+        resumed = resume_deferred_flip_buys(db_engine, adapter, instance_name)
+        results["deferred_flips_resumed"] = resumed
+        if resumed > 0:
+            log_sync_event(
+                db_engine,
+                "INFO",
+                f"Submitted {resumed} deferred flip buy order(s)",
+                instance_name,
+            )
+
+        # 4. Reconcile positions with Kalshi (but don't sync pending orders again)
         logger.info("[SYNC] Reconciling positions with Kalshi...")
         drifts = reconcile_positions_with_kalshi(
             db_engine,
@@ -299,15 +314,16 @@ def sync_with_kalshi(
                 instance_name,
             )
 
-        # 4. Update market prices from Kalshi for active positions
+        # 5. Update market prices from Kalshi for active positions
         if not dry_run:
             _update_market_prices(db_engine, adapter, instance_name)
             _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name)
 
         logger.info(
-            "[SYNC] Sync complete: %d orders updated, %d cancelled, %d drifts",
+            "[SYNC] Sync complete: %d orders updated, %d cancelled, %d deferred flips resumed, %d drifts",
             results["pending_orders_updated"],
             results["stale_orders_cancelled"],
+            results["deferred_flips_resumed"],
             len(results["position_drifts"]),
         )
 

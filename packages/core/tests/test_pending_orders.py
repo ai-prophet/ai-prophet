@@ -9,7 +9,7 @@ This test suite ensures that:
 """
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
@@ -19,7 +19,13 @@ UTC = timezone.utc
 from ai_prophet_core.betting import BettingEngine, RebalancingStrategy
 from ai_prophet_core.betting.adapters.base import OrderResult, OrderStatus
 from ai_prophet_core.betting.db import get_session
-from ai_prophet_core.betting.db_schema import Base, BettingOrder
+from ai_prophet_core.betting.db_schema import (
+    Base,
+    BettingDeferredFlip,
+    BettingOrder,
+    BettingPrediction,
+    BettingSignal,
+)
 from ai_prophet_core.betting.strategy import PortfolioSnapshot
 from db_models import TradingPosition
 
@@ -496,6 +502,433 @@ class TestOrderManagementSync:
             assert pos.contract == "no"
             assert pos.quantity == 2.0
 
+    def test_resume_deferred_flip_buy_after_sell_fill(self):
+        """Resolved sell legs should trigger the deferred buy leg in sync."""
+        from services.order_management import resume_deferred_flip_buys
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        now = datetime(2026, 3, 27, 8, 0, tzinfo=UTC)
+
+        with get_session(engine) as session:
+            pred = BettingPrediction(
+                instance_name="TestInstance",
+                tick_ts=now,
+                market_id="kalshi:TEST",
+                source="flip-test",
+                p_yes=0.15,
+                yes_ask=0.32,
+                no_ask=0.71,
+                created_at=now,
+            )
+            session.add(pred)
+            session.flush()
+
+            sig = BettingSignal(
+                instance_name="TestInstance",
+                prediction_id=pred.id,
+                strategy_name="rebalancing",
+                side="no",
+                shares=0.47,
+                price=0.71,
+                cost=0.3337,
+                metadata_json=None,
+                created_at=now,
+            )
+            session.add(sig)
+            session.flush()
+            sig_id = sig.id
+
+            session.add(
+                BettingOrder(
+                    instance_name="TestInstance",
+                    signal_id=None,
+                    order_id="sell-1",
+                    ticker="TEST",
+                    action="SELL",
+                    side="YES",
+                    count=30,
+                    price_cents=29,
+                    status="FILLED",
+                    filled_shares=30,
+                    fill_price=0.29,
+                    fee_paid=0.05,
+                    exchange_order_id="ex-sell-1",
+                    dry_run=False,
+                    created_at=now,
+                )
+            )
+            session.add(
+                BettingDeferredFlip(
+                    instance_name="TestInstance",
+                    signal_id=sig.id,
+                    market_id="kalshi:TEST",
+                    ticker="TEST",
+                    sell_order_id="sell-1",
+                    buy_side="NO",
+                    buy_count=17,
+                    buy_price_cents=71,
+                    status="WAITING_SELL",
+                    buy_order_id=None,
+                    last_error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        class _Adapter:
+            def __init__(self):
+                self.last_request = None
+
+            def get_positions(self):
+                return []
+
+            def submit_order(self, request):
+                self.last_request = request
+                return OrderResult(
+                    order_id=request.order_id,
+                    intent_id=request.intent_id,
+                    status=OrderStatus.FILLED,
+                    filled_shares=Decimal("17"),
+                    fill_price=Decimal("0.71"),
+                    fee=Decimal("0.02"),
+                    exchange_order_id="ex-buy-1",
+                )
+
+        adapter = _Adapter()
+        resumed = resume_deferred_flip_buys(engine, adapter, "TestInstance")
+
+        assert resumed == 1
+        assert adapter.last_request is not None
+        assert adapter.last_request.action == "BUY"
+        assert adapter.last_request.side == "NO"
+        assert adapter.last_request.exchange_ticker == "TEST"
+        assert adapter.last_request.limit_price == Decimal("0.71")
+
+        with get_session(engine) as session:
+            buy = (
+                session.query(BettingOrder)
+                .filter(
+                    BettingOrder.instance_name == "TestInstance",
+                    BettingOrder.signal_id == sig_id,
+                    BettingOrder.action == "BUY",
+                )
+                .one()
+            )
+            assert buy.count == 17
+            assert buy.status == "FILLED"
+            assert buy.price_cents == 71
+            flip = session.query(BettingDeferredFlip).filter(BettingDeferredFlip.signal_id == sig_id).one()
+            assert flip.status == "COMPLETED"
+            assert flip.buy_order_id == buy.order_id
+            assert flip.buy_price_cents == 71
+
+    def test_resume_deferred_flip_waits_for_position_sync(self):
+        """Resolved sell should wait if Kalshi positions still show the old side."""
+        from services.order_management import resume_deferred_flip_buys
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        now = datetime(2026, 3, 27, 8, 0, tzinfo=UTC)
+
+        with get_session(engine) as session:
+            pred = BettingPrediction(
+                instance_name="TestInstance",
+                tick_ts=now,
+                market_id="kalshi:TEST",
+                source="flip-test",
+                p_yes=0.15,
+                yes_ask=0.32,
+                no_ask=0.71,
+                created_at=now,
+            )
+            session.add(pred)
+            session.flush()
+            sig = BettingSignal(
+                instance_name="TestInstance",
+                prediction_id=pred.id,
+                strategy_name="rebalancing",
+                side="no",
+                shares=0.47,
+                price=0.71,
+                cost=0.3337,
+                metadata_json=None,
+                created_at=now,
+            )
+            session.add(sig)
+            session.flush()
+            sig_id = sig.id
+            session.add(
+                BettingOrder(
+                    instance_name="TestInstance",
+                    signal_id=None,
+                    order_id="sell-1",
+                    ticker="TEST",
+                    action="SELL",
+                    side="YES",
+                    count=30,
+                    price_cents=29,
+                    status="FILLED",
+                    filled_shares=30,
+                    fill_price=0.29,
+                    fee_paid=0.05,
+                    exchange_order_id="ex-sell-1",
+                    dry_run=False,
+                    created_at=now,
+                )
+            )
+            session.add(
+                BettingDeferredFlip(
+                    instance_name="TestInstance",
+                    signal_id=sig_id,
+                    market_id="kalshi:TEST",
+                    ticker="TEST",
+                    sell_order_id="sell-1",
+                    buy_side="NO",
+                    buy_count=17,
+                    buy_price_cents=71,
+                    status="WAITING_SELL",
+                    buy_order_id=None,
+                    last_error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        class _Adapter:
+            def __init__(self):
+                self.submit_called = False
+
+            def get_positions(self):
+                return [{"ticker": "TEST", "position_fp": "4.00"}]
+
+            def submit_order(self, request):
+                self.submit_called = True
+                raise AssertionError("submit_order should not be called while positions still show old side")
+
+        adapter = _Adapter()
+        resumed = resume_deferred_flip_buys(engine, adapter, "TestInstance")
+        assert resumed == 0
+        assert adapter.submit_called is False
+        with get_session(engine) as session:
+            flip = session.query(BettingDeferredFlip).filter(BettingDeferredFlip.signal_id == sig_id).one()
+            assert flip.status == "WAITING_POSITION_SYNC"
+
+    def test_resume_deferred_flip_does_not_duplicate_newer_pending_buy(self):
+        """A newer same-side pending buy on the ticker should block deferred duplicate buys."""
+        from services.order_management import resume_deferred_flip_buys
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        now = datetime(2026, 3, 27, 8, 0, tzinfo=UTC)
+
+        with get_session(engine) as session:
+            pred = BettingPrediction(
+                instance_name="TestInstance",
+                tick_ts=now,
+                market_id="kalshi:TEST",
+                source="flip-test",
+                p_yes=0.15,
+                yes_ask=0.32,
+                no_ask=0.71,
+                created_at=now,
+            )
+            session.add(pred)
+            session.flush()
+            sig = BettingSignal(
+                instance_name="TestInstance",
+                prediction_id=pred.id,
+                strategy_name="rebalancing",
+                side="no",
+                shares=0.47,
+                price=0.71,
+                cost=0.3337,
+                metadata_json=None,
+                created_at=now,
+            )
+            session.add(sig)
+            session.flush()
+            sig_id = sig.id
+            session.add(
+                BettingOrder(
+                    instance_name="TestInstance",
+                    signal_id=None,
+                    order_id="sell-1",
+                    ticker="TEST",
+                    action="SELL",
+                    side="YES",
+                    count=30,
+                    price_cents=29,
+                    status="FILLED",
+                    filled_shares=30,
+                    fill_price=0.29,
+                    fee_paid=0.05,
+                    exchange_order_id="ex-sell-1",
+                    dry_run=False,
+                    created_at=now,
+                )
+            )
+            session.add(
+                BettingOrder(
+                    instance_name="TestInstance",
+                    signal_id=999,
+                    order_id="newer-buy",
+                    ticker="TEST",
+                    action="BUY",
+                    side="NO",
+                    count=12,
+                    price_cents=67,
+                    status="PENDING",
+                    filled_shares=0,
+                    fill_price=0,
+                    fee_paid=0,
+                    exchange_order_id="ex-newer-buy",
+                    dry_run=False,
+                    created_at=now + timedelta(minutes=1),
+                )
+            )
+            session.add(
+                BettingDeferredFlip(
+                    instance_name="TestInstance",
+                    signal_id=sig_id,
+                    market_id="kalshi:TEST",
+                    ticker="TEST",
+                    sell_order_id="sell-1",
+                    buy_side="NO",
+                    buy_count=17,
+                    buy_price_cents=71,
+                    status="WAITING_SELL",
+                    buy_order_id=None,
+                    last_error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        class _Adapter:
+            def get_positions(self):
+                return []
+
+            def submit_order(self, request):
+                raise AssertionError("submit_order should not run when a newer pending buy already exists")
+
+        resumed = resume_deferred_flip_buys(engine, _Adapter(), "TestInstance")
+        assert resumed == 0
+        with get_session(engine) as session:
+            flip = session.query(BettingDeferredFlip).filter(BettingDeferredFlip.signal_id == sig_id).one()
+            assert flip.status == "BUY_SUBMITTED"
+            assert flip.buy_order_id == "newer-buy"
+
+    def test_resume_deferred_flip_is_superseded_by_newer_signal(self):
+        """A newer worker signal for the market should supersede the deferred flip."""
+        from services.order_management import resume_deferred_flip_buys
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        Base.metadata.create_all(engine)
+        now = datetime(2026, 3, 27, 8, 0, tzinfo=UTC)
+
+        with get_session(engine) as session:
+            pred1 = BettingPrediction(
+                instance_name="TestInstance",
+                tick_ts=now,
+                market_id="kalshi:TEST",
+                source="flip-test",
+                p_yes=0.15,
+                yes_ask=0.32,
+                no_ask=0.71,
+                created_at=now,
+            )
+            session.add(pred1)
+            session.flush()
+            sig1 = BettingSignal(
+                instance_name="TestInstance",
+                prediction_id=pred1.id,
+                strategy_name="rebalancing",
+                side="no",
+                shares=0.47,
+                price=0.71,
+                cost=0.3337,
+                metadata_json=None,
+                created_at=now,
+            )
+            session.add(sig1)
+            session.flush()
+            sig_id = sig1.id
+            session.add(
+                BettingOrder(
+                    instance_name="TestInstance",
+                    signal_id=None,
+                    order_id="sell-1",
+                    ticker="TEST",
+                    action="SELL",
+                    side="YES",
+                    count=30,
+                    price_cents=29,
+                    status="FILLED",
+                    filled_shares=30,
+                    fill_price=0.29,
+                    fee_paid=0.05,
+                    exchange_order_id="ex-sell-1",
+                    dry_run=False,
+                    created_at=now,
+                )
+            )
+            session.add(
+                BettingDeferredFlip(
+                    instance_name="TestInstance",
+                    signal_id=sig_id,
+                    market_id="kalshi:TEST",
+                    ticker="TEST",
+                    sell_order_id="sell-1",
+                    buy_side="NO",
+                    buy_count=17,
+                    buy_price_cents=71,
+                    status="WAITING_SELL",
+                    buy_order_id=None,
+                    last_error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            pred2 = BettingPrediction(
+                instance_name="TestInstance",
+                tick_ts=now + timedelta(hours=1),
+                market_id="kalshi:TEST",
+                source="flip-test-newer",
+                p_yes=0.55,
+                yes_ask=0.45,
+                no_ask=0.56,
+                created_at=now + timedelta(hours=1),
+            )
+            session.add(pred2)
+            session.flush()
+            session.add(
+                BettingSignal(
+                    instance_name="TestInstance",
+                    prediction_id=pred2.id,
+                    strategy_name="rebalancing",
+                    side="yes",
+                    shares=0.10,
+                    price=0.45,
+                    cost=0.045,
+                    metadata_json=None,
+                    created_at=now + timedelta(hours=1),
+                )
+            )
+
+        class _Adapter:
+            def get_positions(self):
+                return []
+
+            def submit_order(self, request):
+                raise AssertionError("submit_order should not run for superseded deferred flips")
+
+        resumed = resume_deferred_flip_buys(engine, _Adapter(), "TestInstance")
+        assert resumed == 0
+        with get_session(engine) as session:
+            flip = session.query(BettingDeferredFlip).filter(BettingDeferredFlip.signal_id == sig_id).one()
+            assert flip.status == "SUPERSEDED"
+
 
 class TestKalshiSyncService:
     """Test the standalone Kalshi sync service."""
@@ -506,32 +939,36 @@ class TestKalshiSyncService:
 
         with patch("services.kalshi_sync_service._sync_pending_order_status") as mock_sync:
             with patch("services.kalshi_sync_service.cancel_stale_orders") as mock_cancel:
-                with patch("services.kalshi_sync_service.reconcile_positions_with_kalshi") as mock_reconcile:
-                    with patch("services.kalshi_sync_service._update_market_prices") as mock_prices:
-                        # Mock return values
-                        mock_sync.return_value = 3  # 3 orders updated
-                        mock_cancel.return_value = 1  # 1 order cancelled
-                        mock_reconcile.return_value = {}  # No drifts
+                with patch("services.kalshi_sync_service.resume_deferred_flip_buys") as mock_resume:
+                    with patch("services.kalshi_sync_service.reconcile_positions_with_kalshi") as mock_reconcile:
+                        with patch("services.kalshi_sync_service._update_market_prices") as mock_prices:
+                            # Mock return values
+                            mock_sync.return_value = 3  # 3 orders updated
+                            mock_cancel.return_value = 1  # 1 order cancelled
+                            mock_resume.return_value = 2  # 2 deferred buys resumed
+                            mock_reconcile.return_value = {}  # No drifts
 
-                        # Run sync
-                        results = sync_with_kalshi(
-                            MagicMock(),  # db_engine
-                            MagicMock(),  # adapter
-                            "TestInstance",
-                            dry_run=False,
-                        )
+                            # Run sync
+                            results = sync_with_kalshi(
+                                MagicMock(),  # db_engine
+                                MagicMock(),  # adapter
+                                "TestInstance",
+                                dry_run=False,
+                            )
 
-                        # Verify results
-                        assert results["pending_orders_updated"] == 3
-                        assert results["stale_orders_cancelled"] == 1
-                        assert results["position_drifts"] == {}
-                        assert len(results["errors"]) == 0
+                            # Verify results
+                            assert results["pending_orders_updated"] == 3
+                            assert results["stale_orders_cancelled"] == 1
+                            assert results["deferred_flips_resumed"] == 2
+                            assert results["position_drifts"] == {}
+                            assert len(results["errors"]) == 0
 
-                        # Verify all functions were called
-                        mock_sync.assert_called_once()
-                        mock_cancel.assert_called_once()
-                        mock_reconcile.assert_called_once()
-                        mock_prices.assert_called_once()
+                            # Verify all functions were called
+                            mock_sync.assert_called_once()
+                            mock_cancel.assert_called_once()
+                            mock_resume.assert_called_once()
+                            mock_reconcile.assert_called_once()
+                            mock_prices.assert_called_once()
 
 
 if __name__ == "__main__":

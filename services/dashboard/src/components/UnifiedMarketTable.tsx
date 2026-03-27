@@ -1114,7 +1114,7 @@ function ExpandedPanel({
       .filter((trade) => !isSyntheticTrade(trade))
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const chronRuns = [...modelRuns].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-    const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
+    const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns, row);
     return chronTrades.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns, row.pending_orders ?? []).length;
   }, [row.trade_count, row.trades, row.pending_orders, modelRuns]);
   const tradesTabCount = useMemo(
@@ -1365,10 +1365,16 @@ function SubmittedTradesTimelineTab({
     () => [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
     [modelRuns]
   );
-  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
+  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns, row), [chronTrades, chronRuns, row]);
   const unmatchedRuns = useMemo(
     () => unmatchedTimelineRuns(tradesWithRuns, chronRuns, row.pending_orders ?? []),
     [tradesWithRuns, chronRuns, row.pending_orders]
+  );
+  const replayedPosition = useMemo(() => replayedTimelinePosition(chronTrades), [chronTrades]);
+  const syncedPosition = useMemo(() => syncedTimelinePosition(row), [row]);
+  const hasHistoryMismatch = useMemo(
+    () => !sameTimelinePosition(replayedPosition, syncedPosition),
+    [replayedPosition, syncedPosition]
   );
   const runDisplayContext = useMemo(() => buildRunDisplayContext(chronRuns, row), [chronRuns, row]);
   const tradeDisplayContext = useCallback(
@@ -1497,6 +1503,16 @@ function SubmittedTradesTimelineTab({
               <Line type="monotone" dataKey="cyclePnL" stroke="#888" strokeWidth={1} strokeDasharray="5 5" dot={{ r: 2, fill: "#888" }} name="Cycle Cash Flow" />
             </LineChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {hasHistoryMismatch && (
+        <div className="mb-3 rounded border border-warn/40 bg-warn/10 px-3 py-2 text-[10px] leading-relaxed text-warn">
+          Timeline history mismatch detected. Current synced hold:{" "}
+          <span className={sideToneClass(syncedPosition?.side, true)}>{formatTimelinePosition(syncedPosition)}</span>.{" "}
+          Reconstructed history ends at{" "}
+          <span className={sideToneClass(replayedPosition?.side, true)}>{formatTimelinePosition(replayedPosition)}</span>.{" "}
+          Older timeline rows may be incomplete or mislabeled.
         </div>
       )}
 
@@ -1721,11 +1737,53 @@ type TimelineTradeItem = {
   resultingPosition: TimelinePositionState;
 };
 
-function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): TimelineTradeItem[] {
+function syncedTimelinePosition(row: UnifiedMarketRow): TimelinePositionState {
+  if (!row.position || row.position.quantity <= 0) return null;
+  return {
+    quantity: row.position.quantity,
+    side: row.position.contract.toUpperCase(),
+  };
+}
+
+function replayedTimelinePosition(chronTrades: Trade[]): TimelinePositionState {
+  let currentSignedQuantity = 0;
+
+  chronTrades.forEach((trade) => {
+    const qty = getExecutedTradeQuantity(trade);
+    const side = trade.side?.toUpperCase() ?? null;
+    const isSell = trade.action?.toUpperCase() === "SELL";
+    if (qty <= 0 || !side) return;
+    const signedDelta = side === "YES" ? qty : -qty;
+    currentSignedQuantity += isSell ? -signedDelta : signedDelta;
+  });
+
+  if (currentSignedQuantity === 0) return null;
+  return {
+    quantity: Math.abs(currentSignedQuantity),
+    side: currentSignedQuantity > 0 ? "YES" : "NO",
+  };
+}
+
+function sameTimelinePosition(a: TimelinePositionState, b: TimelinePositionState): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.side === b.side && Math.abs(a.quantity - b.quantity) < 0.0005;
+}
+
+function formatTimelinePosition(position: TimelinePositionState): string {
+  if (!position) return "flat";
+  return `${position.quantity} ${position.side}`;
+}
+
+function matchTradesToRuns(
+  chronTrades: Trade[],
+  chronRuns: ModelRun[],
+  row: UnifiedMarketRow,
+): TimelineTradeItem[] {
   const matchWindowMs = 15 * 60 * 1000;
   let currentSignedQuantity = 0;
 
-  return chronTrades.map((trade) => {
+  const items = chronTrades.map((trade) => {
     const pred = trade.prediction;
     const tradeTs = new Date(trade.created_at).getTime();
     let matchedRun: ModelRun | null = null;
@@ -1769,6 +1827,17 @@ function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): Timelin
       resultingPosition,
     };
   });
+
+  if (items.length > 0) {
+    // The sync-backed position is authoritative for the current end state even
+    // when older snapshot-derived order history is noisy or incomplete.
+    items[items.length - 1] = {
+      ...items[items.length - 1],
+      resultingPosition: syncedTimelinePosition(row),
+    };
+  }
+
+  return items;
 }
 
 function unmatchedTimelineRuns(
@@ -1805,7 +1874,7 @@ function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: Model
     [modelRuns]
   );
   const runDisplayContext = useMemo(() => buildRunDisplayContext(chronRuns, row), [chronRuns, row]);
-  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
+  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns, row), [chronTrades, chronRuns, row]);
   const tradeStepGroups = useMemo(() => buildTradeStepGroups(tradesWithRuns), [tradesWithRuns]);
 
   if (tradeStepGroups.length === 0) {

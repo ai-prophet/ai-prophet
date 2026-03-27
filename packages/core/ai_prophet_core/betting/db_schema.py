@@ -102,3 +102,33 @@ class BettingOrder(Base):
         Index("ix_betting_order_instance_ticker", "instance_name", "ticker"),
         Index("ix_betting_order_instance_created", "instance_name", "created_at"),
     )
+
+
+class BettingDeferredFlip(Base):
+    """Deferred second leg of a cross-side rebalance waiting on the sell leg."""
+
+    __tablename__ = "betting_deferred_flips"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    signal_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("betting_signals.id"), nullable=False
+    )
+    market_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(255), nullable=False)
+    sell_order_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    buy_side: Mapped[str] = mapped_column(String(8), nullable=False)
+    buy_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    buy_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="WAITING_SELL")
+    buy_order_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "signal_id", name="uq_betting_deferred_flip_instance_signal"),
+        Index("ix_betting_deferred_flip_instance_status", "instance_name", "status"),
+        Index("ix_betting_deferred_flip_instance_ticker", "instance_name", "ticker"),
+        Index("ix_betting_deferred_flip_instance_sell", "instance_name", "sell_order_id"),
+    )

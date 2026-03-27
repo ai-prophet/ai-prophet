@@ -631,6 +631,15 @@ class BettingEngine:
                         )
 
                     if sell_status not in {"FILLED", "DRY_RUN"}:
+                        self._save_deferred_flip(
+                            signal_id=signal_id,
+                            market_id=market_id,
+                            ticker=ticker,
+                            sell_order_id=sell_order_id,
+                            buy_side=want_side.upper(),
+                            buy_count=intended_buy_count,
+                            buy_price_cents=max(1, min(99, round(signal.price * 100))),
+                        )
                         logger.info(
                             "[BETTING] POSITION FLIP PAUSED: SELL %s is %s (filled=%s/%s); will not BUY %s until sell resolves",
                             ticker,
@@ -1172,6 +1181,65 @@ class BettingEngine:
                 session.add(row)
         except Exception as e:
             logger.warning("Failed to persist order: %s", e, exc_info=True)
+
+    def _save_deferred_flip(
+        self,
+        *,
+        signal_id: int | None,
+        market_id: str,
+        ticker: str,
+        sell_order_id: str,
+        buy_side: str,
+        buy_count: int,
+        buy_price_cents: int,
+    ) -> None:
+        if self._engine is None or signal_id is None or buy_count <= 0:
+            return
+
+        from .db import get_session
+        from .db_schema import BettingDeferredFlip
+
+        now = datetime.now(UTC)
+        try:
+            with get_session(self._engine) as session:
+                row = (
+                    session.query(BettingDeferredFlip)
+                    .filter(
+                        BettingDeferredFlip.instance_name == self.instance_name,
+                        BettingDeferredFlip.signal_id == signal_id,
+                    )
+                    .one_or_none()
+                )
+                if row is None:
+                    row = BettingDeferredFlip(
+                        instance_name=self.instance_name,
+                        signal_id=signal_id,
+                        market_id=market_id,
+                        ticker=ticker,
+                        sell_order_id=sell_order_id,
+                        buy_side=buy_side,
+                        buy_count=buy_count,
+                        buy_price_cents=buy_price_cents,
+                        status="WAITING_SELL",
+                        buy_order_id=None,
+                        last_error=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(row)
+                else:
+                    row.market_id = market_id
+                    row.ticker = ticker
+                    row.sell_order_id = sell_order_id
+                    row.buy_side = buy_side
+                    row.buy_count = buy_count
+                    row.buy_price_cents = buy_price_cents
+                    row.status = "WAITING_SELL"
+                    row.buy_order_id = None
+                    row.last_error = None
+                    row.updated_at = now
+        except Exception as e:
+            logger.warning("Failed to persist deferred flip: %s", e, exc_info=True)
 
     # ── query helpers ─────────────────────────────────────────────────
 

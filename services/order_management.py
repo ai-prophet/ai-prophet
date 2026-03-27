@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from sqlalchemy import func
 
 UTC = timezone.utc
 from typing import TYPE_CHECKING
@@ -58,6 +60,268 @@ def _sync_pending_order_status(
         logger.info("[ORDER_MGMT] Updated %d trading_positions rows from Kalshi snapshots", position_updates)
 
     return updated_count
+
+
+def _signed_positions_by_ticker(adapter) -> dict[str, float]:
+    """Return live signed positions by ticker from Kalshi."""
+    try:
+        positions = adapter.get_positions()
+    except Exception as e:
+        logger.warning("[ORDER_MGMT] Failed to fetch live positions from Kalshi: %s", e)
+        return {}
+
+    signed_by_ticker: dict[str, float] = {}
+    for pos in positions:
+        ticker = pos.get("ticker")
+        if not ticker:
+            continue
+        try:
+            signed_by_ticker[str(ticker)] = float(pos.get("position_fp", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    return signed_by_ticker
+
+def resume_deferred_flip_buys(
+    db_engine: Engine,
+    adapter,
+    instance_name: str,
+) -> int:
+    """Submit deferred buy legs once their prerequisite sell leg resolves."""
+    from ai_prophet_core.betting.adapters.base import OrderRequest
+    from ai_prophet_core.betting.db import get_session
+    from ai_prophet_core.betting.db_schema import (
+        BettingDeferredFlip,
+        BettingOrder,
+        BettingPrediction,
+        BettingSignal,
+    )
+
+    now = datetime.now(UTC)
+    submitted_count = 0
+    positions_by_ticker = _signed_positions_by_ticker(adapter)
+
+    with get_session(db_engine) as session:
+        deferred_flips = (
+            session.query(BettingDeferredFlip)
+            .filter(
+                BettingDeferredFlip.instance_name == instance_name,
+                BettingDeferredFlip.status.in_((
+                    "WAITING_SELL",
+                    "WAITING_POSITION_SYNC",
+                    "WAITING_RETRY",
+                    "BUY_SUBMITTED",
+                )),
+            )
+            .order_by(BettingDeferredFlip.created_at.asc())
+            .all()
+        )
+
+        if not deferred_flips:
+            return 0
+
+        signal_ids = [flip.signal_id for flip in deferred_flips]
+        tickers = [flip.ticker for flip in deferred_flips]
+        market_ids = [flip.market_id for flip in deferred_flips]
+        existing_buy_orders = (
+            session.query(BettingOrder)
+            .filter(
+                BettingOrder.instance_name == instance_name,
+                BettingOrder.signal_id.in_(signal_ids),
+                BettingOrder.action == "BUY",
+            )
+            .order_by(BettingOrder.created_at.desc())
+            .all()
+        )
+        buy_order_by_signal: dict[int, BettingOrder] = {}
+        for row in existing_buy_orders:
+            if row.signal_id is not None and row.signal_id not in buy_order_by_signal:
+                buy_order_by_signal[row.signal_id] = row
+
+        active_same_side_buys = (
+            session.query(BettingOrder)
+            .filter(
+                BettingOrder.instance_name == instance_name,
+                BettingOrder.ticker.in_(tickers),
+                BettingOrder.action == "BUY",
+                BettingOrder.status.in_(("PENDING", "PARTIALLY_FILLED")),
+            )
+            .order_by(BettingOrder.created_at.desc())
+            .all()
+        )
+        active_buy_by_ticker_side: dict[tuple[str, str], BettingOrder] = {}
+        for row in active_same_side_buys:
+            key = (row.ticker, row.side.upper())
+            if key not in active_buy_by_ticker_side:
+                active_buy_by_ticker_side[key] = row
+
+        latest_signal_ts_by_market = dict(
+            session.query(BettingPrediction.market_id, func.max(BettingSignal.created_at))
+            .join(BettingSignal, BettingSignal.prediction_id == BettingPrediction.id)
+            .filter(
+                BettingSignal.instance_name == instance_name,
+                BettingPrediction.market_id.in_(market_ids),
+            )
+            .group_by(BettingPrediction.market_id)
+            .all()
+        )
+
+        for flip in deferred_flips:
+            flip.updated_at = now
+
+            latest_signal_ts = latest_signal_ts_by_market.get(flip.market_id)
+            if latest_signal_ts is not None and latest_signal_ts > flip.created_at:
+                flip.status = "SUPERSEDED"
+                flip.last_error = "Deferred flip superseded by a newer worker signal"
+                continue
+
+            existing_buy = buy_order_by_signal.get(flip.signal_id)
+            if existing_buy is not None:
+                flip.buy_order_id = existing_buy.order_id
+                if existing_buy.status in {"FILLED", "DRY_RUN"}:
+                    flip.status = "COMPLETED"
+                    flip.last_error = None
+                elif existing_buy.status in {"PENDING", "PARTIALLY_FILLED"}:
+                    flip.status = "BUY_SUBMITTED"
+                    continue
+                elif existing_buy.status in {"CANCELLED", "REJECTED", "ERROR"}:
+                    flip.last_error = f"Retrying after prior deferred buy ended {existing_buy.status}"
+
+            sell_order = (
+                session.query(BettingOrder)
+                .filter(
+                    BettingOrder.instance_name == instance_name,
+                    BettingOrder.order_id == flip.sell_order_id,
+                )
+                .one_or_none()
+            )
+
+            if sell_order is None:
+                flip.status = "ERROR"
+                flip.last_error = "Missing prerequisite sell order"
+                continue
+
+            if sell_order.status in {"PENDING", "PARTIALLY_FILLED"}:
+                flip.status = "WAITING_SELL"
+                continue
+
+            if sell_order.status in {"CANCELLED", "REJECTED", "ERROR"}:
+                flip.status = "CANCELLED"
+                flip.last_error = f"Sell leg ended {sell_order.status}"
+                continue
+
+            signed_qty = positions_by_ticker.get(flip.ticker, 0.0)
+            desired_side = flip.buy_side.upper()
+            same_side_active_buy = active_buy_by_ticker_side.get((flip.ticker, desired_side))
+            if (
+                same_side_active_buy is not None
+                and same_side_active_buy.created_at >= sell_order.created_at
+            ):
+                flip.buy_order_id = same_side_active_buy.order_id
+                flip.status = "BUY_SUBMITTED"
+                flip.last_error = "Existing same-side BUY is already active for this ticker"
+                continue
+
+            if desired_side == "YES":
+                if signed_qty < -0.5:
+                    flip.status = "WAITING_POSITION_SYNC"
+                    flip.last_error = (
+                        f"Waiting for live position sync: still seeing NO {abs(round(signed_qty))}"
+                    )
+                    continue
+                existing_target_qty = max(0, round(signed_qty))
+            else:
+                if signed_qty > 0.5:
+                    flip.status = "WAITING_POSITION_SYNC"
+                    flip.last_error = (
+                        f"Waiting for live position sync: still seeing YES {abs(round(signed_qty))}"
+                    )
+                    continue
+                existing_target_qty = max(0, round(-signed_qty))
+
+            remaining_count = max(0, flip.buy_count - existing_target_qty)
+            if remaining_count <= 0:
+                flip.status = "COMPLETED"
+                flip.last_error = None
+                continue
+
+            current_price_cents = flip.buy_price_cents
+            buy_order_id = str(uuid.uuid4())
+            request = OrderRequest(
+                order_id=buy_order_id,
+                intent_id=f"deferred-flip-{buy_order_id[:8]}",
+                market_id=flip.market_id,
+                exchange_ticker=flip.ticker,
+                action="BUY",
+                side=desired_side,
+                shares=Decimal(str(remaining_count)),
+                limit_price=Decimal(str(current_price_cents / 100.0)),
+            )
+
+            try:
+                result = adapter.submit_order(request)
+            except Exception as e:
+                flip.status = "WAITING_RETRY"
+                flip.last_error = f"Deferred buy submit failed: {e}"
+                logger.error(
+                    "[ORDER_MGMT] Deferred flip BUY submit failed for %s: %s",
+                    flip.ticker,
+                    e,
+                )
+                continue
+
+            status = result.status.value
+            filled_shares = float(result.filled_shares or 0)
+            fill_price = float(result.fill_price or 0)
+            try:
+                fee_paid = float(getattr(result, "fee", 0) or 0)
+            except (TypeError, ValueError):
+                fee_paid = 0.0
+
+            new_order = BettingOrder(
+                instance_name=instance_name,
+                signal_id=flip.signal_id,
+                order_id=buy_order_id,
+                ticker=flip.ticker,
+                action="BUY",
+                side=desired_side.lower(),
+                count=remaining_count,
+                price_cents=flip.buy_price_cents,
+                status=status,
+                filled_shares=filled_shares,
+                fill_price=fill_price,
+                fee_paid=fee_paid,
+                exchange_order_id=result.exchange_order_id,
+                dry_run=False,
+                created_at=now,
+            )
+            session.add(new_order)
+
+            flip.buy_order_id = buy_order_id
+            flip.last_error = result.rejection_reason
+            if status in {"FILLED", "DRY_RUN"}:
+                flip.status = "COMPLETED"
+            elif status in {"PENDING", "PARTIALLY_FILLED"}:
+                flip.status = "BUY_SUBMITTED"
+            else:
+                flip.status = "WAITING_RETRY"
+
+            if filled_shares > 0:
+                prior_signed_qty = positions_by_ticker.get(flip.ticker, 0.0)
+                positions_by_ticker[flip.ticker] = (
+                    prior_signed_qty + filled_shares if desired_side == "YES" else prior_signed_qty - filled_shares
+                )
+
+            buy_order_by_signal[flip.signal_id] = new_order
+            submitted_count += 1
+
+    if submitted_count > 0:
+        logger.info(
+            "[ORDER_MGMT] Submitted %d deferred flip buy order(s) for %s",
+            submitted_count,
+            instance_name,
+        )
+
+    return submitted_count
 
 
 def cancel_stale_orders(
