@@ -2698,6 +2698,7 @@ def get_model_runs(
         for row in rows:
             p_yes = None
             reasoning = None
+            skip_reason = None
             sources = []
             models_breakdown = None
             if row.metadata_json:
@@ -2705,10 +2706,12 @@ def get_model_runs(
                     meta = json.loads(row.metadata_json)
                     p_yes = meta.get("p_yes")
                     reasoning = meta.get("reasoning")
+                    skip_reason = meta.get("skip_reason")
                     sources = meta.get("sources", [])
                     models_breakdown = meta.get("models")
                 except (json.JSONDecodeError, TypeError):
                     pass
+            effective_reasoning = reasoning or skip_reason
             entry = {
                 "id": row.id,
                 "model_name": row.model_name,
@@ -2717,7 +2720,7 @@ def get_model_runs(
                 "confidence": row.confidence,
                 "market_id": row.market_id,
                 "p_yes": p_yes,
-                "reasoning": reasoning,
+                "reasoning": effective_reasoning,
                 "sources": sources,
             }
             if models_breakdown:

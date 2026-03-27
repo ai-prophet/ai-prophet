@@ -23,6 +23,8 @@ envVarGroups:
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
         value: "false"
+      - key: WORKER_POLL_INTERVAL_SEC
+        value: "14400"
       - key: SYNC_INTERVAL_SEC
         value: "600"
       - key: GEMINI_API_KEY_HAIFENG
@@ -49,8 +51,6 @@ services:
     envVars:
       - key: TRADING_INSTANCE_NAME
         value: Haifeng
-      - key: WORKER_POLL_INTERVAL_SEC
-        value: "14400"
       - key: WORKER_MODELS
         value: "gemini:gemini-3.1-pro-preview"
       - key: WORKER_MAX_MARKETS
@@ -126,8 +126,6 @@ services:
     envVars:
       - key: TRADING_INSTANCE_NAME
         value: Jibang
-      - key: WORKER_POLL_INTERVAL_SEC
-        value: "14400"
       - key: WORKER_MODELS
         value: "gemini:gemini-3.1-pro-preview:market"
       - key: WORKER_MAX_MARKETS

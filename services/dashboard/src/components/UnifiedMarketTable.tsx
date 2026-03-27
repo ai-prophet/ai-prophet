@@ -83,6 +83,26 @@ function isHoldLikeDecision(decision: string | null | undefined): boolean {
   return decision?.toUpperCase() === "HOLD";
 }
 
+function isSkipLikeDecision(decision: string | null | undefined): boolean {
+  const upper = decision?.toUpperCase() ?? "";
+  return upper === "SKIP" || upper === "CYCLE_SKIPPED" || upper === "NO_PREDICTION";
+}
+
+function normalizedDecisionLabel(decision: string | null | undefined): "BUY" | "SELL" | "HOLD" | "SKIP" {
+  const upper = decision?.toUpperCase() ?? "";
+  if (upper.startsWith("SELL")) return "SELL";
+  if (upper.startsWith("BUY")) return "BUY";
+  if (isSkipLikeDecision(upper)) return "SKIP";
+  return "HOLD";
+}
+
+function decisionSide(decision: string | null | undefined): string | null {
+  const upper = decision?.toUpperCase() ?? "";
+  if (upper.endsWith("_YES")) return "YES";
+  if (upper.endsWith("_NO")) return "NO";
+  return null;
+}
+
 function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
   return (row.pending_orders ?? []).some((order) => (order.count - order.filled_shares) > 0);
 }
@@ -1335,7 +1355,9 @@ function SubmittedTradesTimelineTab({
             const isExpanded = expandedTradeId === -run.id;
             const hasDetail = !!(run.reasoning || (run.sources && run.sources.length > 0));
             const isHold = isHoldLikeDecision(run.decision);
-            const isSkip = run.decision === "CYCLE_SKIPPED";
+            const isSkip = isSkipLikeDecision(run.decision);
+            const label = normalizedDecisionLabel(run.decision);
+            const side = decisionSide(run.decision);
             const edge = run.p_yes != null && row.yes_ask != null ? run.p_yes - row.yes_ask : null;
             return (
               <div key={event.key} className="relative py-1.5">
@@ -1359,8 +1381,15 @@ function SubmittedTradesTimelineTab({
                         <span className={`text-[9px] px-1 py-px rounded font-bold ${
                           isSkip ? "bg-t-border/50 text-txt-muted" : isHold ? "bg-yellow-900/30 text-yellow-500" : "bg-accent-dim text-accent"
                         }`}>
-                          {isSkip ? "SKIP" : run.decision}
+                          {label}
                         </span>
+                        {side && (
+                          <span className={`text-[9px] px-1 py-px rounded font-bold ${
+                            side === "YES" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
+                          }`}>
+                            {side}
+                          </span>
+                        )}
                         <span className={MODEL_COLORS[run.id % MODEL_COLORS.length]}>
                           {shortModelName(run.model_name)}
                         </span>
@@ -1368,6 +1397,11 @@ function SubmittedTradesTimelineTab({
                         {row.yes_ask != null && <span className="text-txt-secondary">mkt: {(row.yes_ask * 100).toFixed(0)}c</span>}
                         {edge != null && <span className={pnlCls(edge)}>edge: {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)}pp</span>}
                         {run.confidence != null && <span className="text-txt-muted">conf: {(run.confidence * 100).toFixed(0)}%</span>}
+                        {isSkip && run.reasoning && (
+                          <span className="text-txt-muted break-words">
+                            why: {run.reasoning}
+                          </span>
+                        )}
                         {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
                       </div>
                       {isExpanded && hasDetail && (
@@ -1475,7 +1509,12 @@ function SubmittedTradesTimelineTab({
                       )}
                       {matchedRun && (
                         <span className={`${isHoldLikeDecision(matchedRun.decision) ? holdEdgeToneClass() : "text-accent"}`}>
-                          {matchedRun.decision === "CYCLE_SKIPPED" ? "SKIP" : matchedRun.decision}
+                          {normalizedDecisionLabel(matchedRun.decision)}
+                        </span>
+                      )}
+                      {matchedRun && decisionSide(matchedRun.decision) && (
+                        <span className={sideToneClass(decisionSide(matchedRun.decision))}>
+                          {decisionSide(matchedRun.decision)}
                         </span>
                       )}
                       {pYes != null && <span className="text-accent">model: {(pYes * 100).toFixed(0)}%</span>}
