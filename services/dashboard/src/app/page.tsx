@@ -36,7 +36,7 @@ import { OrderMonitoringPanel } from "@/components/OrderMonitoringPanel";
 
 const REFRESH_INTERVAL = 5_000;
 const INSTANCE_STORAGE_KEY = "dashboard-instance-key";
-const DISPLAY_CUTOFF_MS = new Date("2026-03-24T00:00:00-05:00").getTime();
+const DISPLAY_CUTOFF_MS = new Date("2026-03-24T18:00:00-05:00").getTime();
 const SYNTHETIC_BACKFILL_SOURCE_PREFIX = "kalshi:";
 const WIN_RATE_TOOLTIP =
   "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
@@ -248,11 +248,22 @@ export default function Dashboard() {
     }
     const map = new Map<string, number>();
     for (const pos of positions) {
-      if (pos.market_exposure != null && pos.total_cost != null) {
-        map.set(pos.market_id, pos.realized_pnl + pos.market_exposure - pos.total_cost);
+      const mkt = marketById.get(pos.market_id);
+      const currentUnitValue = mkt?.last_price != null
+        ? (pos.contract.toLowerCase() === "yes" ? mkt.last_price : 1 - mkt.last_price)
+        : (
+          pos.market_exposure != null && pos.quantity > 0
+            ? pos.market_exposure / pos.quantity
+            : null
+        );
+      if (currentUnitValue != null && pos.total_cost != null) {
+        map.set(
+          pos.market_id,
+          (currentUnitValue * pos.quantity) - pos.total_cost + (pos.realized_pnl ?? 0)
+        );
         continue;
       }
-      const mkt = marketById.get(pos.market_id);
+
       const mktTrades = tradesByTicker.get(pos.ticker ?? "") ?? [];
       const cashFlow = mktTrades.reduce((sum, t) => {
         const qty = t.filled_shares || t.count;
@@ -260,11 +271,8 @@ export default function Dashboard() {
         const fee = t.fee_paid || 0;
         return sum + (t.action?.toUpperCase() === "SELL" ? (qty * price) - fee : -((qty * price) + fee));
       }, 0);
-      const currentBid = pos.contract.toLowerCase() === "yes"
-        ? (mkt?.yes_bid ?? (mkt?.no_ask != null ? 1 - mkt.no_ask : null))
-        : (mkt?.no_bid ?? (mkt?.yes_ask != null ? 1 - mkt.yes_ask : null));
-      const net = cashFlow + (currentBid != null ? pos.quantity * currentBid : 0);
-      map.set(pos.market_id, net);
+      const fallbackValue = currentUnitValue != null ? pos.quantity * currentUnitValue : 0;
+      map.set(pos.market_id, cashFlow + fallbackValue);
     }
     return map;
   })();
@@ -1152,16 +1160,23 @@ export default function Dashboard() {
             ))}
           </div>
           {marketViewTab === "activity" && (
-            <UnifiedMarketTable
-              key={selectedInstance.key}
-              markets={markets}
-              positions={positions}
-              trades={trades}
-              apiClient={instanceApi}
-              instanceCacheKey={selectedInstance.key}
-              scrollToMarketId={scrollToMarketId}
-              onScrollComplete={() => setScrollToMarketId(null)}
-            />
+            <div className="space-y-2">
+              <UnifiedMarketTable
+                key={selectedInstance.key}
+                markets={markets}
+                positions={positions}
+                trades={trades}
+                apiClient={instanceApi}
+                instanceCacheKey={selectedInstance.key}
+                scrollToMarketId={scrollToMarketId}
+                onScrollComplete={() => setScrollToMarketId(null)}
+              />
+              <div className="rounded border border-t-border bg-t-panel px-3 py-2 text-[10px] font-mono text-txt-muted">
+                <span className="text-txt-secondary">Note:</span> `Open Value` uses last traded price × shares.
+                `Investment` shows open-position cost basis plus fees. So the summed row `Investment`
+                values should line up with top `Cash Spent` + `Total Fees`, not with top `Open Value`.
+              </div>
+            </div>
           )}
           {marketViewTab === "heatmap" && (
             positions.length > 0 ? (

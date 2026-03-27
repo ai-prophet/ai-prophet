@@ -1110,6 +1110,55 @@ _pnl_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _PNL_CACHE_TTL = 10  # seconds
 
 
+def _build_snapshot_backed_pnl_series(
+    balance_snapshots: list[KalshiBalanceSnapshot],
+    realized_events: list[tuple[datetime, float]],
+    target_net_pnl: float,
+) -> list[dict[str, Any]]:
+    """Build a Kalshi-backed net-P&L series from recorded balance snapshots.
+
+    The portfolio chart should track Kalshi account truth rather than local
+    order replay. We anchor the series so the final snapshot matches the same
+    net-P&L shown in the header cards, while the path between points follows
+    recorded Kalshi balance/portfolio snapshots.
+    """
+    if not balance_snapshots:
+        return []
+
+    latest = balance_snapshots[-1]
+    latest_equity = float(latest.balance or 0.0) + float(latest.portfolio_value or 0.0)
+    baseline_equity = latest_equity - float(target_net_pnl or 0.0)
+
+    realized_events = sorted(realized_events, key=lambda item: item[0])
+    realized_idx = 0
+    realized_so_far = 0.0
+    series: list[dict[str, Any]] = []
+
+    for snap in balance_snapshots:
+        while realized_idx < len(realized_events) and realized_events[realized_idx][0] <= snap.snapshot_ts:
+            realized_so_far = realized_events[realized_idx][1]
+            realized_idx += 1
+
+        open_value = float(snap.portfolio_value or 0.0)
+        pnl = (float(snap.balance or 0.0) + open_value) - baseline_equity
+        cash_spent = open_value + realized_so_far - pnl
+
+        series.append({
+            "timestamp": snap.snapshot_ts.isoformat(),
+            "pnl": round(pnl, 4),
+            "cash_pnl": round(realized_so_far, 4),
+            "open_value": round(open_value, 4),
+            "cash_spent": round(cash_spent, 4),
+            "trade_cost": 0.0,
+            "trade_fee": 0.0,
+            "ticker": "",
+            "side": "",
+            "action": "SNAPSHOT",
+        })
+
+    return series
+
+
 @app.get("/pnl")
 def get_pnl(
     days: int = Query(30, ge=1, le=365),
@@ -1224,6 +1273,7 @@ def get_pnl(
         total_trades = 0
         total_volume = 0.0
         cumulative_realized = 0.0
+        realized_events: list[tuple[datetime, float]] = []
 
         for row in rows:
             action, side, shares, price, fee_paid = normalize_order(row)
@@ -1236,6 +1286,7 @@ def get_pnl(
 
             pnl_impact = pos.apply_order(row, ticker=ticker)
             cumulative_realized += pnl_impact
+            realized_events.append((row.created_at, cumulative_realized))
 
             # Compute open_value and cash_spent at this trade's timestamp
             # using actual recorded price snapshots (not predictions).
@@ -1323,6 +1374,35 @@ def get_pnl(
                 "active_positions": sum(1 for p in ticker_positions.values() if p.current_position()[0] is not None),
             },
         }
+
+        # Prefer Kalshi-backed balance snapshots for the unfiltered headline
+        # chart so the graph follows the same account-truth source as the
+        # top-line Net P&L card instead of stale local order replay.
+        if not market_id and not model:
+            visible_tickers, _ = _display_visible_market_activity(session, resolved_instance)
+            portfolio_summary = build_portfolio_summary(
+                session,
+                resolved_instance,
+                tickers=visible_tickers,
+            )
+            balance_snapshots = (
+                session.query(KalshiBalanceSnapshot)
+                .filter(
+                    KalshiBalanceSnapshot.instance_name == resolved_instance,
+                    KalshiBalanceSnapshot.snapshot_ts >= cutoff_date,
+                )
+                .order_by(KalshiBalanceSnapshot.snapshot_ts.asc(), KalshiBalanceSnapshot.id.asc())
+                .all()
+            )
+            snapshot_series = _build_snapshot_backed_pnl_series(
+                balance_snapshots,
+                realized_events,
+                portfolio_summary.net_pnl,
+            )
+            if snapshot_series:
+                result["series"] = snapshot_series
+                result["summary"]["total_pnl"] = round(portfolio_summary.net_pnl, 4)
+                result["summary"]["active_positions"] = portfolio_summary.open_positions
 
         # Update cache for default queries
         if not market_id and not model:

@@ -773,7 +773,7 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
 
 # ── Kalshi market fetcher ─────────────────────────────────────────
 
-def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) -> list[dict]:
+def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None = None) -> list[dict]:
     """Fetch active binary markets from Kalshi via the events endpoint.
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
@@ -787,10 +787,16 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
     cutoff = datetime.now(UTC) + timedelta(days=15)
 
     candidates: list[dict] = []
+    seen_tickers: set[str] = set()
     cursor = ""
     total_events = 0
+    pages_scanned = 0
 
-    for page in range(max_pages):
+    while True:
+        if max_pages is not None and pages_scanned >= max_pages:
+            break
+
+        pages_scanned += 1
         headers = adapter._sign_request("GET", path)
         params = {
             "limit": 200,
@@ -813,7 +819,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
             cursor = data.get("cursor", "")
             total_events += len(events)
         except Exception as e:
-            logger.error("Failed to fetch Kalshi events (page %d): %s", page + 1, e)
+            logger.error("Failed to fetch Kalshi events (page %d): %s", pages_scanned, e)
             break
 
         if not events:
@@ -839,6 +845,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                         pass
 
                 ticker = mkt.get("ticker", "")
+                if not ticker or ticker in seen_tickers:
+                    continue
                 yes_bid = mkt.get("yes_bid_dollars")
                 yes_ask = mkt.get("yes_ask_dollars")
                 no_bid = mkt.get("no_bid_dollars")
@@ -878,17 +886,18 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int = 10) ->
                     "open_time": mkt.get("open_time"),
                     "volume_24h": float(mkt.get("volume_24h_fp", 0) or 0),
                 })
+                seen_tickers.add(ticker)
 
         if not cursor:
             break
 
-        logger.debug("Page %d: %d candidates so far, fetching more...", page + 1, len(candidates))
+        logger.debug("Page %d: %d candidates so far, fetching more...", pages_scanned, len(candidates))
 
     markets = candidates[:max_markets]
 
     logger.info(
         "Selected %d markets (from %d candidates, %d events, %d pages)",
-        len(markets), len(candidates), total_events, page + 1,
+        len(markets), len(candidates), total_events, pages_scanned,
     )
     return markets
 

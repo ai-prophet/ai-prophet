@@ -18,6 +18,7 @@ interface CellData {
   title: string;
   quantity: number;
   capital: number;
+  avgPrice: number;
   pnl: number;
   returnPct: number;
   contract: string;
@@ -83,7 +84,7 @@ export function PositionHeatmap({
     return positions
       .map((pos) => {
         const mkt = getMarketForPosition(pos, byId, byTicker);
-        const capital = pos.avg_price * pos.quantity;
+        const capital = pos.total_cost ?? (pos.avg_price * pos.quantity);
         const pnl = pnlByMarket?.get(pos.market_id) ?? 0;
         const returnPct = capital > 0 ? (pnl / capital) * 100 : 0;
         return {
@@ -92,6 +93,7 @@ export function PositionHeatmap({
           title: pos.market_title ?? pos.ticker ?? pos.market_id,
           quantity: pos.quantity,
           capital,
+          avgPrice: pos.avg_price,
           pnl,
           returnPct,
           contract: pos.contract,
@@ -165,7 +167,8 @@ export function PositionHeatmap({
 
               <div className="mt-1.5 flex items-end justify-between">
                 <div className="text-[9px] font-mono text-txt-muted">
-                  <span>{cell.quantity} @ {fmtDollar(cell.capital)}</span>
+                  <div>{cell.quantity} @ {Math.round(cell.avgPrice * 100)}c</div>
+                  <div>cost {fmtDollar(cell.capital)}</div>
                 </div>
                 <div className="text-right">
                   <div className={`text-[11px] font-mono font-medium ${pnlCls(cell.pnl)}`}>
