@@ -74,6 +74,7 @@ from kalshi_state import (
     build_portfolio_summary,
     build_position_views,
     get_latest_balance_snapshot,
+    get_latest_order_snapshots,
     get_latest_position_snapshots,
 )
 
@@ -469,23 +470,15 @@ def get_trades(
     engine = get_db()
     try:
         with get_session(engine) as session:
-            total_count = (
-                _instance_query(session, BettingOrder, resolved_instance)
-                .with_entities(func.count(BettingOrder.id))
-                .scalar()
-                or 0
-            )
-
-            rows = (
+            local_rows = (
                 _instance_query(session, BettingOrder, resolved_instance)
                 .order_by(BettingOrder.created_at.desc())
-                .offset(offset)
-                .limit(limit)
                 .all()
             )
+            latest_snapshots = get_latest_order_snapshots(session, resolved_instance)
 
             # Bulk-load signals, predictions, and market titles (avoid N+1)
-            signal_ids = [r.signal_id for r in rows if r.signal_id]
+            signal_ids = [r.signal_id for r in local_rows if r.signal_id]
             signals_by_id: dict[int, BettingSignal] = {}
             if signal_ids:
                 for s in (
@@ -518,7 +511,8 @@ def get_trades(
                 ):
                     model_runs_by_market[run.market_id].append(run)
 
-            trade_market_ids = list({f"kalshi:{r.ticker}" for r in rows if r.ticker})
+            snapshot_tickers = {snap.ticker for snap in latest_snapshots if snap.ticker}
+            trade_market_ids = list({f"kalshi:{r.ticker}" for r in local_rows if r.ticker} | {f"kalshi:{ticker}" for ticker in snapshot_tickers})
             market_titles: dict[str, str] = {}
             if trade_market_ids:
                 for m in (
@@ -528,16 +522,18 @@ def get_trades(
                 ):
                     market_titles[m.market_id] = m.title
 
-            kalshi_order_map: dict[str, KalshiOrderSnapshot] = {}
-            trade_tickers = {row.ticker for row in rows if row.ticker}
-            if trade_tickers:
-                for snap in get_latest_order_snapshots(session, resolved_instance, tickers=trade_tickers):
-                    kalshi_order_map[snap.order_id] = snap
+            local_by_exchange_order_id: dict[str, BettingOrder] = {}
+            local_by_internal_order_id: dict[str, BettingOrder] = {}
+            for row in local_rows:
+                if row.exchange_order_id:
+                    local_by_exchange_order_id[row.exchange_order_id] = row
+                local_by_internal_order_id[row.order_id] = row
 
-            results = []
-            for row in rows:
+            def build_prediction(row: BettingOrder | None) -> dict[str, Any] | None:
+                if row is None or not row.signal_id:
+                    return None
                 prediction = None
-                sig = signals_by_id.get(row.signal_id) if row.signal_id else None
+                sig = signals_by_id.get(row.signal_id)
                 if sig and sig.prediction_id:
                     pred = preds_by_id.get(sig.prediction_id)
                     if pred:
@@ -581,36 +577,74 @@ def get_trades(
                             "reasoning": reasoning,
                             "sources": sources,
                         }
+                return prediction
 
+            merged_results: list[dict[str, Any]] = []
+            seen_keys: set[str] = set()
+
+            for idx, snap in enumerate(latest_snapshots, start=1):
+                local_row = local_by_exchange_order_id.get(snap.order_id) or local_by_internal_order_id.get(snap.order_id)
+                ticker = local_row.ticker if local_row else snap.ticker
+                if not ticker:
+                    continue
+                prediction = build_prediction(local_row)
+                count = int(round(snap.initial_count)) if snap.initial_count > 0 else (local_row.count if local_row else 0)
+                display_price = snap.avg_fill_price if snap.avg_fill_price is not None and snap.fill_count > 0 else snap.limit_price
+                if display_price is None and local_row is not None:
+                    display_price = local_row.fill_price if (local_row.fill_price or 0) > 0 else (local_row.price_cents / 100)
+                created_at = snap.created_ts or snap.last_update_ts or snap.captured_at or (local_row.created_at if local_row else None)
+                if created_at is None:
+                    continue
+                merge_key = f"exchange:{snap.order_id}"
+                seen_keys.add(merge_key)
+                merged_results.append({
+                    "id": local_row.id if local_row else -idx,
+                    "order_id": local_row.order_id if local_row else snap.order_id,
+                    "ticker": ticker,
+                    "action": (snap.action or (local_row.action if local_row else "BUY")).upper(),
+                    "side": (snap.side or (local_row.side if local_row else "YES")).upper(),
+                    "count": count,
+                    "price_cents": int(round((display_price or 0.0) * 100)),
+                    "status": snap.status,
+                    "filled_shares": snap.fill_count,
+                    "fill_price": snap.avg_fill_price if snap.fill_count > 0 else None,
+                    "fee_paid": snap.fee_paid,
+                    "exchange_order_id": snap.order_id,
+                    "dry_run": local_row.dry_run if local_row else False,
+                    "created_at": created_at.isoformat(),
+                    "prediction": prediction,
+                    "market_title": market_titles.get(f"kalshi:{ticker}"),
+                })
+
+            local_only_rows = sorted(local_rows, key=lambda row: row.created_at, reverse=True)
+            for row in local_only_rows:
+                merge_key = f"exchange:{row.exchange_order_id}" if row.exchange_order_id else f"local:{row.order_id}"
+                if merge_key in seen_keys:
+                    continue
+                prediction = build_prediction(row)
                 market_title = market_titles.get(f"kalshi:{row.ticker}")
-                live_order = kalshi_order_map.get(row.exchange_order_id or "")
-                status = live_order.status if live_order else row.status
-                filled_shares = live_order.fill_count if live_order else row.filled_shares
-                fee_paid = live_order.fee_paid if live_order else row.fee_paid
-                display_price_cents = row.price_cents
-                fill_price = row.fill_price
-                if live_order and live_order.avg_fill_price is not None and live_order.fill_count > 0:
-                    display_price_cents = int(round(live_order.avg_fill_price * 100))
-                    fill_price = live_order.avg_fill_price
-
-                results.append({
+                merged_results.append({
                     "id": row.id,
                     "order_id": row.order_id,
                     "ticker": row.ticker,
                     "action": row.action,
                     "side": row.side,
                     "count": row.count,
-                    "price_cents": display_price_cents,
-                    "status": status,
-                    "filled_shares": filled_shares,
-                    "fill_price": fill_price,
-                    "fee_paid": fee_paid,
+                    "price_cents": row.price_cents,
+                    "status": row.status,
+                    "filled_shares": row.filled_shares,
+                    "fill_price": row.fill_price,
+                    "fee_paid": row.fee_paid,
                     "exchange_order_id": row.exchange_order_id,
                     "dry_run": row.dry_run,
                     "created_at": row.created_at.isoformat(),
                     "prediction": prediction,
                     "market_title": market_title,
                 })
+
+            merged_results.sort(key=lambda item: item["created_at"], reverse=True)
+            total_count = len(merged_results)
+            results = merged_results[offset:offset + limit]
 
             return {
                 "trades": results,
