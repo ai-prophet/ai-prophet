@@ -509,7 +509,7 @@ def _alert_on_position_snapshot_mismatch(db_engine, adapter, instance_name: str)
     """Emit an alert only when the cached snapshot itself diverges from live Kalshi."""
     try:
         from ai_prophet_core.betting.db import get_session
-        from db_models import TradingPosition
+        from db_models import SystemLog, TradingPosition
         from kalshi_state import get_latest_position_snapshots
 
         live_positions = {}
