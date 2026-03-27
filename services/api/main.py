@@ -91,6 +91,7 @@ DISPLAY_BASELINE_OVERRIDES: dict[str, float] = {
     "Haifeng": 441.65,
     "Jibang": 475.43,
 }
+MAX_CYCLE_RUNNING_AGE_SEC = 60 * 60
 
 
 def get_db():
@@ -379,6 +380,35 @@ def _worker_stale_threshold_sec(instance_name: str) -> int:
     return max(1800, int(_worker_poll_interval(instance_name) * 1.5))
 
 
+def _log_created_at_utc(row: Any | None) -> datetime | None:
+    if row is None:
+        return None
+    created_at = getattr(row, "created_at", None)
+    if created_at is None:
+        return None
+    return created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+
+
+def _is_cycle_running(
+    cycle_start_row: Any | None,
+    cycle_end_row: Any | None,
+    *,
+    now: datetime,
+    max_age_sec: int = MAX_CYCLE_RUNNING_AGE_SEC,
+) -> bool:
+    start_ts = _log_created_at_utc(cycle_start_row)
+    if start_ts is None:
+        return False
+
+    if (now - start_ts).total_seconds() > max_age_sec:
+        return False
+
+    end_ts = _log_created_at_utc(cycle_end_row)
+    if end_ts is None:
+        return True
+    return start_ts > end_ts
+
+
 def _build_kalshi_adapter(instance_name: str):
     from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 
@@ -439,6 +469,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """System health: DB status, last worker heartbeat, trading mode."""
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
+    now = datetime.now(UTC)
     db_ok = False
     last_heartbeat = None
     worker_status = "unknown"
@@ -462,7 +493,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
             )
             if hb_row:
                 last_heartbeat = hb_row.created_at.isoformat()
-                age_sec = (datetime.now(UTC) - hb_row.created_at.replace(tzinfo=UTC)).total_seconds()
+                age_sec = (now - hb_row.created_at.replace(tzinfo=UTC)).total_seconds()
                 worker_status = "healthy" if age_sec < stale_threshold_sec else "stale"
 
             # 3. Last cycle_end for this instance
@@ -488,11 +519,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
                 .order_by(SystemLog.created_at.desc())
                 .first()
             )
-            if cs_row and ce_row:
-                cycle_running = cs_row.created_at > ce_row.created_at
-            elif cs_row and not ce_row:
-                # Has cycle_start but no cycle_end yet
-                cycle_running = True
+            cycle_running = _is_cycle_running(cs_row, ce_row, now=now)
 
             # 4. Effective last cycle_end across ALL instances
             effective_last_cycle_end = last_cycle_end
@@ -578,7 +605,7 @@ def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
         "betting_enabled": enabled,
         "instance_name": resolved_instance,
         "worker_models": worker_models,
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": now.isoformat(),
     }
 
 

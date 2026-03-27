@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from services.worker.main import fetch_kalshi_markets
+from sqlalchemy import create_engine
+
+from ai_prophet_core.betting.db import get_session
+from ai_prophet_core.betting.db_schema import Base
+from db_models import TradingMarket
+from services.worker.main import fetch_kalshi_markets, get_peer_tickers, purge_excluded_tracked_markets
 
 
 class _FakeResponse:
@@ -108,3 +113,137 @@ def test_fetch_kalshi_markets_dedupes_duplicate_tickers_across_pages():
     markets = fetch_kalshi_markets(adapter, max_markets=10)
 
     assert [m["ticker"] for m in markets] == ["DUP-ONE", "DUP-TWO"]
+
+
+def test_fetch_kalshi_markets_skips_mentions_events():
+    adapter = _FakeAdapter(
+        [
+            {
+                "events": [
+                    {
+                        "title": "Mention Event",
+                        "category": "MENTIONS",
+                        "markets": [_market_payload("MENTION-ONE")],
+                    },
+                    {
+                        "title": "Normal Event",
+                        "category": "Politics",
+                        "markets": [_market_payload("REAL-ONE")],
+                    },
+                ],
+                "cursor": "",
+            }
+        ]
+    )
+
+    markets = fetch_kalshi_markets(adapter, max_markets=10)
+
+    assert [m["ticker"] for m in markets] == ["REAL-ONE"]
+
+
+def test_purge_excluded_tracked_markets_removes_mentions_rows():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with get_session(engine) as session:
+        session.add_all(
+            [
+                TradingMarket(
+                    instance_name="Haifeng",
+                    market_id="kalshi:MENTION-ONE",
+                    ticker="MENTION-ONE",
+                    event_ticker="EV-MENTION",
+                    title="Mention row",
+                    category="MENTIONS",
+                    last_price=0.5,
+                    yes_bid=0.49,
+                    yes_ask=0.5,
+                    no_bid=0.5,
+                    no_ask=0.51,
+                    volume_24h=100,
+                    updated_at=datetime.now(UTC),
+                ),
+                TradingMarket(
+                    instance_name="Haifeng",
+                    market_id="kalshi:REAL-ONE",
+                    ticker="REAL-ONE",
+                    event_ticker="EV-REAL",
+                    title="Real row",
+                    category="Politics",
+                    last_price=0.5,
+                    yes_bid=0.49,
+                    yes_ask=0.5,
+                    no_bid=0.5,
+                    no_ask=0.51,
+                    volume_24h=100,
+                    updated_at=datetime.now(UTC),
+                ),
+            ]
+        )
+
+    removed = purge_excluded_tracked_markets(engine, "Haifeng")
+
+    assert removed == 1
+    with get_session(engine) as session:
+        tickers = [row[0] for row in session.query(TradingMarket.ticker).all()]
+    assert tickers == ["REAL-ONE"]
+
+
+def test_get_peer_tickers_excludes_mentions_and_preserves_recent_order():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    earlier = datetime(2026, 3, 27, 0, 0, tzinfo=UTC)
+    later = datetime(2026, 3, 27, 1, 0, tzinfo=UTC)
+    with get_session(engine) as session:
+        session.add_all(
+            [
+                TradingMarket(
+                    instance_name="Haifeng",
+                    market_id="kalshi:OLD-REAL",
+                    ticker="OLD-REAL",
+                    event_ticker="EV-OLD-REAL",
+                    title="Old real",
+                    category="Politics",
+                    last_price=0.5,
+                    yes_bid=0.49,
+                    yes_ask=0.5,
+                    no_bid=0.5,
+                    no_ask=0.51,
+                    volume_24h=10,
+                    updated_at=earlier,
+                ),
+                TradingMarket(
+                    instance_name="Haifeng",
+                    market_id="kalshi:MENTION-ONE",
+                    ticker="MENTION-ONE",
+                    event_ticker="EV-MENTION",
+                    title="Mention",
+                    category="MENTIONS",
+                    last_price=0.5,
+                    yes_bid=0.49,
+                    yes_ask=0.5,
+                    no_bid=0.5,
+                    no_ask=0.51,
+                    volume_24h=10,
+                    updated_at=later,
+                ),
+                TradingMarket(
+                    instance_name="Haifeng",
+                    market_id="kalshi:NEW-REAL",
+                    ticker="NEW-REAL",
+                    event_ticker="EV-NEW-REAL",
+                    title="New real",
+                    category="World",
+                    last_price=0.5,
+                    yes_bid=0.49,
+                    yes_ask=0.5,
+                    no_bid=0.5,
+                    no_ask=0.51,
+                    volume_24h=10,
+                    updated_at=later,
+                ),
+            ]
+        )
+
+    assert get_peer_tickers(engine, "Haifeng") == ["NEW-REAL", "OLD-REAL"]

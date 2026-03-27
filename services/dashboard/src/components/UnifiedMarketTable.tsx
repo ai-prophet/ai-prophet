@@ -18,6 +18,7 @@ import type {
   UnifiedMarketRow,
   PriceHistoryPoint,
   ModelRun,
+  PendingOrder,
 } from "@/lib/api";
 import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
@@ -106,6 +107,19 @@ function decisionSide(decision: string | null | undefined): string | null {
 
 function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
   return (row.pending_orders ?? []).some((order) => (order.count - order.filled_shares) > 0);
+}
+
+function pendingOrderMatchesRun(order: PendingOrder, run: ModelRun): boolean {
+  const runSide = decisionSide(run.decision);
+  const runAction = normalizedDecisionLabel(run.decision);
+  if (!runSide || (runAction !== "BUY" && runAction !== "SELL")) return false;
+  const orderSide = order.side?.toUpperCase() ?? "";
+  const orderAction = order.action?.toUpperCase() ?? "";
+  if (runSide !== orderSide || runAction !== orderAction) return false;
+  const runTs = new Date(run.timestamp).getTime();
+  const orderTs = new Date(order.created_at).getTime();
+  if (Number.isNaN(runTs) || Number.isNaN(orderTs)) return false;
+  return Math.abs(runTs - orderTs) <= 15 * 60 * 1000;
 }
 
 function rowHasActivity(row: UnifiedMarketRow): boolean {
@@ -1101,8 +1115,8 @@ function ExpandedPanel({
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const chronRuns = [...modelRuns].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
-    return chronTrades.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
-  }, [row.trade_count, row.trades, modelRuns]);
+    return chronTrades.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns, row.pending_orders ?? []).length;
+  }, [row.trade_count, row.trades, row.pending_orders, modelRuns]);
   const tradesTabCount = useMemo(
     () => row.trades.filter((trade) => !isSyntheticTrade(trade) && shouldShowInTradesTab(trade)).length,
     [row.trades]
@@ -1271,6 +1285,24 @@ function resolveTradeStepLineContext(
   return resolveTradeDisplayContext(item.trade, item.matchedRun, row, runDisplayContext);
 }
 
+function isLikelySameRebalanceStep(current: TimelineTradeItem, next: TimelineTradeItem): boolean {
+  if (current.matchedRun && next.matchedRun) {
+    return current.matchedRun.id === next.matchedRun.id;
+  }
+
+  const currentPred = current.trade.prediction;
+  const nextPred = next.trade.prediction;
+  if (!currentPred || !nextPred) {
+    return true;
+  }
+
+  const sameSource = currentPred.source === nextPred.source;
+  const samePYes = Math.abs(currentPred.p_yes - nextPred.p_yes) <= 0.0005;
+  const sameYesAsk = Math.abs(currentPred.yes_ask - nextPred.yes_ask) <= 0.0005;
+  const sameNoAsk = Math.abs(currentPred.no_ask - nextPred.no_ask) <= 0.0005;
+  return sameSource && samePYes && sameYesAsk && sameNoAsk;
+}
+
 function isCrossSideRebalancePair(current: TimelineTradeItem, next?: TimelineTradeItem): next is TimelineTradeItem {
   if (!next) return false;
   const currentTs = new Date(current.trade.created_at).getTime();
@@ -1280,6 +1312,7 @@ function isCrossSideRebalancePair(current: TimelineTradeItem, next?: TimelineTra
     && next.trade.action?.toUpperCase() === "BUY"
     && current.trade.side?.toUpperCase() !== next.trade.side?.toUpperCase()
     && Math.abs(nextTs - currentTs) <= SAME_ACTION_WINDOW_MS
+    && isLikelySameRebalanceStep(current, next)
   );
 }
 
@@ -1333,7 +1366,10 @@ function SubmittedTradesTimelineTab({
     [modelRuns]
   );
   const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
-  const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
+  const unmatchedRuns = useMemo(
+    () => unmatchedTimelineRuns(tradesWithRuns, chronRuns, row.pending_orders ?? []),
+    [tradesWithRuns, chronRuns, row.pending_orders]
+  );
   const runDisplayContext = useMemo(() => buildRunDisplayContext(chronRuns, row), [chronRuns, row]);
   const tradeDisplayContext = useCallback(
     (trade: Trade, matchedRun: ModelRun | null) => resolveTradeDisplayContext(trade, matchedRun, row, runDisplayContext),
@@ -1478,7 +1514,7 @@ function SubmittedTradesTimelineTab({
             const isSkip = isSkipLikeDecision(run.decision);
             const label = normalizedDecisionLabel(run.decision);
             const side = decisionSide(run.decision);
-            const showDecisionBadge = !side || label !== "BUY";
+            const showDecisionBadge = !side || isHold || isSkip;
             const displayContext = runDisplayContext.get(run.id);
             const pYes = displayContext?.pYes ?? null;
             const edge = displayContext?.edge ?? null;
@@ -1553,10 +1589,21 @@ function SubmittedTradesTimelineTab({
                 <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-500 border-2 border-t-bg z-10" />
                 <div className="flex items-start gap-3">
                   <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-                    {fmtTime(event.sell.trade.created_at)}
+                    <div className="flex flex-col gap-1">
+                      <span>{fmtTime(event.sell.trade.created_at)}</span>
+                      <span className="text-[8px] text-txt-muted">{fmtTime(event.buy.trade.created_at)}</span>
+                    </div>
                   </div>
                   <div className="flex-1 min-w-0 overflow-hidden">
-                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                    <div className="mb-1 flex flex-wrap items-center gap-2 text-[9px] font-mono">
+                      <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 font-medium text-accent">
+                        Same Rebalance Step
+                      </span>
+                      <span className="text-txt-muted">
+                        {event.sell.trade.side.toUpperCase()} {"->"} {event.buy.trade.side.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono rounded border border-t-border/40 bg-t-panel-hover/20 px-2 py-1.5">
                       <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
                       <span className={sideToneClass(event.sell.trade.side)}>{event.sell.trade.side.toUpperCase()} {formatShareLabel(event.sell.trade.count)}</span>
                       <span className="text-txt-muted">@ {(sellEntry.price * 100).toFixed(0)}c</span>
@@ -1570,8 +1617,8 @@ function SubmittedTradesTimelineTab({
                       )}
                       <StatusBadge status={event.sell.trade.status} />
                     </div>
-                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono mt-1 ml-4">
-                      <span className="text-txt-muted">↳</span>
+                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono mt-1 ml-4 rounded border border-t-border/30 bg-t-panel-hover/10 px-2 py-1.5">
+                      <span className="text-accent">then</span>
                       <span className="text-[9px] px-1 py-px rounded font-bold bg-profit-dim text-profit">BUY</span>
                       <span className={sideToneClass(event.buy.trade.side)}>{event.buy.trade.side.toUpperCase()} {formatShareLabel(event.buy.trade.count)}</span>
                       <span className="text-txt-muted">@ {(buyEntry.price * 100).toFixed(0)}c</span>
@@ -1666,7 +1713,7 @@ function SubmittedTradesTimelineTab({
   );
 }
 
-const SAME_ACTION_WINDOW_MS = 2 * 60 * 1000; // 2 min — trades within same cycle
+const SAME_ACTION_WINDOW_MS = 5 * 60 * 1000; // 5 min — allows delayed second leg of one rebalance step
 
 type TimelineTradeItem = {
   trade: Trade;
@@ -1724,13 +1771,20 @@ function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): Timelin
   });
 }
 
-function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: ModelRun[]): ModelRun[] {
+function unmatchedTimelineRuns(
+  tradesWithRuns: TimelineTradeItem[],
+  chronRuns: ModelRun[],
+  pendingOrders: PendingOrder[] = []
+): ModelRun[] {
   const matchedIds = new Set(
     tradesWithRuns
       .map((item) => item.matchedRun?.id)
       .filter((id): id is number => id != null)
   );
-  return chronRuns.filter((run) => !matchedIds.has(run.id));
+  return chronRuns.filter((run) => {
+    if (matchedIds.has(run.id)) return false;
+    return !pendingOrders.some((order) => pendingOrderMatchesRun(order, run));
+  });
 }
 
 function shouldShowInTradesTab(trade: Trade): boolean {

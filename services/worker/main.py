@@ -65,6 +65,15 @@ PREDICTOR_TIMEOUT_SEC = float(os.getenv("PREDICTOR_TIMEOUT_SEC", "180"))
 REMOTE_PREDICT_TIMEOUT_SEC = float(
     os.getenv("REMOTE_PREDICT_TIMEOUT_SEC", str(PREDICTOR_TIMEOUT_SEC + 10))
 )
+EXCLUDED_MARKET_CATEGORIES = {"MENTIONS"}
+
+
+def _normalized_market_category(category: str | None) -> str:
+    return (category or "").strip().upper()
+
+
+def _is_excluded_market_category(category: str | None) -> bool:
+    return _normalized_market_category(category) in EXCLUDED_MARKET_CATEGORIES
 
 
 def _instance_setting(key: str, default: str = "") -> str:
@@ -546,30 +555,37 @@ def get_traded_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str
         return set()
 
 
-def get_peer_tickers(db_engine, peer_instance_name: str) -> set[str]:
+def get_peer_tickers(db_engine, peer_instance_name: str) -> list[str]:
     """Return tickers currently tracked by a peer instance.
 
     Used by non-fetcher workers to mirror the market list of the designated
     market-fetcher instance instead of independently querying Kalshi.
     """
     if db_engine is None:
-        return set()
+        return []
     try:
         from ai_prophet_core.betting.db import get_session
         from db_models import TradingMarket
 
         with get_session(db_engine) as session:
             rows = (
-                session.query(TradingMarket.ticker)
+                session.query(TradingMarket.ticker, TradingMarket.category)
                 .filter(TradingMarket.instance_name == peer_instance_name)
+                .order_by(TradingMarket.updated_at.desc())
                 .all()
             )
-            tickers = {r[0] for r in rows if r[0]}
+            tickers: list[str] = []
+            seen: set[str] = set()
+            for ticker, category in rows:
+                if not ticker or ticker in seen or _is_excluded_market_category(category):
+                    continue
+                tickers.append(ticker)
+                seen.add(ticker)
             logger.info("Read %d tickers from peer instance '%s'", len(tickers), peer_instance_name)
             return tickers
     except Exception as e:
         logger.warning("Failed to query peer tickers from '%s': %s", peer_instance_name, e)
-        return set()
+        return []
 
 
 def get_tracked_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
@@ -590,6 +606,36 @@ def get_tracked_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[st
     except Exception as e:
         logger.warning("Failed to query tracked tickers: %s", e)
         return set()
+
+
+def purge_excluded_tracked_markets(db_engine, instance_name: str = INSTANCE_NAME) -> int:
+    """Delete tracked markets that are excluded from trading and rediscovery."""
+    if db_engine is None:
+        return 0
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import TradingMarket
+
+        with get_session(db_engine) as session:
+            rows = (
+                session.query(TradingMarket)
+                .filter(TradingMarket.instance_name == instance_name)
+                .all()
+            )
+            excluded_rows = [row for row in rows if _is_excluded_market_category(row.category)]
+            for row in excluded_rows:
+                session.delete(row)
+        removed = len(excluded_rows)
+        if removed:
+            logger.info(
+                "Removed %d excluded tracked markets for %s before discovery",
+                removed,
+                instance_name,
+            )
+        return removed
+    except Exception as e:
+        logger.warning("Failed to purge excluded tracked markets for %s: %s", instance_name, e)
+        return 0
 
 
 def _fetch_raw_market(adapter, ticker: str) -> dict | None:
@@ -827,6 +873,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
         for event in events:
             event_title = event.get("title", "Unknown")
             category = event.get("category", "")
+            if _is_excluded_market_category(category):
+                continue
 
             for mkt in event.get("markets", []):
                 status = mkt.get("status", "")
@@ -1385,6 +1433,14 @@ def run_cycle(args) -> None:
         #     logger.error("[CYCLE] Order management failed: %s", e)
 
     # 1. Gather sticky markets (already tracked in DB)
+    purged_markets = purge_excluded_tracked_markets(db_engine, INSTANCE_NAME)
+    if purged_markets and db_engine is not None:
+        log_system_event(
+            db_engine,
+            "INFO",
+            f"Removed {purged_markets} excluded tracked markets before discovery",
+            instance_name=INSTANCE_NAME,
+        )
     tracked_tickers = (
         get_tracked_tickers(db_engine, INSTANCE_NAME)
         | get_traded_tickers(db_engine, INSTANCE_NAME)
@@ -1431,10 +1487,14 @@ def run_cycle(args) -> None:
                 logger.warning("MARKET_FETCHER=false but no WORKER_PEER_INSTANCES set — no new markets")
                 new_markets = []
             else:
-                peer_tickers = get_peer_tickers(db_engine, peer) - tracked_tickers
+                peer_tickers = [
+                    ticker
+                    for ticker in get_peer_tickers(db_engine, peer)
+                    if ticker not in tracked_tickers
+                ]
                 logger.info("Mirroring %d new tickers from peer '%s'", len(peer_tickers), peer)
                 new_markets = []
-                for ticker in list(peer_tickers)[:new_slots]:
+                for ticker in peer_tickers[:new_slots]:
                     mkt = fetch_market_by_ticker(adapter, ticker)
                     if mkt:
                         new_markets.append(mkt)
@@ -1562,7 +1622,7 @@ def run_cycle(args) -> None:
 
         # Never bet on MENTIONS markets — they track social media activity,
         # not real-world events, and are not suitable for model prediction.
-        if market.get("category", "").upper() == "MENTIONS":
+        if _is_excluded_market_category(market.get("category")):
             logger.debug("Skipping %s: MENTIONS category excluded from betting", ticker)
             log_cycle_skip_for_models(
                 db_engine,
@@ -1577,51 +1637,6 @@ def run_cycle(args) -> None:
             continue
 
         if db_engine:
-
-            # Skip if position held and prices unchanged
-            try:
-                from db_models import TradingPosition as TP, MarketPriceSnapshot as MPS
-                from ai_prophet_core.betting.db import get_session as _gs
-                with _gs(db_engine) as _sess:
-                    _pos = _sess.query(TP).filter_by(
-                        instance_name=INSTANCE_NAME,
-                        market_id=market_id,
-                    ).first()
-                    if _pos and _pos.quantity > 0:
-                        _last = (
-                            _sess.query(MPS)
-                            .filter(
-                                MPS.instance_name == INSTANCE_NAME,
-                                MPS.market_id == market_id,
-                            )
-                            .order_by(MPS.timestamp.desc())
-                            .first()
-                        )
-                        if (_last
-                            and abs(_last.yes_ask - yes_ask) < 1e-6
-                            and abs(_last.no_ask - no_ask) < 1e-6):
-                            logger.info(
-                                "  Skipping %s — market prices unchanged "
-                                "(yes=%.2f, no=%.2f)",
-                                ticker, yes_ask, no_ask,
-                            )
-                            log_cycle_skip_for_models(
-                                db_engine,
-                                model_specs,
-                                market_id,
-                                yes_ask=yes_ask,
-                                no_ask=no_ask,
-                                reason=(
-                                    "Skipped because the market price was unchanged since the "
-                                    "last cycle while a position was already open."
-                                ),
-                                instance_name=INSTANCE_NAME,
-                            )
-                            all_market_prices[market_id] = (yes_ask, no_ask)
-                            continue
-            except Exception:
-                pass
-
             save_price_snapshot(
                 db_engine, market_id, ticker,
                 yes_ask=yes_ask, no_ask=no_ask,
