@@ -231,6 +231,60 @@ def test_net_flip_sell_proceeds_fund_buy(db):
     )
 
 
+def test_rebalancing_partial_cross_side_sell_only_does_not_full_flip(db):
+    """A tiny rebalance from 16 NO to 15 NO should only SELL 1 NO."""
+    _seed_order(db, ticker="KXTEST-CASH", side="no", count=16, price_cents=70)
+
+    engine = _make_engine(db, starting_cash=100.0)
+
+    results = engine.process_forecasts(
+        tick_ts=TICK,
+        forecasts={MARKET: 0.15},
+        market_prices={MARKET: (0.30, 0.71)},
+        source="engine-test-partial-cross-side",
+    )
+
+    assert len(results) == 1
+    assert results[0].order_placed, f"Expected a sell-down order, got: {results[0]}"
+
+    calls = engine._adapter.submit_order.call_args_list
+    assert len(calls) == 1, f"Expected only one SELL order, got: {calls}"
+
+    request = calls[0][0][0]
+    assert request.action == "SELL"
+    assert request.side == "NO"
+    assert float(request.shares) == 1.0
+
+
+def test_rebalancing_cross_side_flip_sells_old_side_then_buys_new_delta(db):
+    """A target of 67 NO from an existing 2 YES should SELL 2 YES then BUY 67 NO."""
+    _seed_order(db, ticker="KXTEST-CASH", side="yes", count=2, price_cents=85)
+
+    engine = _make_engine(db, starting_cash=20.0)
+
+    results = engine.process_forecasts(
+        tick_ts=TICK,
+        forecasts={MARKET: 0.15},
+        market_prices={MARKET: (0.82, 0.21)},
+        source="engine-test-full-cross-side",
+    )
+
+    assert len(results) == 1
+    assert results[0].order_placed, f"Expected a cross-side rebalance, got: {results[0]}"
+
+    calls = engine._adapter.submit_order.call_args_list
+    assert len(calls) == 2, f"Expected SELL then BUY, got: {calls}"
+
+    sell_request = calls[0][0][0]
+    buy_request = calls[1][0][0]
+    assert sell_request.action == "SELL"
+    assert sell_request.side == "YES"
+    assert float(sell_request.shares) == 2.0
+    assert buy_request.action == "BUY"
+    assert buy_request.side == "NO"
+    assert float(buy_request.shares) == 67.0
+
+
 # ── 5. Live mode uses adapter.get_balance() ──────────────────────────────────
 
 def test_live_mode_uses_adapter_balance(db):

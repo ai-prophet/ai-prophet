@@ -472,6 +472,16 @@ class BettingEngine:
 
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
+        signal_metadata = signal.metadata or {}
+
+        def _metadata_count(key: str) -> int | None:
+            raw = signal_metadata.get(key)
+            if raw is None:
+                return None
+            try:
+                return max(0, round(abs(float(raw)) * 100))
+            except (TypeError, ValueError):
+                return None
 
         # --- Cancel any pending orders for this ticker before rebalancing ---
         # This prevents double-ordering from partially filled or unfilled orders
@@ -508,6 +518,13 @@ class BettingEngine:
 
             if held_side != want_side:
                 held_count = live_qty
+                intended_sell_count = _metadata_count("sell_portion")
+                intended_buy_count = _metadata_count("buy_portion")
+                if intended_sell_count is None:
+                    intended_sell_count = held_count
+                intended_sell_count = min(held_count, intended_sell_count)
+                if intended_buy_count is None:
+                    intended_buy_count = count
                 # When selling, use the opposite side's ask as an approximation of our bid
                 # (Since we don't have bid prices, this is the best we can do)
                 # If selling YES, use (1 - no_ask) as the YES bid
@@ -528,9 +545,14 @@ class BettingEngine:
                     # Skip the sell, just buy the wanted side
                     action = "BUY"
                     effective_side = want_side.upper()
+                elif intended_sell_count <= 0:
+                    action = "BUY"
+                    effective_side = want_side.upper()
+                    count = intended_buy_count
                 else:
-                    # When flipping positions, ALWAYS sell ALL existing opposite position first,
-                    # then buy the full target position on the new side
+                    # Rebalancing signals can contain separate sell-down and
+                    # buy-on-new-side portions. Respect those exact portions
+                    # rather than force-flipping the full opposite position.
                     sell_order_id = str(uuid.uuid4())
                     sell_req = OrderRequest(
                         order_id=sell_order_id,
@@ -539,33 +561,38 @@ class BettingEngine:
                         exchange_ticker=ticker,
                         action="SELL",
                         side=held_side.upper(),
-                        shares=Decimal(str(held_count)),
+                        shares=Decimal(str(intended_sell_count)),
                         limit_price=Decimal(str(sell_price)),
                     )
                     sell_status = "FILLED"
                     try:
                         sell_result = adapter.submit_order(sell_req)
                         sell_status = sell_result.status.value
+                        raw_sell_fee = getattr(sell_result, "fee", 0)
+                        try:
+                            sell_fee_paid = float(raw_sell_fee or 0)
+                        except (TypeError, ValueError):
+                            sell_fee_paid = 0.0
                         # Enhanced logging for position flips
                         logger.info(
                             "[BETTING] POSITION FLIP STEP 1/2: SELL %d %s on %s @ $%.2f → %s",
-                            held_count, held_side.upper(), ticker, sell_price, sell_status,
+                            intended_sell_count, held_side.upper(), ticker, sell_price, sell_status,
                         )
                         logger.info(
                             "[BETTING] POSITION FLIP STEP 2/2: Will BUY %d %s to complete flip",
-                            count, want_side.upper(),
+                            intended_buy_count, want_side.upper(),
                         )
                         self._save_order(
                             signal_id=None,  # NET sells are not driven by a signal for this market
                             order_id=sell_order_id,
                             ticker=ticker,
                             side=held_side,
-                            count=held_count,
+                            count=intended_sell_count,
                             price_cents=sell_price_cents,
                             status=sell_status,
                             filled_shares=float(sell_result.filled_shares),
                             fill_price=float(sell_result.fill_price),
-                            fee_paid=float(sell_result.fee),
+                            fee_paid=sell_fee_paid,
                             exchange_order_id=sell_result.exchange_order_id,
                             action="SELL",
                         )
@@ -583,13 +610,19 @@ class BettingEngine:
                             status=sell_status,
                         )
 
-                    # After selling all opposite position, we buy the full requested amount
-                    # Keep count unchanged - we want the full target position
-                    # The sell was just to clear the opposite position first
+                    if intended_buy_count <= 0:
+                        return BetResult(
+                            market_id=market_id,
+                            signal=signal,
+                            order_placed=True,
+                            order_id=sell_order_id,
+                            status=sell_status,
+                        )
 
-                    # Continue to buy the full requested amount on new side
+                    # Continue with only the intended buy portion on the new side.
                     action = "BUY"
                     effective_side = want_side.upper()
+                    count = intended_buy_count
                     # Refresh cash after the NET sell — proceeds are now persisted
                     # to DB and must be available for the subsequent BUY.
                     _, _, live_cash = self._live_ledger_state(ticker)

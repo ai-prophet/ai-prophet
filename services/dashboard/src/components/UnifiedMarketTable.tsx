@@ -141,6 +141,15 @@ function formatPendingDelta(delta: number): string {
   return "0 pending";
 }
 
+function sameEdgeValue(a: number | null | undefined, b: number | null | undefined): boolean {
+  return a != null && b != null && Math.abs(a - b) <= 0.0005;
+}
+
+function isSyntheticTrade(trade: Trade): boolean {
+  const source = trade.prediction?.source?.toLowerCase() ?? "";
+  return source.startsWith("kalshi:");
+}
+
 function formatShareLabel(count: number): string {
   return `${count} share${Math.abs(count) === 1 ? "" : "s"}`;
 }
@@ -1087,13 +1096,15 @@ function ExpandedPanel({
 
   const timelineCount = useMemo(() => {
     if (!modelRuns) return row.trade_count;
-    const chronTrades = [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const chronTrades = [...row.trades]
+      .filter((trade) => !isSyntheticTrade(trade))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const chronRuns = [...modelRuns].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
-    return row.trade_count + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
+    return chronTrades.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
   }, [row.trade_count, row.trades, modelRuns]);
   const tradesTabCount = useMemo(
-    () => row.trades.filter(shouldShowInTradesTab).length,
+    () => row.trades.filter((trade) => !isSyntheticTrade(trade) && shouldShowInTradesTab(trade)).length,
     [row.trades]
   );
 
@@ -1148,7 +1159,7 @@ function ExpandedPanel({
             loadingRuns={loadingRuns}
           />
         )}
-        {activeTab === "trades" && <TradesTab row={row} />}
+        {activeTab === "trades" && <TradesTab row={row} modelRuns={modelRuns} />}
         {activeTab === "models" && (
           <ModelsTab
             row={row}
@@ -1179,6 +1190,23 @@ type TimelinePositionState = {
   side: string;
 } | null;
 
+type RunDisplayContext = {
+  pYes: number | null;
+  edge: number | null;
+};
+
+type TradeDisplayContext = {
+  pYes: number | null;
+  mktAsk: number | null;
+  edge: number | null;
+};
+
+type TradeStepGroup = {
+  key: string;
+  sortTs: number;
+  lines: TimelineTradeItem[];
+};
+
 function getExecutedTradeQuantity(trade: Trade): number {
   const status = trade.status?.toUpperCase() ?? "";
   if ((trade.filled_shares ?? 0) > 0) return trade.filled_shares;
@@ -1197,6 +1225,91 @@ function submittedTradeTimelineItem(trade: Trade): SubmittedTradeTimelineItem {
   return { trade, qty, isSell, fee, price, cashFlow };
 }
 
+function buildRunDisplayContext(chronRuns: ModelRun[], row: UnifiedMarketRow): Map<number, RunDisplayContext> {
+  const lastPYesByModel = new Map<string, number>();
+  const context = new Map<number, RunDisplayContext>();
+
+  chronRuns.forEach((run) => {
+    const fallbackPYes = lastPYesByModel.get(run.model_name) ?? row.aggregated_p_yes ?? null;
+    const pYes = run.p_yes ?? fallbackPYes;
+    if (run.p_yes != null) lastPYesByModel.set(run.model_name, run.p_yes);
+    const edge = pYes != null && row.yes_ask != null ? pYes - row.yes_ask : row.edge;
+    context.set(run.id, { pYes, edge });
+  });
+
+  return context;
+}
+
+function resolveTradeDisplayContext(
+  trade: Trade,
+  matchedRun: ModelRun | null,
+  row: UnifiedMarketRow,
+  runDisplayContext: Map<number, RunDisplayContext>,
+): TradeDisplayContext {
+  const matchedContext = matchedRun ? runDisplayContext.get(matchedRun.id) : null;
+  const pYes = trade.prediction?.p_yes ?? matchedContext?.pYes ?? null;
+  const mktAsk = trade.prediction?.yes_ask ?? row.yes_ask ?? null;
+  const edge = pYes != null && mktAsk != null ? pYes - mktAsk : matchedContext?.edge ?? row.edge;
+  return { pYes, mktAsk, edge };
+}
+
+function resolveTradeStepLineContext(
+  item: TimelineTradeItem,
+  row: UnifiedMarketRow,
+  runDisplayContext: Map<number, RunDisplayContext>,
+  peerItems: TimelineTradeItem[] = [],
+): TradeDisplayContext {
+  if (item.trade.prediction || item.matchedRun) {
+    return resolveTradeDisplayContext(item.trade, item.matchedRun, row, runDisplayContext);
+  }
+
+  const peer = peerItems.find((candidate) => candidate.trade.id !== item.trade.id && (candidate.trade.prediction || candidate.matchedRun));
+  if (peer) {
+    return resolveTradeDisplayContext(peer.trade, peer.matchedRun, row, runDisplayContext);
+  }
+
+  return resolveTradeDisplayContext(item.trade, item.matchedRun, row, runDisplayContext);
+}
+
+function isCrossSideRebalancePair(current: TimelineTradeItem, next?: TimelineTradeItem): next is TimelineTradeItem {
+  if (!next) return false;
+  const currentTs = new Date(current.trade.created_at).getTime();
+  const nextTs = new Date(next.trade.created_at).getTime();
+  return (
+    current.trade.action?.toUpperCase() === "SELL"
+    && next.trade.action?.toUpperCase() === "BUY"
+    && current.trade.side?.toUpperCase() !== next.trade.side?.toUpperCase()
+    && Math.abs(nextTs - currentTs) <= SAME_ACTION_WINDOW_MS
+  );
+}
+
+function buildTradeStepGroups(tradesWithRuns: TimelineTradeItem[]): TradeStepGroup[] {
+  const groups: TradeStepGroup[] = [];
+
+  for (let i = 0; i < tradesWithRuns.length; i++) {
+    const current = tradesWithRuns[i];
+    const next = tradesWithRuns[i + 1];
+
+    if (isCrossSideRebalancePair(current, next)) {
+      groups.push({
+        key: `step-${current.trade.id}-${next.trade.id}`,
+        sortTs: new Date(next.trade.created_at).getTime(),
+        lines: [current, next],
+      });
+      i += 1;
+      continue;
+    }
+
+    groups.push({
+      key: `step-${current.trade.id}`,
+      sortTs: new Date(current.trade.created_at).getTime(),
+      lines: [current],
+    });
+  }
+
+  return groups.sort((a, b) => b.sortTs - a.sortTs);
+}
+
 function SubmittedTradesTimelineTab({
   row,
   modelRuns,
@@ -1210,7 +1323,9 @@ function SubmittedTradesTimelineTab({
   const [showPnLChart, setShowPnLChart] = useState(false);
 
   const chronTrades = useMemo(
-    () => [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    () => [...row.trades]
+      .filter((trade) => !isSyntheticTrade(trade))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
     [row.trades]
   );
   const chronRuns = useMemo(
@@ -1219,27 +1334,11 @@ function SubmittedTradesTimelineTab({
   );
   const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
   const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
-  const runDisplayContext = useMemo(() => {
-    const lastPYesByModel = new Map<string, number>();
-    const context = new Map<number, { pYes: number | null; edge: number | null }>();
-
-    chronRuns.forEach((run) => {
-      const fallbackPYes = lastPYesByModel.get(run.model_name) ?? row.aggregated_p_yes ?? null;
-      const pYes = run.p_yes ?? fallbackPYes;
-      if (run.p_yes != null) lastPYesByModel.set(run.model_name, run.p_yes);
-      const edge = pYes != null && row.yes_ask != null ? pYes - row.yes_ask : row.edge;
-      context.set(run.id, { pYes, edge });
-    });
-
-    return context;
-  }, [chronRuns, row.aggregated_p_yes, row.edge, row.yes_ask]);
-  const tradeDisplayContext = useCallback((trade: Trade, matchedRun: ModelRun | null) => {
-    const matchedContext = matchedRun ? runDisplayContext.get(matchedRun.id) : null;
-    const pYes = trade.prediction?.p_yes ?? matchedContext?.pYes ?? null;
-    const mktAsk = trade.prediction?.yes_ask ?? row.yes_ask ?? null;
-    const edge = pYes != null && mktAsk != null ? pYes - mktAsk : matchedContext?.edge ?? row.edge;
-    return { pYes, mktAsk, edge };
-  }, [row.edge, row.yes_ask, runDisplayContext]);
+  const runDisplayContext = useMemo(() => buildRunDisplayContext(chronRuns, row), [chronRuns, row]);
+  const tradeDisplayContext = useCallback(
+    (trade: Trade, matchedRun: ModelRun | null) => resolveTradeDisplayContext(trade, matchedRun, row, runDisplayContext),
+    [row, runDisplayContext]
+  );
 
   const cyclePnLData = useMemo(() => {
     const cycleMap = new Map<number, { timestamp: number; pnl: number; tradeCount: number }>();
@@ -1289,12 +1388,7 @@ function SubmittedTradesTimelineTab({
       const next = tradesWithRuns[i + 1];
       const currentTs = new Date(current.trade.created_at).getTime();
       const nextTs = next ? new Date(next.trade.created_at).getTime() : Number.NaN;
-      const isFlipPair = !!next
-        && !consumed.has(i + 1)
-        && current.trade.action?.toUpperCase() === "SELL"
-        && next.trade.action?.toUpperCase() === "BUY"
-        && current.trade.side?.toUpperCase() !== next.trade.side?.toUpperCase()
-        && Math.abs(nextTs - currentTs) <= SAME_ACTION_WINDOW_MS;
+      const isFlipPair = !consumed.has(i + 1) && isCrossSideRebalancePair(current, next);
 
       if (isFlipPair) {
         events.push({
@@ -1446,8 +1540,10 @@ function SubmittedTradesTimelineTab({
           if (event.type === "switch") {
             const sellEntry = submittedTradeTimelineItem(event.sell.trade);
             const buyEntry = submittedTradeTimelineItem(event.buy.trade);
-            const sellContext = tradeDisplayContext(event.sell.trade, event.sell.matchedRun);
-            const buyContext = tradeDisplayContext(event.buy.trade, event.buy.matchedRun);
+            const stepItems = [event.sell, event.buy];
+            const sellContext = resolveTradeStepLineContext(event.sell, row, runDisplayContext, stepItems);
+            const buyContext = resolveTradeStepLineContext(event.buy, row, runDisplayContext, stepItems);
+            const sharedEdge = sameEdgeValue(sellContext.edge, buyContext.edge) ? buyContext.edge : null;
             const resultingPosition = event.buy.resultingPosition;
             return (
               <div key={event.key} className="relative py-1.5">
@@ -1464,7 +1560,11 @@ function SubmittedTradesTimelineTab({
                       <span className="text-warn">{formatFeeLabel(sellEntry.fee)}</span>
                       {sellEntry.cashFlow != null && <span className={pnlCls(sellEntry.cashFlow)}>cash: {sellEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(sellEntry.cashFlow)}</span>}
                       {sellContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(sellContext.mktAsk * 100).toFixed(0)}c</span>}
-                      {sellContext.edge != null && <span className={pnlCls(sellContext.edge)}>edge: {sellContext.edge >= 0 ? "+" : ""}{(sellContext.edge * 100).toFixed(0)}pp</span>}
+                      {(sharedEdge != null || sellContext.edge != null) && (
+                        <span className={pnlCls(sharedEdge ?? sellContext.edge ?? 0)}>
+                          edge: {(sharedEdge ?? sellContext.edge ?? 0) >= 0 ? "+" : ""}{(((sharedEdge ?? sellContext.edge ?? 0) as number) * 100).toFixed(0)}pp
+                        </span>
+                      )}
                       <StatusBadge status={event.sell.trade.status} />
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono mt-1 ml-4">
@@ -1475,7 +1575,7 @@ function SubmittedTradesTimelineTab({
                       <span className="text-warn">{formatFeeLabel(buyEntry.fee)}</span>
                       {buyEntry.cashFlow != null && <span className={pnlCls(buyEntry.cashFlow)}>cash: {buyEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(buyEntry.cashFlow)}</span>}
                       {buyContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(buyContext.mktAsk * 100).toFixed(0)}c</span>}
-                      {buyContext.edge != null && <span className={pnlCls(buyContext.edge)}>edge: {buyContext.edge >= 0 ? "+" : ""}{(buyContext.edge * 100).toFixed(0)}pp</span>}
+                      {sharedEdge == null && buyContext.edge != null && <span className={pnlCls(buyContext.edge)}>edge: {buyContext.edge >= 0 ? "+" : ""}{(buyContext.edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={event.buy.trade.status} />
                       {resultingPosition ? (
                         <span className="text-txt-muted">
@@ -1573,7 +1673,7 @@ type TimelineTradeItem = {
 
 function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): TimelineTradeItem[] {
   const matchWindowMs = 15 * 60 * 1000;
-  let currentPosition: TimelinePositionState = null;
+  let currentSignedQuantity = 0;
 
   return chronTrades.map((trade) => {
     const pred = trade.prediction;
@@ -1602,22 +1702,21 @@ function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): Timelin
     const side = trade.side?.toUpperCase() ?? null;
     const isSell = trade.action?.toUpperCase() === "SELL";
     if (qty > 0 && side) {
-      if (isSell) {
-        if (currentPosition?.side === side) {
-          const remaining = Math.max(0, currentPosition.quantity - qty);
-          currentPosition = remaining > 0 ? { quantity: remaining, side } : null;
-        }
-      } else if (currentPosition?.side === side) {
-        currentPosition = { quantity: currentPosition.quantity + qty, side };
-      } else {
-        currentPosition = { quantity: qty, side };
-      }
+      const signedDelta = side === "YES" ? qty : -qty;
+      currentSignedQuantity += isSell ? -signedDelta : signedDelta;
     }
+
+    const resultingPosition = currentSignedQuantity === 0
+      ? null
+      : {
+          quantity: Math.abs(currentSignedQuantity),
+          side: currentSignedQuantity > 0 ? "YES" : "NO",
+        };
 
     return {
       trade,
       matchedRun,
-      resultingPosition: currentPosition ? { ...currentPosition } : null,
+      resultingPosition,
     };
   });
 }
@@ -1637,46 +1736,29 @@ function shouldShowInTradesTab(trade: Trade): boolean {
 
 // ── Tab 2: Trade History ────────────────────────────────────
 
-function TradesTab({ row }: { row: UnifiedMarketRow }) {
-  const visibleTrades = row.trades.filter(shouldShowInTradesTab);
+function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: ModelRun[] | null }) {
+  const chronTrades = useMemo(
+    () => [...row.trades]
+      .filter((trade) => !isSyntheticTrade(trade) && shouldShowInTradesTab(trade))
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    [row.trades]
+  );
+  const chronRuns = useMemo(
+    () => [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+    [modelRuns]
+  );
+  const runDisplayContext = useMemo(() => buildRunDisplayContext(chronRuns, row), [chronRuns, row]);
+  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
+  const tradeStepGroups = useMemo(() => buildTradeStepGroups(tradesWithRuns), [tradesWithRuns]);
 
-  if (visibleTrades.length === 0) {
+  if (tradeStepGroups.length === 0) {
     return <div className="text-[10px] text-txt-muted">No trades for this market</div>;
   }
 
-  const sortedTrades = [...visibleTrades].sort((a, b) =>
-    new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  const totalCashFlow = tradeStepGroups.reduce(
+    (sum, group) => sum + group.lines.reduce((groupSum, item) => groupSum + (submittedTradeTimelineItem(item.trade).cashFlow ?? 0), 0),
+    0
   );
-
-  const tradeRows = sortedTrades.map((trade) => {
-    const status = trade.status?.toUpperCase() ?? "";
-    const isExecuted = status === "FILLED" || status === "DRY_RUN";
-    const qty = isExecuted ? (trade.filled_shares || trade.count) : (trade.filled_shares || 0);
-    const price = trade.price_cents / 100;
-    const fee = trade.fee_paid || 0;
-    const isSell = trade.action?.toUpperCase() === "SELL";
-    const cashFlow = isSell ? (qty * price) - fee : -((qty * price) + fee);
-    return { trade, qty, displayQty: trade.count, price, fee, isSell, cashFlow, isExecuted };
-  });
-  const switchPairMeta = new Map<number, "lead" | "follow">();
-  for (let i = 0; i < tradeRows.length - 1; i++) {
-    const current = tradeRows[i];
-    const next = tradeRows[i + 1];
-    const currentTs = new Date(current.trade.created_at).getTime();
-    const nextTs = new Date(next.trade.created_at).getTime();
-    const isSwitchPair =
-      current.trade.action?.toUpperCase() === "BUY"
-      && next.trade.action?.toUpperCase() === "SELL"
-      && current.trade.side?.toUpperCase() !== next.trade.side?.toUpperCase()
-      && Math.abs(currentTs - nextTs) <= SAME_ACTION_WINDOW_MS;
-    if (isSwitchPair) {
-      switchPairMeta.set(current.trade.id, "lead");
-      switchPairMeta.set(next.trade.id, "follow");
-      i += 1;
-    }
-  }
-
-  const totalCashFlow = tradeRows.reduce((sum, r) => sum + r.cashFlow, 0);
 
   const pos = row.position;
   const currentBid = pos
@@ -1698,63 +1780,171 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
             <th className="px-2 py-1.5 text-right font-medium">Price</th>
             <th className="px-2 py-1.5 text-right font-medium">Fee</th>
             <th className="px-2 py-1.5 text-right font-medium">Cash</th>
+            <th className="px-2 py-1.5 text-right font-medium">Edge</th>
+            <th className="px-2 py-1.5 text-left font-medium">End Hold</th>
             <th className="px-2 py-1.5 text-center font-medium">Status</th>
             <th className="px-2 py-1.5 text-center font-medium">Mode</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-t-border/20">
-          {tradeRows.map(({ trade, displayQty, price, fee, isSell, cashFlow, isExecuted }) => (
-            <tr key={trade.id} className="hover:bg-t-panel-hover/50">
-              <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
-                <div className="flex flex-col">
-                  <span>{fmtTime(trade.created_at)}</span>
-                  {switchPairMeta.get(trade.id) === "lead" && (
-                    <span className="text-[8px] text-accent">switch step</span>
-                  )}
-                  {switchPairMeta.get(trade.id) === "follow" && (
-                    <span className="text-[8px] text-accent">↳ same step</span>
-                  )}
-                </div>
-              </td>
-              <td className="px-2 py-1.5 text-center">
-                <span className="flex items-center justify-center gap-1">
-                  {isSell && (
-                    <span className="text-[8px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
-                  )}
-                  <span className={`inline-block px-1 py-px rounded text-[8px] font-bold ${
-                    trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
-                  }`}>
-                    {trade.side.toUpperCase()}
-                  </span>
-                </span>
-              </td>
-              <td className="px-2 py-1.5 text-right font-mono text-txt-primary">
-                {displayQty}
-                {!isExecuted && trade.filled_shares > 0 ? (
-                  <span className="ml-1 text-txt-muted">({trade.filled_shares} filled)</span>
-                ) : null}
-              </td>
-              <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{Math.round(price * 100)}c</td>
-              <td className="px-2 py-1.5 text-right font-mono text-warn">{fmtDollar(fee)}</td>
-              <td className={`px-2 py-1.5 text-right font-mono font-medium ${isExecuted ? pnlCls(cashFlow) : "text-txt-muted"}`}>
-                {isExecuted ? `${cashFlow >= 0 ? "+" : ""}${fmtDollar(cashFlow)}` : "--"}
-              </td>
-              <td className="px-2 py-1.5 text-center">
-                <StatusBadge status={trade.status} />
-              </td>
-              <td className="px-2 py-1.5 text-center">
-                <span className={`text-[8px] font-bold px-1 py-px rounded ${
-                  trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
-                }`}>
-                  {trade.dry_run ? "DRY" : "LIVE"}
-                </span>
-              </td>
-            </tr>
-          ))}
+          {tradeStepGroups.map((group) => {
+            const latestTrade = group.lines[group.lines.length - 1].trade;
+            const firstTrade = group.lines[0].trade;
+            const lastTrade = group.lines[group.lines.length - 1].trade;
+            const isRebalanceStep = group.lines.length > 1;
+
+            return (
+              <tr key={group.key} className={`${isRebalanceStep ? "bg-t-panel-hover/20" : ""} hover:bg-t-panel-hover/50 align-top`}>
+                <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
+                  <div className="flex flex-col gap-1">
+                    <span>{fmtTime(latestTrade.created_at)}</span>
+                    {isRebalanceStep && (
+                      <span className="inline-flex w-fit items-center gap-1 rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[8px] font-medium">
+                        <span className={sideToneClass(firstTrade.side, true)}>{firstTrade.side.toUpperCase()}</span>
+                        <span className="text-txt-muted">-&gt;</span>
+                        <span className={sideToneClass(lastTrade.side, true)}>{lastTrade.side.toUpperCase()}</span>
+                        <span className="text-accent">rebalance</span>
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-center">
+                  <div className="flex flex-col">
+                    {group.lines.map((item, index) => {
+                      const trade = item.trade;
+                      const isSell = trade.action?.toUpperCase() === "SELL";
+                      return (
+                        <div
+                          key={trade.id}
+                          className={`flex items-center justify-center gap-1 ${index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}`}
+                        >
+                          <span className={`text-[8px] px-1 py-px rounded font-bold ${isSell ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
+                            {isSell ? "SELL" : "BUY"}
+                          </span>
+                          <span className={`inline-block px-1 py-px rounded text-[8px] font-bold ${
+                            trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
+                          }`}>
+                            {trade.side.toUpperCase()}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono text-txt-primary">
+                  <div className="flex flex-col items-end">
+                    {group.lines.map((item, index) => {
+                      const entry = submittedTradeTimelineItem(item.trade);
+                      const isExecuted = entry.qty > 0;
+                      return (
+                        <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
+                          {item.trade.count}
+                          {!isExecuted && item.trade.filled_shares > 0 ? (
+                            <span className="ml-1 text-txt-muted">({item.trade.filled_shares} filled)</span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono text-txt-primary">
+                  <div className="flex flex-col items-end">
+                    {group.lines.map((item, index) => {
+                      const entry = submittedTradeTimelineItem(item.trade);
+                      return (
+                        <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
+                          {Math.round(entry.price * 100)}c
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono text-warn">
+                  <div className="flex flex-col items-end">
+                    {group.lines.map((item, index) => {
+                      const entry = submittedTradeTimelineItem(item.trade);
+                      return (
+                        <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
+                          {fmtDollar(entry.fee)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono font-medium">
+                  <div className="flex flex-col items-end">
+                    {group.lines.map((item, index) => {
+                      const entry = submittedTradeTimelineItem(item.trade);
+                      return (
+                        <div
+                          key={item.trade.id}
+                          className={`${entry.cashFlow != null ? pnlCls(entry.cashFlow) : "text-txt-muted"} ${index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}`}
+                        >
+                          {entry.cashFlow != null ? `${entry.cashFlow >= 0 ? "+" : ""}${fmtDollar(entry.cashFlow)}` : "--"}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono">
+                  <div className="flex flex-col items-end">
+                    {group.lines.map((item, index) => {
+                      const context = resolveTradeStepLineContext(item, row, runDisplayContext, group.lines);
+                      return (
+                        <div
+                          key={item.trade.id}
+                          className={`${context.edge != null ? pnlCls(context.edge) : "text-txt-muted"} ${index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}`}
+                        >
+                          {context.edge != null ? `${context.edge >= 0 ? "+" : ""}${(context.edge * 100).toFixed(1)}pp` : "--"}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-left font-mono text-txt-muted">
+                  <div className="flex flex-col">
+                    {group.lines.map((item, index) => (
+                      <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
+                        {item.resultingPosition ? (
+                          <span className={sideToneClass(item.resultingPosition.side, true)}>
+                            {item.resultingPosition.quantity} {item.resultingPosition.side}
+                          </span>
+                        ) : (
+                          <span className="text-txt-muted">flat</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-center">
+                  <div className="flex flex-col items-center">
+                    {group.lines.map((item, index) => (
+                      <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
+                        <StatusBadge status={item.trade.status} />
+                      </div>
+                    ))}
+                  </div>
+                </td>
+                <td className="px-2 py-1.5 text-center">
+                  <div className="flex flex-col items-center">
+                    {group.lines.map((item, index) => (
+                      <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
+                        <span className={`text-[8px] font-bold px-1 py-px rounded ${
+                          item.trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
+                        }`}>
+                          {item.trade.dry_run ? "DRY" : "LIVE"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
         <tfoot>
           <tr className="border-t border-t-border/60 text-[9px] text-txt-muted">
-            <td colSpan={5} className="px-2 py-1.5 font-medium">
+            <td colSpan={7} className="px-2 py-1.5 font-medium">
               {pos && currentBid != null
                 ? `Exit value: ${pos.quantity} ${pos.contract.toUpperCase()} × ${Math.round(currentBid * 100)}c bid`
                 : "No open position"}
