@@ -1424,7 +1424,6 @@ function SubmittedTradesTimelineTab({
                         {pYes != null && <span className="text-accent">model: {(pYes * 100).toFixed(0)}%</span>}
                         {row.yes_ask != null && <span className="text-txt-secondary">mkt: {(row.yes_ask * 100).toFixed(0)}c</span>}
                         {edge != null && <span className={pnlCls(edge)}>edge: {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)}pp</span>}
-                        {run.confidence != null && <span className="text-txt-muted">conf: {(run.confidence * 100).toFixed(0)}%</span>}
                         {isSkip && run.reasoning && (
                           <span className="text-txt-muted break-words">
                             why: {run.reasoning}
@@ -1464,7 +1463,6 @@ function SubmittedTradesTimelineTab({
                       <span className="text-txt-muted">@ {(sellEntry.price * 100).toFixed(0)}c</span>
                       <span className="text-warn">{formatFeeLabel(sellEntry.fee)}</span>
                       {sellEntry.cashFlow != null && <span className={pnlCls(sellEntry.cashFlow)}>cash: {sellEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(sellEntry.cashFlow)}</span>}
-                      {sellContext.pYes != null && <span className="text-accent">model: {(sellContext.pYes * 100).toFixed(0)}%</span>}
                       {sellContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(sellContext.mktAsk * 100).toFixed(0)}c</span>}
                       {sellContext.edge != null && <span className={pnlCls(sellContext.edge)}>edge: {sellContext.edge >= 0 ? "+" : ""}{(sellContext.edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={event.sell.trade.status} />
@@ -1476,7 +1474,6 @@ function SubmittedTradesTimelineTab({
                       <span className="text-txt-muted">@ {(buyEntry.price * 100).toFixed(0)}c</span>
                       <span className="text-warn">{formatFeeLabel(buyEntry.fee)}</span>
                       {buyEntry.cashFlow != null && <span className={pnlCls(buyEntry.cashFlow)}>cash: {buyEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(buyEntry.cashFlow)}</span>}
-                      {buyContext.pYes != null && <span className="text-accent">model: {(buyContext.pYes * 100).toFixed(0)}%</span>}
                       {buyContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(buyContext.mktAsk * 100).toFixed(0)}c</span>}
                       {buyContext.edge != null && <span className={pnlCls(buyContext.edge)}>edge: {buyContext.edge >= 0 ? "+" : ""}{(buyContext.edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={event.buy.trade.status} />
