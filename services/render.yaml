@@ -74,9 +74,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "2"
+        value: "1"
       - key: DB_MAX_OVERFLOW
-        value: "2"
+        value: "1"
       - fromGroup: kalshi-trading-shared
 
   # ── Kalshi Sync Service — Haifeng ────────────────────────────
@@ -94,6 +94,10 @@ services:
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64_HAIFENG
         sync: false
+      - key: DB_POOL_SIZE
+        value: "1"
+      - key: DB_MAX_OVERFLOW
+        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── Kalshi Sync Service — Jibang ─────────────────────────────
@@ -111,6 +115,10 @@ services:
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64_JIBANG
         sync: false
+      - key: DB_POOL_SIZE
+        value: "1"
+      - key: DB_MAX_OVERFLOW
+        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── Trading Worker — Jibang (LIVE) ────────────────────────────
@@ -149,9 +157,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "2"
+        value: "1"
       - key: DB_MAX_OVERFLOW
-        value: "2"
+        value: "1"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — GPT-5.4 (dry-run) ──────────────────────
@@ -187,9 +195,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "2"
+        value: "1"
       - key: DB_MAX_OVERFLOW
-        value: "2"
+        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Grok 4 (dry-run) ────────────────────────
@@ -225,9 +233,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "2"
+        value: "1"
       - key: DB_MAX_OVERFLOW
-        value: "2"
+        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Claude Opus 4.6 (dry-run) ───────────────
@@ -263,9 +271,9 @@ services:
       - key: PREDICTOR_API_KEY
         sync: false
       - key: DB_POOL_SIZE
-        value: "2"
+        value: "1"
       - key: DB_MAX_OVERFLOW
-        value: "2"
+        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── API Backend ──────────────────────────────────────────────
@@ -294,6 +302,10 @@ services:
       # Using small connection pool (pool_size=1) instead for better performance
       - key: DB_NULL_POOL
         value: "false"
+      - key: DB_POOL_SIZE
+        value: "1"
+      - key: DB_MAX_OVERFLOW
+        value: "0"
       - fromGroup: kalshi-trading-shared
     healthCheckPath: /health
 
