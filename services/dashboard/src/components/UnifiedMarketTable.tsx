@@ -974,13 +974,13 @@ function MarketRow({
                 </span>
               </span>
               {row.pending_shares != null && row.pending_shares > 0 && (
-                <span className="text-[9px] font-mono text-yellow-400" title="Orders placed but not yet filled">
+                <span className="text-[9px] font-mono text-yellow-400" title="Open Kalshi orders captured during the latest sync">
                   +{row.pending_shares} pending
                 </span>
               )}
               {row.target_shares != null && row.target_shares !== pos.quantity && (
                 <span className={`text-[8px] font-mono ${row.target_shares < pos.quantity ? "text-loss" : "text-profit"}`}
-                  title={`Rebalancing: Target ${row.target_shares} - Current ${pos.quantity} = ${row.target_shares > pos.quantity ? "Buy" : "Sell"} ${Math.abs(row.target_shares - pos.quantity)}`}>
+                  title={`Projected position after current Kalshi pending orders: ${row.target_shares} from ${pos.quantity}`}>
                   → {row.target_shares} ({row.target_shares > pos.quantity ? "+" : "-"}{Math.abs(row.target_shares - pos.quantity)})
                 </span>
               )}
@@ -989,14 +989,14 @@ function MarketRow({
             <span className="flex flex-col items-center gap-0.5">
               <span className="font-mono text-txt-muted">0</span>
               {row.pending_shares != null && row.pending_shares > 0 && (
-                <span className="text-[9px] font-mono text-yellow-400" title="Orders placed but not yet filled">
+                <span className="text-[9px] font-mono text-yellow-400" title="Open Kalshi orders captured during the latest sync">
                   +{row.pending_shares} pending
                 </span>
               )}
               {row.target_shares != null && (
                 <span className="text-[8px] font-mono text-txt-muted"
-                  title={`Target position based on edge: ${row.target_shares}`}>
-                  target: {row.target_shares}
+                  title={`Projected position after current Kalshi pending orders: ${row.target_shares}`}>
+                  projected: {row.target_shares}
                 </span>
               )}
             </span>

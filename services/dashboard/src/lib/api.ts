@@ -143,6 +143,8 @@ export interface Market {
   model_predictions?: ModelPrediction[];
   aggregated_p_yes?: number | null;
   pending_orders?: PendingOrder[];
+  latest_order_time?: string | null;
+  kalshi_order_count?: number;
 }
 
 export interface Position {
@@ -158,6 +160,9 @@ export interface Position {
   market_exposure?: number | null;
   total_cost?: number | null;
   fees_paid?: number | null;
+  pending_orders?: PendingOrder[];
+  latest_order_time?: string | null;
+  kalshi_order_count?: number;
   updated_at: string;
 }
 
@@ -569,6 +574,62 @@ export function liveNetPnl(row: UnifiedMarketRow): number | null {
   return openValue - costBasis;
 }
 
+function latestResolvedTradeTimestampMs(trades: Trade[]): number | null {
+  return trades.reduce<number | null>((latest, trade) => {
+    if (trade.status?.toUpperCase() === "PENDING") return latest;
+    const createdMs = new Date(trade.created_at).getTime();
+    if (Number.isNaN(createdMs)) return latest;
+    return latest == null || createdMs > latest ? createdMs : latest;
+  }, null);
+}
+
+function buildPendingPositionState(
+  pendingOrders: PendingOrder[],
+  currentPosition: UnifiedMarketRow["position"],
+  latestResolvedTradeMs: number | null,
+): Pick<UnifiedMarketRow, "pending_orders" | "pending_shares" | "target_shares"> {
+  const effectivePendingOrders = pendingOrders.filter((order) => {
+    if (latestResolvedTradeMs == null) return true;
+    const createdMs = new Date(order.created_at).getTime();
+    if (Number.isNaN(createdMs)) return true;
+    return createdMs >= latestResolvedTradeMs;
+  });
+
+  if (effectivePendingOrders.length === 0) {
+    return {
+      pending_orders: [],
+      pending_shares: null,
+      target_shares: null,
+    };
+  }
+
+  const pending_shares = effectivePendingOrders.reduce((sum, order) => {
+    const remaining = Math.max(0, order.count - order.filled_shares);
+    return sum + remaining;
+  }, 0);
+
+  const currentSignedQuantity = currentPosition
+    ? (currentPosition.contract.toLowerCase() === "yes" ? currentPosition.quantity : -currentPosition.quantity)
+    : 0;
+
+  const targetSignedQuantity = effectivePendingOrders.reduce((signedQty, order) => {
+    const remaining = Math.max(0, order.count - order.filled_shares);
+    if (remaining <= 0) return signedQty;
+
+    const sideSign = order.side?.toUpperCase() === "YES" ? 1 : -1;
+    const action = order.action?.toUpperCase() ?? "BUY";
+    return action === "SELL"
+      ? signedQty - sideSign * remaining
+      : signedQty + sideSign * remaining;
+  }, currentSignedQuantity);
+
+  return {
+    pending_orders: effectivePendingOrders,
+    pending_shares,
+    target_shares: Math.abs(targetSignedQuantity),
+  };
+}
+
 export function buildUnifiedMarketRows(
   markets: Market[],
   positions: Position[],
@@ -701,56 +762,19 @@ export function buildUnifiedMarketRows(
     }
 
     // Calculate position breakdown
-    const pendingOrders = mkt.pending_orders ?? [];
-    const latestResolvedTradeMs = sortedTrades.reduce<number | null>((latest, trade) => {
-      if (trade.status?.toUpperCase() === "PENDING") return latest;
-      const createdMs = new Date(trade.created_at).getTime();
-      if (Number.isNaN(createdMs)) return latest;
-      return latest == null || createdMs > latest ? createdMs : latest;
-    }, null);
-    const effectivePendingOrders = pendingOrders.filter((order) => {
-      if (latestResolvedTradeMs == null) return true;
-      const createdMs = new Date(order.created_at).getTime();
-      if (Number.isNaN(createdMs)) return true;
-      return createdMs >= latestResolvedTradeMs;
-    });
-    let target_shares: number | null = null;
+    const latestResolvedTradeMs = latestResolvedTradeTimestampMs(sortedTrades);
     let filled_shares: number | null = null;
-    let pending_shares: number | null = null;
 
     // Calculate filled shares from BUY trades
     const buyTrades = filledMktTrades.filter((t) => t.action?.toUpperCase() === "BUY");
     if (buyTrades.length > 0) {
       filled_shares = buyTrades.reduce((sum, t) => sum + (t.filled_shares || t.count), 0);
     }
-
-    // Calculate pending shares from pending orders
-    if (effectivePendingOrders.length > 0) {
-      pending_shares = effectivePendingOrders.reduce((sum, order) => {
-        const remaining = order.count - order.filled_shares;
-        return sum + remaining;
-      }, 0);
-
-      const currentSignedQuantity = pos
-        ? (pos.contract.toLowerCase() === "yes" ? pos.quantity : -pos.quantity)
-        : 0;
-
-      const targetSignedQuantity = effectivePendingOrders.reduce((signedQty, order) => {
-        const remaining = Math.max(0, order.count - order.filled_shares);
-        if (remaining <= 0) return signedQty;
-
-        const sideSign = order.side?.toUpperCase() === "YES" ? 1 : -1;
-        const action = order.action?.toUpperCase() ?? "BUY";
-
-        if (action === "SELL") {
-          return signedQty - sideSign * remaining;
-        }
-
-        return signedQty + sideSign * remaining;
-      }, currentSignedQuantity);
-
-      target_shares = Math.abs(targetSignedQuantity);
-    }
+    const pendingState = buildPendingPositionState(
+      mkt.pending_orders ?? [],
+      positionData,
+      latestResolvedTradeMs,
+    );
 
     rows.push({
       market_id: mkt.market_id,
@@ -772,11 +796,11 @@ export function buildUnifiedMarketRows(
       fees_paid_total,
       trades: sortedTrades,
       trade_count: sortedTrades.length,
-      last_trade_time: sortedTrades[0]?.created_at ?? null,
-      target_shares,
+      last_trade_time: mkt.latest_order_time ?? sortedTrades[0]?.created_at ?? null,
+      target_shares: pendingState.target_shares,
       filled_shares,
-      pending_shares,
-      pending_orders: effectivePendingOrders,
+      pending_shares: pendingState.pending_shares,
+      pending_orders: pendingState.pending_orders,
       has_position: pos != null,
       has_prediction: predicted != null,
       has_trades: sortedTrades.length > 0,
@@ -798,6 +822,21 @@ export function buildUnifiedMarketRows(
     const filled_shares = buyTrades.length > 0
       ? buyTrades.reduce((sum, t) => sum + (t.filled_shares || t.count), 0)
       : null;
+
+    const pendingState = buildPendingPositionState(
+      pos.pending_orders ?? [],
+      {
+        contract: pos.contract,
+        quantity: pos.quantity,
+        avg_price: pos.avg_price,
+        realized_pnl: pos.realized_pnl,
+        capital: (pos.total_cost ?? (pos.avg_price * pos.quantity)),
+        market_exposure: pos.market_exposure ?? null,
+        total_cost: pos.total_cost ?? null,
+        fees_paid: pos.fees_paid ?? null,
+      },
+      latestResolvedTradeTimestampMs(sortedTrades),
+    );
 
     rows.push({
       market_id: pos.market_id,
@@ -828,11 +867,11 @@ export function buildUnifiedMarketRows(
       fees_paid_total: filledMktTrades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0),
       trades: sortedTrades,
       trade_count: sortedTrades.length,
-      last_trade_time: sortedTrades[0]?.created_at ?? null,
-      target_shares: null,
+      last_trade_time: pos.latest_order_time ?? sortedTrades[0]?.created_at ?? null,
+      target_shares: pendingState.target_shares,
       filled_shares,
-      pending_shares: null,
-      pending_orders: [],
+      pending_shares: pendingState.pending_shares,
+      pending_orders: pendingState.pending_orders,
       has_position: true,
       has_prediction: false,
       has_trades: sortedTrades.length > 0,

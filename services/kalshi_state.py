@@ -302,6 +302,29 @@ def get_latest_order_snapshots(
     return list(latest.values())
 
 
+def build_latest_order_activity_by_ticker(
+    session,
+    instance_name: str,
+    *,
+    tickers: Iterable[str] | None = None,
+) -> tuple[dict[str, str], dict[str, int]]:
+    latest_order_snaps = get_latest_order_snapshots(session, instance_name, tickers=tickers)
+    latest_order_time_by_ticker: dict[str, str] = {}
+    order_count_by_ticker: dict[str, int] = {}
+
+    for snap in latest_order_snaps:
+        order_count_by_ticker[snap.ticker] = order_count_by_ticker.get(snap.ticker, 0) + 1
+        ts = snap.created_ts or snap.last_update_ts or snap.captured_at
+        if ts is None:
+            continue
+        ts_iso = ts.isoformat()
+        current = latest_order_time_by_ticker.get(snap.ticker)
+        if current is None or ts_iso > current:
+            latest_order_time_by_ticker[snap.ticker] = ts_iso
+
+    return latest_order_time_by_ticker, order_count_by_ticker
+
+
 @dataclass
 class KalshiPositionView:
     market_id: str

@@ -69,12 +69,12 @@ from db_models import (
     TradingPosition,
 )
 from kalshi_state import (
+    build_latest_order_activity_by_ticker,
     build_pending_orders_by_ticker,
     build_portfolio_summary,
     build_position_views,
     get_latest_balance_snapshot,
     get_latest_position_snapshots,
-    get_latest_order_snapshots,
 )
 
 # ── App setup ─────────────────────────────────────────────────────
@@ -784,6 +784,11 @@ def get_markets(
             resolved_instance,
             tickers=(row.ticker for row in rows),
         )
+        latest_order_time_by_ticker, kalshi_order_count_by_ticker = build_latest_order_activity_by_ticker(
+            session,
+            resolved_instance,
+            tickers=(row.ticker for row in rows),
+        )
 
         # Bulk-load all recent model runs for these markets (avoid N+1)
         market_ids_for_runs = [r.market_id for r in rows]
@@ -873,6 +878,8 @@ def get_markets(
                 "model_predictions": model_predictions,
                 "aggregated_p_yes": aggregated_p_yes,
                 "pending_orders": pending_orders_by_ticker.get(row.ticker, []),
+                "latest_order_time": latest_order_time_by_ticker.get(row.ticker),
+                "kalshi_order_count": kalshi_order_count_by_ticker.get(row.ticker, 0),
             })
         return results
     except Exception as e:
@@ -916,19 +923,35 @@ def get_positions(
             ):
                 pos_markets[m.market_id] = m
 
+        tickers = [
+            (pos_markets.get(row.market_id).ticker if pos_markets.get(row.market_id) else getattr(row, "ticker", None))
+            for row in rows
+        ]
+        latest_order_time_by_ticker, kalshi_order_count_by_ticker = build_latest_order_activity_by_ticker(
+            session,
+            resolved_instance,
+            tickers=tickers,
+        )
+        pending_orders_by_ticker = build_pending_orders_by_ticker(
+            session,
+            resolved_instance,
+            tickers=tickers,
+        )
+
         results = []
         for row in rows:
             mkt = pos_markets.get(row.market_id)
             market_title = mkt.title if mkt else None
             event_ticker = mkt.event_ticker if mkt else None
             ticker = mkt.ticker if mkt else None
+            resolved_ticker = ticker or getattr(row, "ticker", None)
 
             # Apply search filter after join (search on title or ticker)
             if search:
                 needle = search.lower()
                 if not (
                     (market_title and needle in market_title.lower())
-                    or (ticker and needle in ticker.lower())
+                    or (resolved_ticker and needle in resolved_ticker.lower())
                     or (event_ticker and needle in event_ticker.lower())
                 ):
                     total -= 1
@@ -937,7 +960,7 @@ def get_positions(
             results.append({
                 "id": getattr(row, "id", 0),
                 "market_id": row.market_id,
-                "ticker": ticker or getattr(row, "ticker", None),
+                "ticker": resolved_ticker,
                 "event_ticker": event_ticker,
                 "market_title": market_title,
                 "contract": row.contract,
@@ -947,6 +970,9 @@ def get_positions(
                 "market_exposure": getattr(row, "market_exposure", None),
                 "total_cost": getattr(row, "total_cost", None),
                 "fees_paid": getattr(row, "fees_paid", None),
+                "pending_orders": pending_orders_by_ticker.get(resolved_ticker, []),
+                "latest_order_time": latest_order_time_by_ticker.get(resolved_ticker),
+                "kalshi_order_count": kalshi_order_count_by_ticker.get(resolved_ticker, 0),
                 "updated_at": row.updated_at.isoformat(),
             })
         return {
