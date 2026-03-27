@@ -430,6 +430,7 @@ def build_portfolio_summary(
     *,
     tickers: Iterable[str] | None = None,
     starting_total: float | None = None,
+    prefer_synced_portfolio_value: bool = False,
 ) -> KalshiPortfolioSummary:
     visible_tickers = {ticker for ticker in (tickers or []) if ticker}
     position_views = build_position_views(session, instance_name)
@@ -464,6 +465,8 @@ def build_portfolio_summary(
             open_value += float(view.market_exposure or 0.0)
         else:
             open_value += unit_value * float(view.quantity or 0.0)
+    if prefer_synced_portfolio_value and latest_balance is not None and latest_balance.portfolio_value is not None:
+        open_value = float(latest_balance.portfolio_value or 0.0)
     cash_spent = sum(float(view.total_cost or 0.0) for view in position_views)
     total_fees = sum(float(view.fees_paid or 0.0) for view in position_views)
     net_pnl = open_value - cash_spent + cash_pnl

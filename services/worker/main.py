@@ -72,8 +72,27 @@ def _normalized_market_category(category: str | None) -> str:
     return (category or "").strip().upper()
 
 
+def _contains_excluded_market_marker(value: str | None) -> bool:
+    return "MENTION" in _normalized_market_category(value)
+
+
 def _is_excluded_market_category(category: str | None) -> bool:
     return _normalized_market_category(category) in EXCLUDED_MARKET_CATEGORIES
+
+
+def _is_excluded_market(
+    *,
+    category: str | None = None,
+    ticker: str | None = None,
+    event_ticker: str | None = None,
+    title: str | None = None,
+) -> bool:
+    if _is_excluded_market_category(category):
+        return True
+    return any(
+        _contains_excluded_market_marker(value)
+        for value in (ticker, event_ticker, title, category)
+    )
 
 
 def _instance_setting(key: str, default: str = "") -> str:
@@ -569,15 +588,25 @@ def get_peer_tickers(db_engine, peer_instance_name: str) -> list[str]:
 
         with get_session(db_engine) as session:
             rows = (
-                session.query(TradingMarket.ticker, TradingMarket.category)
+                session.query(
+                    TradingMarket.ticker,
+                    TradingMarket.category,
+                    TradingMarket.event_ticker,
+                    TradingMarket.title,
+                )
                 .filter(TradingMarket.instance_name == peer_instance_name)
                 .order_by(TradingMarket.updated_at.desc())
                 .all()
             )
             tickers: list[str] = []
             seen: set[str] = set()
-            for ticker, category in rows:
-                if not ticker or ticker in seen or _is_excluded_market_category(category):
+            for ticker, category, event_ticker, title in rows:
+                if not ticker or ticker in seen or _is_excluded_market(
+                    category=category,
+                    ticker=ticker,
+                    event_ticker=event_ticker,
+                    title=title,
+                ):
                     continue
                 tickers.append(ticker)
                 seen.add(ticker)
@@ -622,7 +651,15 @@ def purge_excluded_tracked_markets(db_engine, instance_name: str = INSTANCE_NAME
                 .filter(TradingMarket.instance_name == instance_name)
                 .all()
             )
-            excluded_rows = [row for row in rows if _is_excluded_market_category(row.category)]
+            excluded_rows = [
+                row for row in rows
+                if _is_excluded_market(
+                    category=row.category,
+                    ticker=row.ticker,
+                    event_ticker=row.event_ticker,
+                    title=row.title,
+                )
+            ]
             for row in excluded_rows:
                 session.delete(row)
         removed = len(excluded_rows)
@@ -796,6 +833,14 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
         yes_sub = mkt.get("yes_sub_title", "")
         title = f"{event_title}: {yes_sub}" if yes_sub else event_title
 
+        if _is_excluded_market(
+            category=category,
+            ticker=ticker,
+            event_ticker=event_ticker,
+            title=title,
+        ):
+            return None
+
         return {
             "ticker": ticker,
             "event_ticker": event_ticker,
@@ -873,7 +918,12 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
         for event in events:
             event_title = event.get("title", "Unknown")
             category = event.get("category", "")
-            if _is_excluded_market_category(category):
+            event_ticker = event.get("ticker", "")
+            if _is_excluded_market(
+                category=category,
+                event_ticker=event_ticker,
+                title=event_title,
+            ):
                 continue
 
             for mkt in event.get("markets", []):
@@ -894,6 +944,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
                 ticker = mkt.get("ticker", "")
                 if not ticker or ticker in seen_tickers:
                     continue
+                market_event_ticker = mkt.get("event_ticker", "") or event_ticker
                 yes_bid = mkt.get("yes_bid_dollars")
                 yes_ask = mkt.get("yes_ask_dollars")
                 no_bid = mkt.get("no_bid_dollars")
@@ -907,6 +958,13 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
 
                 yes_sub = mkt.get("yes_sub_title", "")
                 market_title = f"{event_title}: {yes_sub}" if yes_sub else event_title
+                if _is_excluded_market(
+                    category=category,
+                    ticker=ticker,
+                    event_ticker=market_event_ticker,
+                    title=market_title,
+                ):
+                    continue
 
                 # Apply spread filter early — skip illiquid markets
                 _ya = float(yes_ask) if yes_ask is not None else price
@@ -920,7 +978,7 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
 
                 candidates.append({
                     "ticker": ticker,
-                    "event_ticker": mkt.get("event_ticker", ""),
+                    "event_ticker": market_event_ticker,
                     "title": market_title,
                     "subtitle": mkt.get("rules_primary", ""),
                     "category": category,
@@ -1568,6 +1626,25 @@ def run_cycle(args) -> None:
 
         market_id = f"kalshi:{ticker}"
 
+        if _is_excluded_market(
+            category=category,
+            ticker=ticker,
+            event_ticker=market.get("event_ticker", ""),
+            title=title,
+        ):
+            logger.debug("Skipping %s: mentions markets are excluded from tracking and betting", ticker)
+            log_cycle_skip_for_models(
+                db_engine,
+                model_specs,
+                market_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+                reason="Skipped because mentions markets are excluded from tracking and betting.",
+                instance_name=INSTANCE_NAME,
+            )
+            all_market_prices[market_id] = (yes_ask, no_ask)
+            continue
+
         # Save market snapshot for dashboard even when the market is skipped for this cycle.
         if db_engine:
             expiration = None
@@ -1596,41 +1673,6 @@ def run_cycle(args) -> None:
                 yes_ask=yes_ask,
                 no_ask=no_ask,
                 reason=f"Skipped because the spread ({yes_ask + no_ask:.1%}) exceeded the max allowed spread ({MAX_SPREAD:.1%}).",
-                instance_name=INSTANCE_NAME,
-            )
-            all_market_prices[market_id] = (yes_ask, no_ask)
-            continue
-
-        # Skip markets where the outcome is nearly certain (≥97% or ≤3%) — no profit opportunity.
-        # Check BOTH yes_ask and no_ask to ensure we don't miss extreme markets
-        if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
-            logger.debug("Skipping %s: near-certain price (yes_ask=%.3f, no_ask=%.3f)", ticker, yes_ask, no_ask)
-            log_cycle_skip_for_models(
-                db_engine,
-                model_specs,
-                market_id,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-                reason=(
-                    f"Skipped because the market was near-certain at "
-                    f"yes_ask={yes_ask:.1%}, no_ask={no_ask:.1%}."
-                ),
-                instance_name=INSTANCE_NAME,
-            )
-            all_market_prices[market_id] = (yes_ask, no_ask)
-            continue
-
-        # Never bet on MENTIONS markets — they track social media activity,
-        # not real-world events, and are not suitable for model prediction.
-        if _is_excluded_market_category(market.get("category")):
-            logger.debug("Skipping %s: MENTIONS category excluded from betting", ticker)
-            log_cycle_skip_for_models(
-                db_engine,
-                model_specs,
-                market_id,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-                reason="Skipped because MENTIONS markets are excluded from betting.",
                 instance_name=INSTANCE_NAME,
             )
             all_market_prices[market_id] = (yes_ask, no_ask)
@@ -1908,41 +1950,6 @@ def run_cycle(args) -> None:
                 )
             except Exception as e:
                 logger.debug("Could not materialize ledger-based portfolio snapshot: %s", e)
-
-        # If the market drifted to near-certain territory since it was pulled, skip betting.
-        # This is no longer a HOLD state; it's just a cycle skip.
-        if yes_ask >= 0.97 or yes_ask <= 0.03 or no_ask >= 0.97 or no_ask <= 0.03:
-            skip_reason = (
-                f"Skipped because the market was near-certain at "
-                f"yes_ask={yes_ask:.1%}, no_ask={no_ask:.1%}."
-            )
-            logger.info(
-                "  CYCLE_SKIPPED %s — near-certain price (yes_ask=%.3f, no_ask=%.3f), skipping",
-                ticker, yes_ask, no_ask,
-            )
-            if db_engine and betting_engine is not None:
-                # Persist a prediction row even when we skip before on_forecast()
-                # so the Timeline reflects every evaluated cycle.
-                betting_engine._save_prediction(
-                    tick_ts=tick_ts,
-                    market_id=market_id,
-                    source=model_spec,
-                    p_yes=p_yes,
-                    yes_ask=yes_ask,
-                    no_ask=no_ask,
-                )
-                for ms, pred in model_predictions.items():
-                    save_model_run(
-                        db_engine, ms, market_id, "CYCLE_SKIPPED", pred.get("confidence"),
-                        metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
-                                  "analysis": pred.get("analysis", {}),
-                                  "sources": pred.get("sources", []),
-                                  "yes_ask": yes_ask, "no_ask": no_ask,
-                                  "skip_reason": skip_reason},
-                        instance_name=INSTANCE_NAME,
-                    )
-            all_market_prices[market_id] = (yes_ask, no_ask)
-            continue
 
         if db_engine and betting_engine is not None:
             for ms, pred in model_predictions.items():

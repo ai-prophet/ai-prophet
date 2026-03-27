@@ -81,6 +81,10 @@ export interface Trade {
   dry_run: boolean;
   created_at: string;
   market_title: string | null;
+  synthetic_kind?: string | null;
+  deferred_status?: string | null;
+  pending_reason?: string | null;
+  related_order_id?: string | null;
   prediction: {
     p_yes: number;
     yes_ask: number;

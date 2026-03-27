@@ -7,7 +7,12 @@ from sqlalchemy import create_engine
 from ai_prophet_core.betting.db import get_session
 from ai_prophet_core.betting.db_schema import Base
 from db_models import TradingMarket
-from services.worker.main import fetch_kalshi_markets, get_peer_tickers, purge_excluded_tracked_markets
+from services.worker.main import (
+    _is_excluded_market,
+    fetch_kalshi_markets,
+    get_peer_tickers,
+    purge_excluded_tracked_markets,
+)
 
 
 class _FakeResponse:
@@ -141,6 +146,38 @@ def test_fetch_kalshi_markets_skips_mentions_events():
     assert [m["ticker"] for m in markets] == ["REAL-ONE"]
 
 
+def test_fetch_kalshi_markets_skips_mentions_ticker_even_when_category_is_sports():
+    adapter = _FakeAdapter(
+        [
+            {
+                "events": [
+                    {
+                        "title": "College Basketball",
+                        "ticker": "EV-MSUCONN",
+                        "category": "Sports",
+                        "markets": [
+                            _market_payload("KXNCAABMENTION-26MAR28MSUCONN-DOUB"),
+                            _market_payload("REAL-SPORTS-ONE"),
+                        ],
+                    },
+                ],
+                "cursor": "",
+            }
+        ]
+    )
+
+    markets = fetch_kalshi_markets(adapter, max_markets=10)
+
+    assert [m["ticker"] for m in markets] == ["REAL-SPORTS-ONE"]
+
+
+def test_excluded_market_helper_catches_mentions_anywhere():
+    assert _is_excluded_market(category="MENTIONS") is True
+    assert _is_excluded_market(category="Sports", ticker="KXNCAABMENTION-26MAR28MSUCONN-DOUB") is True
+    assert _is_excluded_market(category="Sports", event_ticker="KXNCAABMENTION-26MAR28MSUCONN") is True
+    assert _is_excluded_market(category="Sports", title="Normal title") is False
+
+
 def test_purge_excluded_tracked_markets_removes_mentions_rows():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
@@ -151,10 +188,10 @@ def test_purge_excluded_tracked_markets_removes_mentions_rows():
                 TradingMarket(
                     instance_name="Haifeng",
                     market_id="kalshi:MENTION-ONE",
-                    ticker="MENTION-ONE",
-                    event_ticker="EV-MENTION",
+                    ticker="KXNCAABMENTION-26MAR28MSUCONN-DOUB",
+                    event_ticker="KXNCAABMENTION-26MAR28MSUCONN",
                     title="Mention row",
-                    category="MENTIONS",
+                    category="Sports",
                     last_price=0.5,
                     yes_bid=0.49,
                     yes_ask=0.5,
@@ -216,10 +253,10 @@ def test_get_peer_tickers_excludes_mentions_and_preserves_recent_order():
                 TradingMarket(
                     instance_name="Haifeng",
                     market_id="kalshi:MENTION-ONE",
-                    ticker="MENTION-ONE",
-                    event_ticker="EV-MENTION",
+                    ticker="KXNCAABMENTION-26MAR28MSUCONN-DOUB",
+                    event_ticker="KXNCAABMENTION-26MAR28MSUCONN",
                     title="Mention",
-                    category="MENTIONS",
+                    category="Sports",
                     last_price=0.5,
                     yes_bid=0.49,
                     yes_ask=0.5,

@@ -164,6 +164,34 @@ function isSyntheticTrade(trade: Trade): boolean {
   return source.startsWith("kalshi:");
 }
 
+function isDeferredFlipTrade(trade: Trade): boolean {
+  return trade.synthetic_kind === "DEFERRED_FLIP";
+}
+
+function tradePendingNote(trade: Trade): string | null {
+  if (!isDeferredFlipTrade(trade)) return null;
+  return trade.pending_reason ?? "Queued as the next leg after the sell fills.";
+}
+
+function tradeModeBadge(trade: Trade): { label: string; className: string } {
+  if (isDeferredFlipTrade(trade)) {
+    return {
+      label: "NEXT",
+      className: "bg-accent-dim text-accent",
+    };
+  }
+  if (trade.dry_run) {
+    return {
+      label: "DRY",
+      className: "bg-warn-dim text-warn",
+    };
+  }
+  return {
+    label: "LIVE",
+    className: "bg-profit-dim text-profit",
+  };
+}
+
 function formatShareLabel(count: number): string {
   return `${count} share${Math.abs(count) === 1 ? "" : "s"}`;
 }
@@ -1600,6 +1628,7 @@ function SubmittedTradesTimelineTab({
             const buyContext = resolveTradeStepLineContext(event.buy, row, runDisplayContext, stepItems);
             const sharedEdge = sameEdgeValue(sellContext.edge, buyContext.edge) ? buyContext.edge : null;
             const resultingPosition = event.buy.resultingPosition;
+            const buyPendingNote = tradePendingNote(event.buy.trade);
             return (
               <div key={event.key} className="relative py-1.5">
                 <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-500 border-2 border-t-bg z-10" />
@@ -1612,9 +1641,6 @@ function SubmittedTradesTimelineTab({
                   </div>
                   <div className="flex-1 min-w-0 overflow-hidden">
                     <div className="mb-1 flex flex-wrap items-center gap-2 text-[9px] font-mono">
-                      <span className="rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 font-medium text-accent">
-                        Same Rebalance Step
-                      </span>
                       <span className="text-txt-muted">
                         {event.sell.trade.side.toUpperCase()} {"->"} {event.buy.trade.side.toUpperCase()}
                       </span>
@@ -1643,6 +1669,7 @@ function SubmittedTradesTimelineTab({
                       {buyContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(buyContext.mktAsk * 100).toFixed(0)}c</span>}
                       {sharedEdge == null && buyContext.edge != null && <span className={pnlCls(buyContext.edge)}>edge: {buyContext.edge >= 0 ? "+" : ""}{(buyContext.edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={event.buy.trade.status} />
+                      {buyPendingNote && <span className="text-accent">{buyPendingNote}</span>}
                       {resultingPosition ? (
                         <span className="text-txt-muted">
                           hold: <span className={sideToneClass(resultingPosition.side, true)}>{resultingPosition.quantity} {resultingPosition.side}</span>
@@ -1666,6 +1693,8 @@ function SubmittedTradesTimelineTab({
           const isExpanded = expandedTradeId === trade.id;
           const { pYes, mktAsk, edge } = tradeDisplayContext(trade, matchedRun);
           const resultingPosition = event.item.resultingPosition;
+          const pendingNote = tradePendingNote(trade);
+          const modeBadge = tradeModeBadge(trade);
 
           return (
             <div key={trade.id} className="relative py-1.5">
@@ -1708,8 +1737,9 @@ function SubmittedTradesTimelineTab({
                       {mktAsk != null && <span className="text-txt-secondary">mkt: {(mktAsk * 100).toFixed(0)}c</span>}
                       {edge != null && <span className={pnlCls(edge)}>edge: {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={trade.status} />
-                      <span className={`text-[9px] font-bold px-1 py-px rounded ${trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
-                        {trade.dry_run ? "DRY" : "LIVE"}
+                      {pendingNote && <span className="text-accent">{pendingNote}</span>}
+                      <span className={`text-[9px] font-bold px-1 py-px rounded ${modeBadge.className}`}>
+                        {modeBadge.label}
                       </span>
                       {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
                     </div>
@@ -2055,10 +2085,8 @@ function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: Model
                   <div className="flex flex-col items-center">
                     {group.lines.map((item, index) => (
                       <div key={item.trade.id} className={index > 0 ? "mt-1 border-t border-t-border/20 pt-1" : ""}>
-                        <span className={`text-[8px] font-bold px-1 py-px rounded ${
-                          item.trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
-                        }`}>
-                          {item.trade.dry_run ? "DRY" : "LIVE"}
+                        <span className={`text-[8px] font-bold px-1 py-px rounded ${tradeModeBadge(item.trade).className}`}>
+                          {tradeModeBadge(item.trade).label}
                         </span>
                       </div>
                     ))}

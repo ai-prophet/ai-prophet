@@ -51,6 +51,7 @@ from ai_prophet_core.betting.db import create_db_engine, get_session
 from ai_prophet_core.betting.config import MAX_SPREAD
 from ai_prophet_core.betting.db_schema import (
     Base as CoreBase,
+    BettingDeferredFlip,
     BettingOrder,
     BettingPrediction,
     BettingSignal,
@@ -92,6 +93,17 @@ DISPLAY_BASELINE_OVERRIDES: dict[str, float] = {
     "Jibang": 475.43,
 }
 MAX_CYCLE_RUNNING_AGE_SEC = 60 * 60
+
+
+def _deferred_flip_pending_reason(status: str, last_error: str | None) -> str:
+    normalized = (status or "").upper()
+    if normalized == "WAITING_SELL":
+        return "Queued after the sell leg finishes."
+    if normalized == "WAITING_POSITION_SYNC":
+        return "Queued after Kalshi position sync catches up."
+    if normalized == "WAITING_RETRY":
+        return last_error or "Queued to retry at the original limit price."
+    return last_error or "Queued as the deferred second leg of this rebalance."
 
 
 def get_db():
@@ -632,6 +644,19 @@ def get_trades(
                 .order_by(BettingOrder.created_at.desc())
                 .all()
             )
+            deferred_rows = (
+                _instance_query(session, BettingDeferredFlip, resolved_instance)
+                .filter(
+                    BettingDeferredFlip.created_at >= DISPLAY_CUTOFF_UTC,
+                    BettingDeferredFlip.status.in_((
+                        "WAITING_SELL",
+                        "WAITING_POSITION_SYNC",
+                        "WAITING_RETRY",
+                    )),
+                )
+                .order_by(BettingDeferredFlip.updated_at.desc(), BettingDeferredFlip.id.desc())
+                .all()
+            )
             latest_snapshots = [
                 snap for snap in get_latest_order_snapshots(session, resolved_instance)
                 if _display_visible_ts(snap.created_ts or snap.last_update_ts or snap.captured_at)
@@ -639,6 +664,10 @@ def get_trades(
 
             # Bulk-load signals, predictions, and market titles (avoid N+1)
             signal_ids = [r.signal_id for r in local_rows if r.signal_id]
+            signal_ids.extend(
+                flip.signal_id for flip in deferred_rows
+                if flip.signal_id is not None
+            )
             signals_by_id: dict[int, BettingSignal] = {}
             if signal_ids:
                 for s in (
@@ -659,7 +688,12 @@ def get_trades(
                     preds_by_id[p.id] = p
 
             snapshot_tickers = {snap.ticker for snap in latest_snapshots if snap.ticker}
-            trade_market_ids = list({f"kalshi:{r.ticker}" for r in local_rows if r.ticker} | {f"kalshi:{ticker}" for ticker in snapshot_tickers})
+            trade_market_ids = list(
+                {f"kalshi:{r.ticker}" for r in local_rows if r.ticker}
+                | {f"kalshi:{ticker}" for ticker in snapshot_tickers}
+                | {flip.market_id for flip in deferred_rows if flip.market_id}
+                | {f"kalshi:{flip.ticker}" for flip in deferred_rows if flip.ticker}
+            )
             market_titles: dict[str, str] = {}
             if trade_market_ids:
                 for m in (
@@ -708,10 +742,17 @@ def get_trades(
 
             local_by_exchange_order_id: dict[str, BettingOrder] = {}
             local_by_internal_order_id: dict[str, BettingOrder] = {}
+            active_buy_signals: set[int] = set()
             for row in local_rows:
                 if row.exchange_order_id:
                     local_by_exchange_order_id[row.exchange_order_id] = row
                 local_by_internal_order_id[row.order_id] = row
+                if (
+                    row.signal_id is not None
+                    and (row.action or "").upper() == "BUY"
+                    and (row.status or "").upper() in {"FILLED", "DRY_RUN", "PENDING", "PARTIALLY_FILLED"}
+                ):
+                    active_buy_signals.add(row.signal_id)
 
             def find_nearest_signal_prediction(row: BettingOrder) -> tuple[BettingSignal | None, BettingPrediction | None]:
                 if not row.ticker:
@@ -876,6 +917,50 @@ def get_trades(
                     "created_at": row.created_at.isoformat(),
                     "prediction": prediction,
                     "market_title": market_title,
+                })
+
+            for flip in deferred_rows:
+                if flip.buy_count <= 0 or not flip.ticker:
+                    continue
+                if flip.signal_id in active_buy_signals:
+                    continue
+
+                synthetic_created_at = flip.created_at
+                sell_row = local_by_internal_order_id.get(flip.sell_order_id)
+                if sell_row is not None and sell_row.created_at is not None and synthetic_created_at <= sell_row.created_at:
+                    synthetic_created_at = sell_row.created_at + timedelta(microseconds=1)
+
+                prediction = build_prediction(
+                    SimpleNamespace(
+                        signal_id=flip.signal_id,
+                        created_at=synthetic_created_at,
+                        ticker=flip.ticker,
+                        count=flip.buy_count,
+                        action="BUY",
+                        side=flip.buy_side,
+                    )
+                )
+                merged_results.append({
+                    "id": -1000000 - flip.id,
+                    "order_id": f"deferred-flip-{flip.id}",
+                    "ticker": flip.ticker,
+                    "action": "BUY",
+                    "side": flip.buy_side.upper(),
+                    "count": flip.buy_count,
+                    "price_cents": flip.buy_price_cents,
+                    "status": "PENDING",
+                    "filled_shares": 0,
+                    "fill_price": None,
+                    "fee_paid": 0,
+                    "exchange_order_id": None,
+                    "dry_run": False,
+                    "created_at": synthetic_created_at.isoformat(),
+                    "prediction": prediction,
+                    "market_title": market_titles.get(flip.market_id) or market_titles.get(f"kalshi:{flip.ticker}"),
+                    "synthetic_kind": "DEFERRED_FLIP",
+                    "deferred_status": flip.status,
+                    "pending_reason": _deferred_flip_pending_reason(flip.status, flip.last_error),
+                    "related_order_id": flip.sell_order_id,
                 })
 
             merged_results.sort(key=lambda item: item["created_at"], reverse=True)
@@ -1553,6 +1638,7 @@ def get_pnl(
                 resolved_instance,
                 tickers=visible_tickers,
                 starting_total=display_baseline["starting_total"],
+                prefer_synced_portfolio_value=True,
             )
             balance_snapshots = (
                 session.query(KalshiBalanceSnapshot)
@@ -1608,6 +1694,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             resolved_instance,
             tickers=visible_tickers,
             starting_total=display_baseline["starting_total"],
+            prefer_synced_portfolio_value=True,
         )
         latest_kalshi_orders = [
             row for row in get_latest_order_snapshots(session, resolved_instance)

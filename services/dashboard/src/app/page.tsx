@@ -707,6 +707,21 @@ export default function Dashboard() {
     .filter((r) => r.dbQty > 0.001 && r.currentUnitValue != null)
     .map((r) => ({ title: r.title, contract: r.contract, quantity: r.dbQty, avgEntry: r.avgEntry, currentUnitValue: r.currentUnitValue!, value: r.openValue }))
     .sort((a, b) => b.value - a.value);
+  const openValueAdjustment = displayedOpenValue - totalOpenValue;
+  const hasOpenValueAdjustment = Math.abs(openValueAdjustment) > 0.005;
+  const openValueBreakdown = hasOpenValueAdjustment
+    ? [
+        ...unrealizedBreakdown,
+        {
+          title: "Kalshi Sync Adjustment",
+          contract: "sync",
+          quantity: 0,
+          avgEntry: 0,
+          currentUnitValue: 0,
+          value: openValueAdjustment,
+        },
+      ]
+    : unrealizedBreakdown;
 
   // Win rate breakdown: show markets with wins/losses
   const winRateBreakdown = perMarket
@@ -851,7 +866,7 @@ export default function Dashboard() {
             label="Open Value"
             value={fmtDollar(displayedOpenValue)}
             pnl={displayedOpenValue}
-            tooltip="Current market value of open shares: bid × qty"
+            tooltip="Headline uses the synced Kalshi portfolio valuation. The breakdown shows per-market marks plus a Kalshi sync adjustment when needed."
             onClick={() => setExpandedMetric(expandedMetric === "unrealized" ? null : "unrealized")}
             active={expandedMetric === "unrealized"}
           />
@@ -905,7 +920,7 @@ export default function Dashboard() {
             <div className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest mb-2">Net P&L Calculation</div>
             <div className="text-[11px] font-mono space-y-1">
               <div className="flex justify-between">
-                <span className="text-txt-muted">Open Value <span className="text-[9px]">(bid × qty)</span></span>
+                <span className="text-txt-muted">Open Value <span className="text-[9px]">(synced Kalshi portfolio value)</span></span>
                 <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedOpenValue)}</span>
               </div>
               <div className="flex justify-between">
@@ -941,7 +956,7 @@ export default function Dashboard() {
                 {expandedMetric === "realized"
                   ? "(sell_price − avg_entry) × qty_sold"
                   : expandedMetric === "unrealized"
-                    ? "Last traded price × shares"
+                    ? (hasOpenValueAdjustment ? "Per-market marks + Kalshi sync adjustment" : "Per-market marks")
                     : expandedMetric === "fees"
                       ? "Recorded by market, plus live Kalshi fee reconciliation if needed"
                       : "Markets with realized wins/losses"}
@@ -995,37 +1010,63 @@ export default function Dashboard() {
                   </table>
             )}
             {expandedMetric === "unrealized" && (
-              unrealizedBreakdown.length === 0
+              openValueBreakdown.length === 0
                 ? <p className="text-[10px] text-txt-muted font-mono">No open positions.</p>
-                : <table className="w-full text-[10px] font-mono">
-                    <thead>
-                      <tr className="text-txt-muted border-b border-t-border">
-                        <th className="text-left pb-1 font-medium">Market</th>
-                        <th className="text-center pb-1 font-medium w-12">Side</th>
-                        <th className="text-left pb-1 font-medium pl-4">Calculation</th>
-                        <th className="text-right pb-1 font-medium w-20">Open Value</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {unrealizedBreakdown.map((row, i) => (
-                        <tr key={i} className="border-b border-t-border/40 last:border-0">
-                          <td className="py-1.5 pr-3 text-txt-primary truncate max-w-[300px]">{row.title}</td>
-                          <td className="py-1.5 text-center">
-                            <span className={`px-1 rounded text-[8px] font-bold ${row.contract.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
-                              {row.contract.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="py-1.5 pl-4 text-txt-muted">
-                            {Math.round(row.currentUnitValue * 100)}¢ × {row.quantity} shares = <span className="text-profit">{fmtDollar(row.value)}</span>
-                          </td>
-                          <td className={`py-1.5 text-right ${row.value >= 0 ? "text-profit" : "text-loss"}`}>
-                            {fmtDollar(row.value)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-            )}
+	                : <>
+	                    <table className="w-full text-[10px] font-mono">
+	                      <thead>
+	                        <tr className="text-txt-muted border-b border-t-border">
+	                          <th className="text-left pb-1 font-medium">Market</th>
+	                          <th className="text-center pb-1 font-medium w-12">Side</th>
+	                          <th className="text-left pb-1 font-medium pl-4">Calculation</th>
+	                          <th className="text-right pb-1 font-medium w-20">Open Value</th>
+	                        </tr>
+	                      </thead>
+	                      <tbody>
+	                        {openValueBreakdown.map((row, i) => (
+	                          <tr key={i} className="border-b border-t-border/40 last:border-0">
+	                            <td className="py-1.5 pr-3 text-txt-primary truncate max-w-[300px]">{row.title}</td>
+	                            <td className="py-1.5 text-center">
+	                              {row.contract === "sync" ? (
+	                                <span className="px-1 rounded text-[8px] font-bold bg-accent-dim text-accent">
+	                                  SYNC
+	                                </span>
+	                              ) : (
+	                                <span className={`px-1 rounded text-[8px] font-bold ${row.contract.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+	                                  {row.contract.toUpperCase()}
+	                                </span>
+	                              )}
+	                            </td>
+	                            <td className="py-1.5 pl-4 text-txt-muted">
+	                              {row.contract === "sync"
+	                                ? <>synced Kalshi portfolio value − summed market marks = <span className={row.value >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(row.value)}</span></>
+	                                : <>{Math.round(row.currentUnitValue * 100)}¢ × {row.quantity} shares = <span className="text-profit">{fmtDollar(row.value)}</span></>
+	                              }
+	                            </td>
+	                            <td className={`py-1.5 text-right ${row.value >= 0 ? "text-profit" : "text-loss"}`}>
+	                              {fmtDollar(row.value)}
+	                            </td>
+	                          </tr>
+	                        ))}
+	                      </tbody>
+	                      <tfoot>
+	                        <tr className="border-t border-t-border/60 text-[10px]">
+	                          <td colSpan={3} className="py-1.5 pr-3 text-right font-medium text-txt-secondary">
+	                            Total
+	                          </td>
+	                          <td className={`py-1.5 text-right font-medium ${displayedOpenValue >= 0 ? "text-profit" : "text-loss"}`}>
+	                            {fmtDollar(displayedOpenValue)}
+	                          </td>
+	                        </tr>
+	                      </tfoot>
+	                    </table>
+	                    {hasOpenValueAdjustment && (
+	                      <p className="mt-2 text-[10px] text-txt-muted font-mono">
+	                        Note: The sync adjustment reflects the gap between our per-market estimates and Kalshi&apos;s synced portfolio value. We do not know Kalshi&apos;s full internal valuation details, so the exact per-market calculation may differ.
+	                      </p>
+	                    )}
+	                  </>
+	            )}
             {expandedMetric === "winrate" && (
               winRateBreakdown.length === 0
                 ? <p className="text-[10px] text-txt-muted font-mono">No closed positions yet.</p>
@@ -1221,7 +1262,8 @@ export default function Dashboard() {
                 onScrollComplete={() => setScrollToMarketId(null)}
               />
               <div className="rounded border border-t-border bg-t-panel px-3 py-2 text-[10px] font-mono text-txt-muted">
-                <span className="text-txt-secondary">Note:</span> `Open Value` uses last traded price × shares.
+                <span className="text-txt-secondary">Note:</span> headline `Open Value` uses the synced Kalshi portfolio valuation.
+                The breakdown shows per-market marks and adds a `Kalshi Sync Adjustment` row if needed so it sums to the headline.
                 `Investment` shows open-position cost basis plus fees. So the summed row `Investment`
                 values should line up with top `Cash Spent` + `Total Fees`, not with top `Open Value`.
               </div>
