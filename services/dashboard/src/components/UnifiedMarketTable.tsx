@@ -138,11 +138,11 @@ function rowHasActivity(row: UnifiedMarketRow): boolean {
 }
 
 function tradeFeeTotal(row: UnifiedMarketRow): number {
-  return row.fees_paid_total ?? row.trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
+  return row.position?.fees_paid ?? row.fees_paid_total ?? row.trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
 }
 
 function totalInvestment(row: UnifiedMarketRow): number {
-  return row.position ? row.position.capital + tradeFeeTotal(row) : 0;
+  return row.position ? (row.position.total_cost ?? row.position.capital) + tradeFeeTotal(row) : 0;
 }
 
 function formatFeeLabel(fee: number): string {
@@ -150,7 +150,7 @@ function formatFeeLabel(fee: number): string {
 }
 
 function formatInvestmentSplit(base: number, fee: number): string {
-  return `b:${fmtDollar(base)} f:${fmtDollar(fee)}`;
+  return `cost:${fmtDollar(base)} fee:${fmtDollar(fee)}`;
 }
 
 type SortKey =
@@ -595,7 +595,7 @@ export function UnifiedMarketTable({
                 <Th k="position" sortKeys={sortKeys} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
                 <Th k="avg_price" sortKeys={sortKeys} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
                 <Th k="unrealized" sortKeys={sortKeys} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
-                <Th k="capital" sortKeys={sortKeys} onClick={handleSort} align="right" info="Total capital invested including fees: avg entry price × quantity + fees paid">Investment</Th>
+                <Th k="capital" sortKeys={sortKeys} onClick={handleSort} align="right" info="Kalshi-backed cost basis plus fees paid for the open position.">Investment</Th>
                 <Th k="last_trade" sortKeys={sortKeys} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
                 <Th k="expiration" sortKeys={sortKeys} onClick={handleSort} align="right" info="Market close/expiration date">Closes</Th>
               </tr>

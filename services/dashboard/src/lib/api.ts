@@ -483,6 +483,7 @@ export interface UnifiedMarketRow {
   title: string;
   category: string | null;
   expiration: string | null;
+  last_price: number | null;
   yes_bid: number | null;
   yes_ask: number | null;
   no_bid: number | null;
@@ -552,23 +553,20 @@ function tradeCashFlow(trade: Trade): number {
 
 export function liveNetPnl(row: UnifiedMarketRow): number | null {
   if (!row.position && row.trades.length === 0) return null;
-  const cashFlow = row.trades.reduce((sum, trade) => sum + tradeCashFlow(trade), 0);
   const pos = row.position;
-  if (!pos) return cashFlow;
+  if (!pos) return null;
 
-  // Use target shares if available, otherwise fall back to actual position quantity
-  const effectiveQty = row.target_shares ?? pos.quantity;
+  const currentUnitValue =
+    row.last_price == null
+      ? null
+      : pos.contract.toLowerCase() === "yes"
+        ? row.last_price
+        : 1.0 - row.last_price;
+  if (currentUnitValue == null) return null;
 
-  const currentBid =
-    pos.contract.toLowerCase() === "yes"
-      ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
-      : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
-  if (currentBid == null) return cashFlow;
-
-  // Calculate P&L using target shares at entry price
-  // P&L = (current_bid - avg_entry) * target_shares
-  const unrealizedPnl = (currentBid - pos.avg_price) * effectiveQty;
-  return unrealizedPnl;
+  const openValue = currentUnitValue * pos.quantity;
+  const costBasis = pos.total_cost ?? pos.capital;
+  return openValue - costBasis;
 }
 
 export function buildUnifiedMarketRows(
@@ -761,6 +759,7 @@ export function buildUnifiedMarketRows(
       title: mkt.title,
       category: mkt.category,
       expiration: mkt.expiration,
+      last_price: mkt.last_price,
       yes_bid: mkt.yes_bid ?? (mkt.no_ask != null ? 1.0 - mkt.no_ask : null),
       yes_ask: mkt.yes_ask,
       no_bid: mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null),
@@ -807,6 +806,7 @@ export function buildUnifiedMarketRows(
       title: pos.market_title ?? pos.ticker ?? pos.market_id,
       category: null,
       expiration: null,
+      last_price: null,
       yes_bid: null,
       yes_ask: null,
       no_bid: null,
