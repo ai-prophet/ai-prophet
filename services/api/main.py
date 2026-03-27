@@ -944,6 +944,9 @@ def get_positions(
                 "quantity": row.quantity,
                 "avg_price": row.avg_price,
                 "realized_pnl": row.realized_pnl,
+                "market_exposure": getattr(row, "market_exposure", None),
+                "total_cost": getattr(row, "total_cost", None),
+                "fees_paid": getattr(row, "fees_paid", None),
                 "updated_at": row.updated_at.isoformat(),
             })
         return {

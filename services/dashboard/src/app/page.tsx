@@ -248,6 +248,10 @@ export default function Dashboard() {
     }
     const map = new Map<string, number>();
     for (const pos of positions) {
+      if (pos.market_exposure != null && pos.total_cost != null) {
+        map.set(pos.market_id, pos.realized_pnl + pos.market_exposure - pos.total_cost);
+        continue;
+      }
       const mkt = marketById.get(pos.market_id);
       const mktTrades = tradesByTicker.get(pos.ticker ?? "") ?? [];
       const cashFlow = mktTrades.reduce((sum, t) => {
@@ -580,15 +584,8 @@ export default function Dashboard() {
     return { sells, totalRealized, remainingQty, remainingAvgPrice, remainingSide };
   }
 
-  // Single pass — compute everything once per market_id so all cards and breakdowns
-  // derive from identical numbers and are guaranteed to sum correctly.
-  //
-  // Open Value  = (bid − avgEntry) × qty   — unrealized gain/loss on open shares
-  // Cash Spent  = avgEntry × qty            — net cost basis of open shares
-  // Cash P&L    = totalRealized             — locked-in gains/losses from completed sells
-  // Net P&L     = Cash P&L + Open Value
-  //
-  // Open Value + Cash Spent = bid × qty  (current market value of open shares)
+  // Single pass — prefer Kalshi-backed position values when available, and only
+  // fall back to local replay/quote math when the API does not yet provide them.
   let totalCashPnl = 0;
   let totalOpenValue = 0;
   let totalCashSpent = 0;
@@ -600,7 +597,7 @@ export default function Dashboard() {
     sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[];
     totalRealized: number;
     avgEntry: number;
-    currentBid: number | null;
+    currentUnitValue: number | null;
     dbQty: number;
     openValue: number;
     cashSpent: number;
@@ -616,27 +613,30 @@ export default function Dashboard() {
     const { sells, totalRealized, remainingAvgPrice } = replayTrades(row.trades);
     const dbQty = row.position?.quantity ?? 0;
     const contract = row.position?.contract ?? (row.trades[0]?.side ?? "yes");
-    const avgEntry = row.trades.length > 0 ? remainingAvgPrice : (row.position?.avg_price ?? 0);
-    const realizedValue = row.trades.length > 0 ? totalRealized : (row.position?.realized_pnl ?? 0);
+    const avgEntry = row.position?.avg_price ?? (row.trades.length > 0 ? remainingAvgPrice : 0);
+    const realizedValue = row.position?.realized_pnl ?? (row.trades.length > 0 ? totalRealized : 0);
     totalCashPnl += realizedValue;
 
     const mkt = marketById.get(row.market_id);
-    let currentBid: number | null = null;
+    let currentUnitValue: number | null = null;
     if (mkt && dbQty > 0.001) {
-      currentBid = contract === "yes"
+      currentUnitValue = contract === "yes"
         ? (mkt.yes_bid ?? (mkt.no_ask != null ? 1.0 - mkt.no_ask : null))
         : (mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null));
     }
-    const cashSpent = avgEntry * dbQty;
-    const openValue = currentBid != null ? currentBid * dbQty : 0;
+    const cashSpent = row.position?.total_cost ?? (avgEntry * dbQty);
+    const openValue = row.position?.market_exposure ?? (currentUnitValue != null ? currentUnitValue * dbQty : 0);
+    if (dbQty > 0.001 && row.position?.market_exposure != null) {
+      currentUnitValue = openValue / dbQty;
+    }
     totalOpenValue += openValue;
     totalCashSpent += cashSpent;
-    const feeTotal = row.fees_paid_total ?? 0;
+    const feeTotal = row.position?.fees_paid ?? row.fees_paid_total ?? 0;
 
     const dbPos = positions.find((p) => p.market_id === row.market_id);
     const hasMoreTrades = dbPos != null && Math.abs(totalRealized - dbPos.realized_pnl) > 0.005;
 
-    perMarket.push({ title: row.title, contract, sells, totalRealized: realizedValue, avgEntry, currentBid, dbQty, openValue, cashSpent, hasMoreTrades, feeTotal });
+    perMarket.push({ title: row.title, contract, sells, totalRealized: realizedValue, avgEntry, currentUnitValue, dbQty, openValue, cashSpent, hasMoreTrades, feeTotal });
   }
 
   const totalLiveNetPnl = totalOpenValue - totalCashSpent + totalCashPnl;
@@ -656,8 +656,8 @@ export default function Dashboard() {
     .sort((a, b) => b.value - a.value);
 
   const unrealizedBreakdown = perMarket
-    .filter((r) => r.dbQty > 0.001 && r.currentBid != null)
-    .map((r) => ({ title: r.title, contract: r.contract, quantity: r.dbQty, avgEntry: r.avgEntry, currentBid: r.currentBid!, value: r.openValue }))
+    .filter((r) => r.dbQty > 0.001 && r.currentUnitValue != null)
+    .map((r) => ({ title: r.title, contract: r.contract, quantity: r.dbQty, avgEntry: r.avgEntry, currentUnitValue: r.currentUnitValue!, value: r.openValue }))
     .sort((a, b) => b.value - a.value);
 
   // Win rate breakdown: show markets with wins/losses
@@ -878,7 +878,7 @@ export default function Dashboard() {
                 {expandedMetric === "realized"
                   ? "Realized P&L Breakdown"
                   : expandedMetric === "unrealized"
-                    ? "Unrealized P&L Breakdown"
+                    ? "Open Value Breakdown"
                     : expandedMetric === "fees"
                       ? "Fee Breakdown"
                       : "Win Rate Breakdown"}
@@ -887,7 +887,7 @@ export default function Dashboard() {
                 {expandedMetric === "realized"
                   ? "(sell_price − avg_entry) × qty_sold"
                   : expandedMetric === "unrealized"
-                    ? "current_bid × open_qty"
+                    ? "Kalshi position value by market"
                     : expandedMetric === "fees"
                       ? "Recorded by market, plus live Kalshi fee reconciliation if needed"
                       : "Markets with realized wins/losses"}
@@ -944,7 +944,7 @@ export default function Dashboard() {
                         <th className="text-left pb-1 font-medium">Market</th>
                         <th className="text-center pb-1 font-medium w-12">Side</th>
                         <th className="text-left pb-1 font-medium pl-4">Calculation</th>
-                        <th className="text-right pb-1 font-medium w-20">Unrealized</th>
+                        <th className="text-right pb-1 font-medium w-20">Open Value</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -957,7 +957,7 @@ export default function Dashboard() {
                             </span>
                           </td>
                           <td className="py-1.5 pl-4 text-txt-muted">
-                            {Math.round(row.currentBid * 100)}¢ × {row.quantity} shares = <span className="text-profit">{fmtDollar(row.value)}</span>
+                            {Math.round(row.currentUnitValue * 100)}¢ × {row.quantity} shares = <span className="text-profit">{fmtDollar(row.value)}</span>
                           </td>
                           <td className={`py-1.5 text-right ${row.value >= 0 ? "text-profit" : "text-loss"}`}>
                             {fmtDollar(row.value)}

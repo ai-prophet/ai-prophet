@@ -155,6 +155,9 @@ export interface Position {
   quantity: number;
   avg_price: number;
   realized_pnl: number;
+  market_exposure?: number | null;
+  total_cost?: number | null;
+  fees_paid?: number | null;
   updated_at: string;
 }
 
@@ -496,6 +499,9 @@ export interface UnifiedMarketRow {
     avg_price: number;
     realized_pnl: number;
     capital: number;
+    market_exposure: number | null;
+    total_cost: number | null;
+    fees_paid: number | null;
   } | null;
   fees_paid_total: number;
 
@@ -689,7 +695,10 @@ export function buildUnifiedMarketRows(
         quantity: pos.quantity,
         avg_price: pos.avg_price,
         realized_pnl: pos.realized_pnl,
-        capital: pos.avg_price * pos.quantity,
+        capital: (pos.total_cost ?? (pos.avg_price * pos.quantity)),
+        market_exposure: pos.market_exposure ?? null,
+        total_cost: pos.total_cost ?? null,
+        fees_paid: pos.fees_paid ?? null,
       };
     }
 
@@ -811,7 +820,10 @@ export function buildUnifiedMarketRows(
         quantity: pos.quantity,
         avg_price: pos.avg_price,
         realized_pnl: pos.realized_pnl,
-        capital: pos.avg_price * pos.quantity,
+        capital: (pos.total_cost ?? (pos.avg_price * pos.quantity)),
+        market_exposure: pos.market_exposure ?? null,
+        total_cost: pos.total_cost ?? null,
+        fees_paid: pos.fees_paid ?? null,
       },
       fees_paid_total: filledMktTrades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0),
       trades: sortedTrades,
