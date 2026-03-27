@@ -21,6 +21,9 @@ Environment variables:
     KALSHI_PRIVATE_KEY_B64    — Base64-encoded RSA private key
     KALSHI_BASE_URL           — Kalshi API base URL
     SYNC_INTERVAL_SEC         — Sync cadence in seconds (default: 1800 = 30 min)
+    WORKER_POLL_INTERVAL_SEC  — Worker cadence in seconds (default: 14400 = 4 hours)
+    SYNC_WORKER_BUFFER_SEC    — Suppress standalone sync within this many seconds
+                                 before/after worker boundaries (default: 900 = 15 min)
 """
 
 from __future__ import annotations
@@ -55,6 +58,8 @@ logger = logging.getLogger("kalshi_sync")
 # Configuration
 DEFAULT_SYNC_INTERVAL = 1800  # 30 minutes
 STALE_ORDER_THRESHOLD_MINUTES = 120  # 2 hours
+DEFAULT_WORKER_POLL_INTERVAL = 4 * 60 * 60  # 4 hours
+DEFAULT_SYNC_WORKER_BUFFER_SEC = 15 * 60  # 15 minutes
 
 _shutdown_requested = False
 
@@ -85,6 +90,107 @@ def _next_sync_boundary(now: datetime, interval_sec: int) -> datetime:
     now_ts = int(now.timestamp())
     next_ts = ((now_ts // interval) + 1) * interval
     return datetime.fromtimestamp(next_ts, tz=UTC)
+
+
+def _previous_boundary(now: datetime, interval_sec: int) -> datetime:
+    """Return the previous UTC-aligned boundary for the configured interval."""
+    interval = max(1, int(interval_sec))
+    now_ts = int(now.timestamp())
+    prev_ts = (now_ts // interval) * interval
+    return datetime.fromtimestamp(prev_ts, tz=UTC)
+
+
+def _worker_poll_interval(instance_name: str) -> int:
+    raw = get_instance_env(
+        "WORKER_POLL_INTERVAL_SEC",
+        instance_name,
+        default=str(DEFAULT_WORKER_POLL_INTERVAL),
+    ) or str(DEFAULT_WORKER_POLL_INTERVAL)
+    return max(1, int(raw))
+
+
+def _worker_sync_buffer_sec(instance_name: str) -> int:
+    raw = get_instance_env(
+        "SYNC_WORKER_BUFFER_SEC",
+        instance_name,
+        default=str(DEFAULT_SYNC_WORKER_BUFFER_SEC),
+    ) or str(DEFAULT_SYNC_WORKER_BUFFER_SEC)
+    return max(0, int(raw))
+
+
+def _latest_worker_cycle_state(db_engine, instance_name: str) -> tuple[datetime | None, datetime | None]:
+    """Return latest worker cycle_start and cycle_end heartbeat timestamps."""
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import SystemLog
+
+        with get_session(db_engine) as session:
+            latest_start = (
+                session.query(SystemLog.created_at)
+                .filter(
+                    SystemLog.instance_name == instance_name,
+                    SystemLog.level == "HEARTBEAT",
+                    SystemLog.component == "worker",
+                    SystemLog.message == "cycle_start",
+                )
+                .order_by(SystemLog.created_at.desc())
+                .limit(1)
+                .scalar()
+            )
+            latest_end = (
+                session.query(SystemLog.created_at)
+                .filter(
+                    SystemLog.instance_name == instance_name,
+                    SystemLog.level == "HEARTBEAT",
+                    SystemLog.component == "worker",
+                    SystemLog.message == "cycle_end",
+                )
+                .order_by(SystemLog.created_at.desc())
+                .limit(1)
+                .scalar()
+            )
+            return latest_start, latest_end
+    except Exception as e:
+        logger.debug("[SYNC] Failed to inspect worker cycle state for %s: %s", instance_name, e)
+        return None, None
+
+
+def _sync_defer_until_for_worker(
+    db_engine,
+    instance_name: str,
+    now: datetime,
+) -> tuple[datetime | None, str | None]:
+    """Return a defer-until timestamp when sync should yield to the worker."""
+    worker_interval = _worker_poll_interval(instance_name)
+    buffer_sec = _worker_sync_buffer_sec(instance_name)
+
+    latest_start, latest_end = _latest_worker_cycle_state(db_engine, instance_name)
+    if latest_start and (latest_end is None or latest_start > latest_end):
+        return now + timedelta(seconds=60), "worker cycle is currently running"
+
+    if buffer_sec <= 0:
+        return None, None
+
+    previous_boundary = _previous_boundary(now, worker_interval)
+    next_boundary = _next_sync_boundary(now, worker_interval)
+    post_boundary_deadline = previous_boundary + timedelta(seconds=buffer_sec)
+    pre_boundary_start = next_boundary - timedelta(seconds=buffer_sec)
+
+    if now < post_boundary_deadline:
+        return post_boundary_deadline, "inside post-worker buffer window"
+    if now >= pre_boundary_start:
+        return next_boundary + timedelta(seconds=buffer_sec), "inside pre-worker buffer window"
+
+    return None, None
+
+
+def _sleep_until(target: datetime) -> None:
+    """Sleep until *target*, checking for shutdown every second."""
+    while not _shutdown_requested:
+        remaining = int((target - datetime.now(UTC)).total_seconds())
+        if remaining <= 0:
+            break
+        time.sleep(min(1, remaining))
 
 
 def log_sync_event(
@@ -522,10 +628,25 @@ def run_sync_loop(
         )
 
         if seconds_until_next_sync > 0 and not _shutdown_requested:
-            time.sleep(seconds_until_next_sync)
+            _sleep_until(next_sync)
 
     cycle_count = 0
     while not _shutdown_requested:
+        now = datetime.now(UTC)
+        defer_until, defer_reason = _sync_defer_until_for_worker(db_engine, instance_name, now)
+        if defer_until is not None:
+            delay_sec = max(0, int((defer_until - now).total_seconds()))
+            logger.info(
+                "[SYNC] Deferring sync because %s. Next sync attempt at %s UTC (%d seconds)",
+                defer_reason,
+                defer_until.strftime("%H:%M"),
+                delay_sec,
+            )
+            if run_once:
+                break
+            _sleep_until(defer_until)
+            continue
+
         cycle_count += 1
         cycle_start = datetime.now(UTC)
 
@@ -584,11 +705,7 @@ def run_sync_loop(
                     seconds_until_next_sync,
                 )
 
-            # Sleep in small intervals to check for shutdown
-            for _ in range(seconds_until_next_sync):
-                if _shutdown_requested:
-                    break
-                time.sleep(1)
+            _sleep_until(next_sync)
 
     logger.info("[SYNC] Sync service shutting down")
     adapter.close()

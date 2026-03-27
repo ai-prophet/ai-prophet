@@ -45,6 +45,7 @@ const MODEL_COLORS = [
   "text-rose-400",
   "text-cyan-400",
 ];
+const TIMELINE_MODEL_CLASS = "text-accent";
 
 const CATEGORY_COLORS: Record<string, string> = {
   POLITICS:      "bg-blue-900/40 border-blue-700/50 text-blue-300",
@@ -138,6 +139,10 @@ function formatPendingDelta(delta: number): string {
   if (rounded > 0) return `+${rounded} pending`;
   if (rounded < 0) return `${rounded} pending`;
   return "0 pending";
+}
+
+function formatShareLabel(count: number): string {
+  return `${count} share${Math.abs(count) === 1 ? "" : "s"}`;
 }
 
 type SortKey =
@@ -1214,6 +1219,27 @@ function SubmittedTradesTimelineTab({
   );
   const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
   const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
+  const runDisplayContext = useMemo(() => {
+    const lastPYesByModel = new Map<string, number>();
+    const context = new Map<number, { pYes: number | null; edge: number | null }>();
+
+    chronRuns.forEach((run) => {
+      const fallbackPYes = lastPYesByModel.get(run.model_name) ?? row.aggregated_p_yes ?? null;
+      const pYes = run.p_yes ?? fallbackPYes;
+      if (run.p_yes != null) lastPYesByModel.set(run.model_name, run.p_yes);
+      const edge = pYes != null && row.yes_ask != null ? pYes - row.yes_ask : row.edge;
+      context.set(run.id, { pYes, edge });
+    });
+
+    return context;
+  }, [chronRuns, row.aggregated_p_yes, row.edge, row.yes_ask]);
+  const tradeDisplayContext = useCallback((trade: Trade, matchedRun: ModelRun | null) => {
+    const matchedContext = matchedRun ? runDisplayContext.get(matchedRun.id) : null;
+    const pYes = trade.prediction?.p_yes ?? matchedContext?.pYes ?? null;
+    const mktAsk = trade.prediction?.yes_ask ?? row.yes_ask ?? null;
+    const edge = pYes != null && mktAsk != null ? pYes - mktAsk : matchedContext?.edge ?? row.edge;
+    return { pYes, mktAsk, edge };
+  }, [row.edge, row.yes_ask, runDisplayContext]);
 
   const cyclePnLData = useMemo(() => {
     const cycleMap = new Map<number, { timestamp: number; pnl: number; tradeCount: number }>();
@@ -1358,7 +1384,9 @@ function SubmittedTradesTimelineTab({
             const isSkip = isSkipLikeDecision(run.decision);
             const label = normalizedDecisionLabel(run.decision);
             const side = decisionSide(run.decision);
-            const edge = run.p_yes != null && row.yes_ask != null ? run.p_yes - row.yes_ask : null;
+            const displayContext = runDisplayContext.get(run.id);
+            const pYes = displayContext?.pYes ?? null;
+            const edge = displayContext?.edge ?? null;
             return (
               <div key={event.key} className="relative py-1.5">
                 <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
@@ -1390,10 +1418,10 @@ function SubmittedTradesTimelineTab({
                             {side}
                           </span>
                         )}
-                        <span className={MODEL_COLORS[run.id % MODEL_COLORS.length]}>
+                        <span className={TIMELINE_MODEL_CLASS}>
                           {shortModelName(run.model_name)}
                         </span>
-                        {run.p_yes != null && <span className="text-accent">model: {(run.p_yes * 100).toFixed(0)}%</span>}
+                        {pYes != null && <span className="text-accent">model: {(pYes * 100).toFixed(0)}%</span>}
                         {row.yes_ask != null && <span className="text-txt-secondary">mkt: {(row.yes_ask * 100).toFixed(0)}c</span>}
                         {edge != null && <span className={pnlCls(edge)}>edge: {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)}pp</span>}
                         {run.confidence != null && <span className="text-txt-muted">conf: {(run.confidence * 100).toFixed(0)}%</span>}
@@ -1419,6 +1447,8 @@ function SubmittedTradesTimelineTab({
           if (event.type === "switch") {
             const sellEntry = submittedTradeTimelineItem(event.sell.trade);
             const buyEntry = submittedTradeTimelineItem(event.buy.trade);
+            const sellContext = tradeDisplayContext(event.sell.trade, event.sell.matchedRun);
+            const buyContext = tradeDisplayContext(event.buy.trade, event.buy.matchedRun);
             const resultingPosition = event.buy.resultingPosition;
             return (
               <div key={event.key} className="relative py-1.5">
@@ -1430,19 +1460,25 @@ function SubmittedTradesTimelineTab({
                   <div className="flex-1 min-w-0 overflow-hidden">
                     <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
                       <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
-                      <span className={sideToneClass(event.sell.trade.side)}>{event.sell.trade.side.toUpperCase()} {event.sell.trade.count}</span>
+                      <span className={sideToneClass(event.sell.trade.side)}>{event.sell.trade.side.toUpperCase()} {formatShareLabel(event.sell.trade.count)}</span>
                       <span className="text-txt-muted">@ {(sellEntry.price * 100).toFixed(0)}c</span>
                       <span className="text-warn">{formatFeeLabel(sellEntry.fee)}</span>
                       {sellEntry.cashFlow != null && <span className={pnlCls(sellEntry.cashFlow)}>cash: {sellEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(sellEntry.cashFlow)}</span>}
+                      {sellContext.pYes != null && <span className="text-accent">model: {(sellContext.pYes * 100).toFixed(0)}%</span>}
+                      {sellContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(sellContext.mktAsk * 100).toFixed(0)}c</span>}
+                      {sellContext.edge != null && <span className={pnlCls(sellContext.edge)}>edge: {sellContext.edge >= 0 ? "+" : ""}{(sellContext.edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={event.sell.trade.status} />
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono mt-1 ml-4">
                       <span className="text-txt-muted">↳</span>
                       <span className="text-[9px] px-1 py-px rounded font-bold bg-profit-dim text-profit">BUY</span>
-                      <span className={sideToneClass(event.buy.trade.side)}>{event.buy.trade.side.toUpperCase()} {event.buy.trade.count}</span>
+                      <span className={sideToneClass(event.buy.trade.side)}>{event.buy.trade.side.toUpperCase()} {formatShareLabel(event.buy.trade.count)}</span>
                       <span className="text-txt-muted">@ {(buyEntry.price * 100).toFixed(0)}c</span>
                       <span className="text-warn">{formatFeeLabel(buyEntry.fee)}</span>
                       {buyEntry.cashFlow != null && <span className={pnlCls(buyEntry.cashFlow)}>cash: {buyEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(buyEntry.cashFlow)}</span>}
+                      {buyContext.pYes != null && <span className="text-accent">model: {(buyContext.pYes * 100).toFixed(0)}%</span>}
+                      {buyContext.mktAsk != null && <span className="text-txt-secondary">mkt: {(buyContext.mktAsk * 100).toFixed(0)}c</span>}
+                      {buyContext.edge != null && <span className={pnlCls(buyContext.edge)}>edge: {buyContext.edge >= 0 ? "+" : ""}{(buyContext.edge * 100).toFixed(0)}pp</span>}
                       <StatusBadge status={event.buy.trade.status} />
                       {resultingPosition ? (
                         <span className="text-txt-muted">
@@ -1465,9 +1501,7 @@ function SubmittedTradesTimelineTab({
           const sources = trade.prediction?.sources ?? matchedRun?.sources ?? [];
           const hasDetail = !!(rationale || sources.length > 0);
           const isExpanded = expandedTradeId === trade.id;
-          const pYes = trade.prediction?.p_yes ?? matchedRun?.p_yes ?? null;
-          const mktAsk = trade.prediction?.yes_ask ?? null;
-          const edge = pYes != null && mktAsk != null ? pYes - mktAsk : null;
+          const { pYes, mktAsk, edge } = tradeDisplayContext(trade, matchedRun);
           const resultingPosition = event.item.resultingPosition;
 
           return (
@@ -1492,7 +1526,7 @@ function SubmittedTradesTimelineTab({
                         {trade.side.toUpperCase()}
                       </span>
                       <span className="text-txt-primary">
-                        {trade.count} submitted
+                        {formatShareLabel(trade.count)}
                         {qty > 0 && qty !== trade.count ? ` · ${qty} filled` : ""}
                       </span>
                       <span className="text-txt-muted">@ {(price * 100).toFixed(0)}c</span>
@@ -1506,16 +1540,6 @@ function SubmittedTradesTimelineTab({
                         </span>
                       ) : (
                         <span className="text-txt-muted">hold: flat</span>
-                      )}
-                      {matchedRun && (
-                        <span className={`${isHoldLikeDecision(matchedRun.decision) ? holdEdgeToneClass() : "text-accent"}`}>
-                          {normalizedDecisionLabel(matchedRun.decision)}
-                        </span>
-                      )}
-                      {matchedRun && decisionSide(matchedRun.decision) && (
-                        <span className={sideToneClass(decisionSide(matchedRun.decision))}>
-                          {decisionSide(matchedRun.decision)}
-                        </span>
                       )}
                       {pYes != null && <span className="text-accent">model: {(pYes * 100).toFixed(0)}%</span>}
                       {mktAsk != null && <span className="text-txt-secondary">mkt: {(mktAsk * 100).toFixed(0)}c</span>}
