@@ -72,14 +72,14 @@ export function RiskMetrics({
         <MetricCell
           label="Max Drawdown"
           value={fmtDollar(analytics.max_drawdown)}
-          sub={fmtPct(-analytics.max_drawdown_pct)}
+          sub={fmtPct(-(analytics.max_drawdown_pct * 100))}
           colorClass="text-loss"
         />
 
         {/* Volatility */}
         <MetricCell
           label="Volatility"
-          value={fmtDollar(analytics.volatility)}
+          value={`${(analytics.volatility * 100).toFixed(1)}%`}
           colorClass="text-txt-primary"
         />
 

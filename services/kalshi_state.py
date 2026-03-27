@@ -350,6 +350,7 @@ class KalshiPortfolioSummary:
     open_value: float
     cash_spent: float
     net_pnl: float
+    starting_total: float
     total_fees: float
     open_positions: int
     active_markets: int
@@ -428,6 +429,7 @@ def build_portfolio_summary(
     instance_name: str,
     *,
     tickers: Iterable[str] | None = None,
+    starting_total: float | None = None,
 ) -> KalshiPortfolioSummary:
     visible_tickers = {ticker for ticker in (tickers or []) if ticker}
     position_views = build_position_views(session, instance_name)
@@ -470,7 +472,8 @@ def build_portfolio_summary(
         *[view.ticker for view in position_views if view.quantity > 1e-9],
         *[ticker for ticker, orders in pending_by_ticker.items() if orders],
     })
-    return_pct = (net_pnl / cash_spent) if cash_spent > 1e-9 else 0.0
+    baseline_total = float(starting_total or 0.0)
+    return_pct = (net_pnl / baseline_total) if baseline_total > 1e-9 else 0.0
     if not math.isfinite(return_pct):
         return_pct = 0.0
 
@@ -480,6 +483,7 @@ def build_portfolio_summary(
         open_value=open_value,
         cash_spent=cash_spent,
         net_pnl=net_pnl,
+        starting_total=baseline_total,
         total_fees=total_fees,
         open_positions=open_positions,
         active_markets=active_markets,

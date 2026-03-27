@@ -87,7 +87,10 @@ MIN_REBALANCE_TRADE = 0.005
 WITHIN_SPREAD_BUFFER = 0.02
 DISPLAY_CUTOFF_UTC = datetime(2026, 3, 24, 23, 0, tzinfo=UTC)  # Mar 24, 2026 6:00 PM America/Chicago
 DISPLAY_CUTOFF_LABEL = "Mar 24, 2026 6:00 PM CDT"
-DISPLAY_BASELINE_INSTANCE_NAMES = ["Haifeng", "Jibang"]
+DISPLAY_BASELINE_OVERRIDES: dict[str, float] = {
+    "Haifeng": 441.65,
+    "Jibang": 475.43,
+}
 
 
 def get_db():
@@ -252,6 +255,57 @@ def _instance_float_setting(key: str, instance_name: str, default: float) -> flo
         return float(raw if raw is not None else default)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _display_baseline_for_instance(session, instance_name: str) -> dict[str, Any]:
+    initial_loaded = _instance_float_setting("WORKER_STARTING_CASH", instance_name, 10000.0)
+    hardcoded_starting_total = DISPLAY_BASELINE_OVERRIDES.get(instance_name)
+
+    if hardcoded_starting_total is not None:
+        return {
+            "instance_name": instance_name,
+            "initial_loaded": round(initial_loaded, 2),
+            "balance": round(hardcoded_starting_total, 2),
+            "portfolio_value": 0.0,
+            "starting_total": round(hardcoded_starting_total, 2),
+            "difference_from_initial": round(hardcoded_starting_total - initial_loaded, 2),
+            "snapshot_ts": None,
+            "used_fallback": False,
+        }
+
+    cutoff_snapshot = (
+        session.query(KalshiBalanceSnapshot)
+        .filter(
+            KalshiBalanceSnapshot.instance_name == instance_name,
+            KalshiBalanceSnapshot.snapshot_ts >= DISPLAY_CUTOFF_UTC,
+        )
+        .order_by(KalshiBalanceSnapshot.snapshot_ts.asc(), KalshiBalanceSnapshot.id.asc())
+        .first()
+    )
+
+    if cutoff_snapshot is not None:
+        balance = float(cutoff_snapshot.balance or 0.0)
+        portfolio_value = float(cutoff_snapshot.portfolio_value or 0.0)
+        snapshot_ts = cutoff_snapshot.snapshot_ts.isoformat()
+        used_fallback = False
+    else:
+        balance = initial_loaded
+        portfolio_value = 0.0
+        snapshot_ts = None
+        used_fallback = True
+
+    starting_total = balance + portfolio_value
+
+    return {
+        "instance_name": instance_name,
+        "initial_loaded": round(initial_loaded, 2),
+        "balance": round(balance, 2),
+        "portfolio_value": round(portfolio_value, 2),
+        "starting_total": round(starting_total, 2),
+        "difference_from_initial": round(starting_total - initial_loaded, 2),
+        "snapshot_ts": snapshot_ts,
+        "used_fallback": used_fallback,
+    }
 
 
 def _hold_reason_from_market_context(
@@ -1390,10 +1444,12 @@ def get_pnl(
         # top-line Net P&L card instead of stale local order replay.
         if not market_id and not model:
             visible_tickers, _ = _display_visible_market_activity(session, resolved_instance)
+            display_baseline = _display_baseline_for_instance(session, resolved_instance)
             portfolio_summary = build_portfolio_summary(
                 session,
                 resolved_instance,
                 tickers=visible_tickers,
+                starting_total=display_baseline["starting_total"],
             )
             balance_snapshots = (
                 session.query(KalshiBalanceSnapshot)
@@ -1443,10 +1499,12 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
     engine = get_db()
     with get_session(engine) as session:
         visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
+        display_baseline = _display_baseline_for_instance(session, resolved_instance)
         portfolio_summary = build_portfolio_summary(
             session,
             resolved_instance,
             tickers=visible_tickers,
+            starting_total=display_baseline["starting_total"],
         )
         latest_kalshi_orders = [
             row for row in get_latest_order_snapshots(session, resolved_instance)
@@ -1616,7 +1674,11 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             else:
                 daily_pnl[day_key] -= cost + fee_paid  # buy cost plus fees
 
-        daily_returns = list(daily_pnl.values()) if daily_pnl else []
+        starting_total = float(display_baseline["starting_total"] or 0.0)
+        daily_returns = [
+            _safe_div(value, starting_total)
+            for _, value in sorted(daily_pnl.items())
+        ] if daily_pnl and starting_total > 1e-9 else []
 
         if len(daily_returns) >= 2:
             mean_ret = sum(daily_returns) / len(daily_returns)
@@ -1640,17 +1702,18 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
 
         # Drawdown from cumulative PnL
         cumulative = 0.0
-        peak = 0.0
+        peak_equity = starting_total
         max_drawdown = 0.0
         max_drawdown_pct = 0.0
-        for pnl in trade_pnls:
-            cumulative += pnl
-            if cumulative > peak:
-                peak = cumulative
-            dd = peak - cumulative
+        for _, pnl_value in sorted(daily_pnl.items()):
+            cumulative += pnl_value
+            equity = starting_total + cumulative
+            if equity > peak_equity:
+                peak_equity = equity
+            dd = max(0.0, peak_equity - equity)
             if dd > max_drawdown:
                 max_drawdown = dd
-                max_drawdown_pct = _safe_div(dd, peak) if peak > 0 else 0.0
+                max_drawdown_pct = _safe_div(dd, peak_equity) if peak_equity > 0 else 0.0
 
         # Today's PnL
         today_str = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -1702,6 +1765,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             "open_value": round(portfolio_summary.open_value, 4),
             "cash_spent": round(portfolio_summary.cash_spent, 4),
             "net_pnl": round(portfolio_summary.net_pnl, 4),
+            "starting_total": round(portfolio_summary.starting_total, 4),
             "total_fees": round(portfolio_summary.total_fees, 4),
             "open_positions": portfolio_summary.open_positions,
             "active_markets": portfolio_summary.active_markets,
@@ -2895,66 +2959,18 @@ def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any
 
 
 @app.get("/display-baseline")
-def get_display_baseline() -> dict[str, Any]:
-    """Return the post-cutoff starting bankroll baseline for Haifeng + Jibang.
-
-    The dashboard excludes pre-cutoff test trades, so the effective starting
-    total should be the first recorded account equity on or after the cutoff.
-    """
+def get_display_baseline(instance_name: str | None = Query(None)) -> dict[str, Any]:
+    """Return the post-cutoff starting bankroll baseline for one instance."""
+    resolved_instance = _instance_name(instance_name)
     engine = get_db()
-    per_instance: list[dict[str, Any]] = []
-    starting_total = 0.0
-    initial_loaded_total = 0.0
 
     with get_session(engine) as session:
-        for instance_name in DISPLAY_BASELINE_INSTANCE_NAMES:
-            initial_loaded = _instance_float_setting("WORKER_STARTING_CASH", instance_name, 10000.0)
-            initial_loaded_total += initial_loaded
-
-            cutoff_snapshot = (
-                session.query(KalshiBalanceSnapshot)
-                .filter(
-                    KalshiBalanceSnapshot.instance_name == instance_name,
-                    KalshiBalanceSnapshot.snapshot_ts >= DISPLAY_CUTOFF_UTC,
-                )
-                .order_by(KalshiBalanceSnapshot.snapshot_ts.asc(), KalshiBalanceSnapshot.id.asc())
-                .first()
-            )
-
-            if cutoff_snapshot is not None:
-                balance = float(cutoff_snapshot.balance or 0.0)
-                portfolio_value = float(cutoff_snapshot.portfolio_value or 0.0)
-                snapshot_ts = cutoff_snapshot.snapshot_ts.isoformat()
-                used_fallback = False
-            else:
-                balance = initial_loaded
-                portfolio_value = 0.0
-                snapshot_ts = None
-                used_fallback = True
-
-            effective_total = balance + portfolio_value
-            starting_total += effective_total
-
-            per_instance.append({
-                "instance_name": instance_name,
-                "initial_loaded": round(initial_loaded, 2),
-                "balance": round(balance, 2),
-                "portfolio_value": round(portfolio_value, 2),
-                "effective_total": round(effective_total, 2),
-                "snapshot_ts": snapshot_ts,
-                "used_fallback": used_fallback,
-            })
-
-    initial_gap = initial_loaded_total - starting_total
+        baseline = _display_baseline_for_instance(session, resolved_instance)
 
     return {
+        **baseline,
         "cutoff_timestamp": DISPLAY_CUTOFF_UTC.isoformat(),
         "cutoff_label": DISPLAY_CUTOFF_LABEL,
-        "instances": per_instance,
-        "starting_total": round(starting_total, 2),
-        "initial_loaded_total": round(initial_loaded_total, 2),
-        "difference_from_initial": round(initial_gap, 2),
-        "all_instances_have_cutoff_snapshots": all(not item["used_fallback"] for item in per_instance),
         "timestamp": datetime.now(UTC).isoformat(),
     }
 

@@ -278,13 +278,16 @@ export interface DisplayBaselineInstance {
 }
 
 export interface DisplayBaselineData {
+  instance_name: string;
   cutoff_timestamp: string;
   cutoff_label: string;
-  instances: DisplayBaselineInstance[];
   starting_total: number;
-  initial_loaded_total: number;
+  initial_loaded: number;
+  balance: number;
+  portfolio_value: number;
   difference_from_initial: number;
-  all_instances_have_cutoff_snapshots: boolean;
+  snapshot_ts: string | null;
+  used_fallback: boolean;
   timestamp: string;
 }
 
@@ -324,6 +327,7 @@ export interface AnalyticsSummary {
   open_value: number;
   cash_spent: number;
   net_pnl: number;
+  starting_total: number;
   total_fees: number;
   open_positions: number;
   active_markets: number;
@@ -927,7 +931,8 @@ export function computePortfolioMetrics(
   positions: Position[],
   trades: Trade[],
   pnl: PnLData | null,
-  markets?: Market[]
+  markets?: Market[],
+  startingTotal?: number | null,
 ) {
   const totalRealizedPnl = positions.reduce(
     (sum, p) => sum + p.realized_pnl,
@@ -979,8 +984,13 @@ export function computePortfolioMetrics(
   const totalWithPnl = positions.filter((p) => p.realized_pnl !== 0).length;
   const winRate = totalWithPnl > 0 ? winningTrades / totalWithPnl : 0;
 
+  const baselineTotal = startingTotal ?? null;
   const avgReturn =
-    capitalDeployed > 0 ? (totalPnl / capitalDeployed) * 100 : 0;
+    baselineTotal != null && baselineTotal > 0
+      ? (totalPnl / baselineTotal) * 100
+      : capitalDeployed > 0
+        ? (totalPnl / capitalDeployed) * 100
+        : 0;
 
   return {
     totalPnl,
@@ -1094,7 +1104,7 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
       fetchJSON<SystemLogEntry[]>(normalizedBaseUrl, buildPath(`/system-logs?limit=${limit}`)),
     getKalshiBalance: () => fetchJSON<KalshiBalanceData>(normalizedBaseUrl, buildPath("/kalshi/balance")),
     getDisplayBaseline: () =>
-      fetchJSON<DisplayBaselineData>(normalizedBaseUrl, "/display-baseline").catch((e) => {
+      fetchJSON<DisplayBaselineData>(normalizedBaseUrl, buildPath("/display-baseline")).catch((e) => {
         console.warn("Failed to fetch display baseline:", e);
         return null;
       }),

@@ -221,10 +221,6 @@ export default function Dashboard() {
     () => createApiClient(selectedInstance.apiUrl, selectedInstance.instanceName),
     [selectedInstance.apiUrl, selectedInstance.instanceName]
   );
-  const summaryApi = useMemo(
-    () => createApiClient(selectedInstance.apiUrl),
-    [selectedInstance.apiUrl]
-  );
   const isSwitchingInstance =
     loadingInstanceKey != null && loadingInstanceKey === selectedInstance.key;
 
@@ -402,7 +398,7 @@ export default function Dashboard() {
     }
 
     try {
-      summaryApi.getDisplayBaseline().then((baseline) => {
+      instanceApi.getDisplayBaseline().then((baseline) => {
         if (activeRequestRef.current !== requestId || !baseline) return;
         setDisplayBaseline(baseline);
       }).catch(() => {});
@@ -504,7 +500,7 @@ export default function Dashboard() {
       setRefreshing(false);
       setLoadingInstanceKey((current) => (current === instanceKey ? null : current));
     }
-  }, [applySnapshot, instanceApi, selectedInstance.key, selectedInstance.label, summaryApi]);
+  }, [applySnapshot, instanceApi, selectedInstance.key, selectedInstance.label]);
 
   useEffect(() => {
     // Cancel any pending requests when switching instances
@@ -535,7 +531,13 @@ export default function Dashboard() {
     };
   }, [applySnapshot, clearSnapshot, fetchAll, selectedInstance.key]);
 
-  const metrics = computePortfolioMetrics(positions, trades, pnl, markets);
+  const metrics = computePortfolioMetrics(
+    positions,
+    trades,
+    pnl,
+    markets,
+    displayBaseline?.starting_total ?? null,
+  );
   const liveActiveMarketCount = useMemo(() => {
     if (!kalshiPositions?.positions) return metrics.marketsTraded;
 
@@ -732,25 +734,6 @@ export default function Dashboard() {
 
   const alertErrors = alerts.filter((a) => a.severity === "error").length;
   const alertWarnings = alerts.filter((a) => a.severity === "warning").length;
-  const selectedBaselineKey = (
-    selectedInstance.instanceName
-    ?? selectedInstance.label
-    ?? selectedInstance.key
-  ).toLowerCase();
-  const selectedDisplayBaseline = displayBaseline?.instances.find(
-    (instance) => instance.instance_name.toLowerCase() === selectedBaselineKey
-  ) ?? null;
-  const selectedBaselineDelta = selectedDisplayBaseline == null
-    ? 0
-    : selectedDisplayBaseline.effective_total - selectedDisplayBaseline.initial_loaded;
-  const displayBaselineLoss = displayBaseline?.difference_from_initial ?? 0;
-  const displayBaselineDifferenceText = displayBaseline == null
-    ? ""
-    : displayBaselineLoss > 0
-      ? `${fmtDollar(displayBaselineLoss)} below`
-      : displayBaselineLoss < 0
-        ? `${fmtDollar(Math.abs(displayBaselineLoss))} above`
-        : "exactly equal to";
 
   return (
     <main className="min-h-screen bg-t-bg">
@@ -837,92 +820,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {displayBaseline && (
-          <div className="rounded border border-t-border bg-t-panel px-4 py-3">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-              <div>
-                <div className="text-[9px] font-medium uppercase tracking-[0.24em] text-txt-muted">
-                  {selectedDisplayBaseline?.instance_name ?? "Selected Account"} Starting Balance
-                </div>
-                <div className="mt-1 text-2xl font-semibold font-mono text-txt-primary">
-                  {fmtDollar(selectedDisplayBaseline?.effective_total ?? displayBaseline.starting_total)}
-                </div>
-                <div className="mt-1 text-[10px] font-mono text-txt-secondary">
-                  First recorded account total at {displayBaseline.cutoff_label}
-                </div>
-                {selectedDisplayBaseline && (
-                  <div className="mt-1 text-[10px] font-mono text-txt-muted">
-                    Loaded {fmtDollar(selectedDisplayBaseline.initial_loaded)}.
-                    Starting balance is {selectedBaselineDelta >= 0 ? " up " : " down "}
-                    <span className="text-txt-primary">{fmtDollar(Math.abs(selectedBaselineDelta))}</span>
-                    {" "}from that amount.
-                  </div>
-                )}
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                <div className="rounded border border-t-border bg-t-panel-hover/60 px-3 py-2 sm:col-span-3">
-                  <div className="text-[9px] font-medium uppercase tracking-widest text-txt-muted">
-                    Both Accounts Combined
-                  </div>
-                  <div className="mt-1 text-sm font-semibold font-mono text-txt-primary">
-                    {fmtDollar(displayBaseline.starting_total)}
-                  </div>
-                  <div className="text-[9px] font-mono text-txt-muted">
-                    Haifeng + Jibang starting total at cutoff
-                  </div>
-                </div>
-                {displayBaseline.instances.map((instance) => (
-                  <div
-                    key={instance.instance_name}
-                    className={`rounded border px-3 py-2 ${
-                      instance.instance_name.toLowerCase() === selectedBaselineKey
-                        ? "border-accent/60 bg-accent/10"
-                        : "border-t-border bg-t-panel-hover/60"
-                    }`}
-                  >
-                    <div className="text-[9px] font-medium uppercase tracking-widest text-txt-muted">
-                      {instance.instance_name}
-                    </div>
-                    <div className="mt-1 text-sm font-semibold font-mono text-txt-primary">
-                      {fmtDollar(instance.effective_total)}
-                    </div>
-                    <div className="text-[9px] font-mono text-txt-muted">
-                      cash {fmtDollar(instance.balance)} + positions {fmtDollar(instance.portfolio_value)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <details className="mt-3 rounded border border-t-border bg-t-panel-hover/40 px-3 py-2">
-              <summary className="cursor-pointer text-[10px] font-mono text-txt-secondary">
-                Why this differs from the money loaded initially
-              </summary>
-              <div className="mt-2 space-y-1.5 text-[10px] font-mono text-txt-muted">
-                <div>
-                  We treat {displayBaseline.cutoff_label} as the live starting line. Trades before that time were test trades, so the dashboard baseline uses the first recorded post-cutoff account total instead of the originally loaded cash.
-                </div>
-                {displayBaseline.instances.map((instance) => (
-                  <div key={`${instance.instance_name}-detail`}>
-                    {instance.instance_name}: loaded <span className="text-txt-primary">{fmtDollar(instance.initial_loaded)}</span>,
-                    starting balance at cutoff <span className="text-txt-primary">{fmtDollar(instance.effective_total)}</span>.
-                  </div>
-                ))}
-                <div>
-                  Originally loaded: <span className="text-txt-primary">{fmtDollar(displayBaseline.initial_loaded_total)}</span>.
-                  Post-cutoff starting total: <span className="text-txt-primary">{fmtDollar(displayBaseline.starting_total)}</span>.
-                  That is <span className="text-txt-primary">{displayBaselineDifferenceText}</span> the loaded amount.
-                </div>
-                {!displayBaseline.all_instances_have_cutoff_snapshots && (
-                  <div className="text-warn">
-                    One or more cutoff snapshots were missing, so the fallback for that account used its configured loaded amount.
-                  </div>
-                )}
-              </div>
-            </details>
-          </div>
-        )}
-
         {/* Row 1: Portfolio Summary Metrics */}
         <div className="grid grid-cols-3 md:grid-cols-5 xl:grid-cols-11 gap-2">
           <MetricCard
@@ -993,6 +890,12 @@ export default function Dashboard() {
             label="Max DD"
             value={analytics ? fmtDollar(analytics.max_drawdown) : "--"}
             pnl={analytics ? -Math.abs(analytics.max_drawdown) : undefined}
+          />
+          <MetricCard
+            label="Starting Balance"
+            value={displayBaseline ? fmtDollar(displayBaseline.starting_total) : "--"}
+            sub={displayBaseline ? `${displayBaseline.instance_name} baseline` : undefined}
+            tooltip={displayBaseline ? `Hardcoded baseline for ${displayBaseline.instance_name}. Loaded amount was ${fmtDollar(displayBaseline.initial_loaded)}.` : "Per-run starting balance baseline used for return calculations."}
           />
         </div>
 
