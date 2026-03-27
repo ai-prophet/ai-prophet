@@ -1067,9 +1067,13 @@ function ExpandedPanel({
     const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
     return row.trade_count + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
   }, [row.trade_count, row.trades, modelRuns]);
+  const tradesTabCount = useMemo(
+    () => row.trades.filter(shouldShowInTradesTab).length,
+    [row.trades]
+  );
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
-    { key: "trades", label: "Trades", count: row.trade_count },
+    { key: "trades", label: "Trades", count: tradesTabCount },
     { key: "timeline", label: "Timeline", count: timelineCount },
     { key: "models", label: "Models", count: row.model_predictions.length },
   ];
@@ -1567,14 +1571,20 @@ function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: M
   return chronRuns.filter((run) => !matchedIds.has(run.id));
 }
 
+function shouldShowInTradesTab(trade: Trade): boolean {
+  return (trade.status?.toUpperCase() ?? "") !== "REJECTED";
+}
+
 // ── Tab 2: Trade History ────────────────────────────────────
 
 function TradesTab({ row }: { row: UnifiedMarketRow }) {
-  if (row.trades.length === 0) {
+  const visibleTrades = row.trades.filter(shouldShowInTradesTab);
+
+  if (visibleTrades.length === 0) {
     return <div className="text-[10px] text-txt-muted">No trades for this market</div>;
   }
 
-  const sortedTrades = [...row.trades].sort((a, b) =>
+  const sortedTrades = [...visibleTrades].sort((a, b) =>
     new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
 
