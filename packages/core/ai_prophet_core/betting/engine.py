@@ -369,24 +369,38 @@ class BettingEngine:
             if not self.dry_run:
                 kalshi_position = self._verify_position_with_kalshi(ticker)
                 if kalshi_position is not None:
-                    # Use Kalshi's position as ground truth
-                    kalshi_side = "yes" if kalshi_position >= 0 else "no"
-                    kalshi_qty = abs(kalshi_position)
+                    # Treat an explicit zero from Kalshi as flat, not YES 0.
+                    if abs(kalshi_position) <= 1e-9:
+                        kalshi_side = None
+                        kalshi_qty = 0.0
+                    else:
+                        kalshi_side = "yes" if kalshi_position > 0 else "no"
+                        kalshi_qty = abs(kalshi_position)
 
-                    # Auto-correct DB if there's a mismatch
+                    # Auto-correct DB if there's a mismatch.
                     pos = positions.get(ticker)
-                    if pos is not None:
+                    if pos is None:
+                        side, qty = None, 0.0
+                    else:
                         side, qty, _ = pos.current_position()
-                        if side != kalshi_side or abs(qty - kalshi_qty) > 0.001:
-                            logger.error(
-                                "[BETTING] CRITICAL: Position mismatch for %s: DB=%s:%d, Kalshi=%s:%d - AUTO-CORRECTING",
-                                ticker, side, qty, kalshi_side, kalshi_qty
-                            )
-                            # Immediately sync this position to DB
-                            self._force_sync_position(ticker, kalshi_side, kalshi_qty)
+                    if side != kalshi_side or abs(qty - kalshi_qty) > 0.001:
+                        db_label = "flat" if side is None or qty <= 0 else f"{side}:{round(qty)}"
+                        kalshi_label = (
+                            "flat"
+                            if kalshi_side is None or kalshi_qty <= 0
+                            else f"{kalshi_side}:{round(kalshi_qty)}"
+                        )
+                        logger.error(
+                            "[BETTING] CRITICAL: Position mismatch for %s: DB=%s, Kalshi=%s - AUTO-CORRECTING",
+                            ticker,
+                            db_label,
+                            kalshi_label,
+                        )
+                        # Immediately sync this position to DB
+                        self._force_sync_position(ticker, kalshi_side, kalshi_qty)
 
                     # ALWAYS use Kalshi's position, it's the only truth
-                    return kalshi_side if kalshi_qty > 0 else None, max(0, round(kalshi_qty)), cash
+                    return kalshi_side, max(0, round(kalshi_qty)), cash
 
             pos = positions.get(ticker)
             if pos is None:
@@ -412,7 +426,7 @@ class BettingEngine:
             logger.warning("[BETTING] Failed to verify position with Kalshi for %s: %s", ticker, e)
             return None
 
-    def _force_sync_position(self, ticker: str, kalshi_side: str, kalshi_qty: float) -> None:
+    def _force_sync_position(self, ticker: str, kalshi_side: str | None, kalshi_qty: float) -> None:
         """Force immediate position sync when mismatch detected.
 
         This ensures our DB matches Kalshi's truth immediately, not at next sync.
@@ -442,10 +456,15 @@ class BettingEngine:
 
                     # Also log this critical event
                     from db_models import SystemLog
+                    target_desc = (
+                        "flat"
+                        if kalshi_side is None or kalshi_qty <= 0
+                        else f"{kalshi_side}:{kalshi_qty}"
+                    )
                     session.add(SystemLog(
                         instance_name=self.instance_name,
                         level="ERROR",
-                        message=f"AUTO-CORRECTED position for {ticker}: now {kalshi_side}:{kalshi_qty}",
+                        message=f"AUTO-CORRECTED position for {ticker}: now {target_desc}",
                         component="position_sync",
                         created_at=datetime.now(UTC),
                     ))
@@ -603,7 +622,7 @@ class BettingEngine:
                             intended_sell_count, held_side.upper(), ticker, sell_price, sell_status,
                         )
                         self._save_order(
-                            signal_id=None,  # NET sells are not driven by a signal for this market
+                            signal_id=signal_id,
                             order_id=sell_order_id,
                             ticker=ticker,
                             side=held_side,

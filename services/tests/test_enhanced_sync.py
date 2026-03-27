@@ -51,8 +51,9 @@ class TestPositionVerification(unittest.TestCase):
         # Mock DB state showing different position (30 YES)
         with patch('ai_prophet_core.betting.engine._get_position_replay') as mock_replay:
             mock_replay.return_value = (
+                lambda *args, **kwargs: [],
                 lambda orders: {"TEST": MagicMock(current_position=lambda: ("yes", 30, 0.5))},
-                lambda positions: (100, 0, {})
+                lambda positions: (100, 0, {}),
             )
 
             # Call _live_ledger_state which should detect mismatch
@@ -87,8 +88,9 @@ class TestPositionVerification(unittest.TestCase):
         with patch('ai_prophet_core.betting.engine.BettingEngine._force_sync_position') as mock_force_sync:
             with patch('ai_prophet_core.betting.engine._get_position_replay') as mock_replay:
                 mock_replay.return_value = (
+                    lambda *args, **kwargs: [],
                     lambda orders: {"TEST": MagicMock(current_position=lambda: ("yes", 30, 0.5))},
-                    lambda positions: (100, 0, {})
+                    lambda positions: (100, 0, {}),
                 )
 
                 side, qty, cash = engine._live_ledger_state("TEST")
@@ -98,6 +100,36 @@ class TestPositionVerification(unittest.TestCase):
         self.assertEqual(side, "yes")
 
         # Assert no force sync was needed
+        mock_force_sync.assert_not_called()
+
+    @patch('ai_prophet_core.betting.engine.BettingEngine._get_adapter')
+    def test_zero_kalshi_position_is_treated_as_flat_without_false_drift(self, mock_get_adapter):
+        """A flat Kalshi position should not be misread as YES 0 and auto-corrected."""
+        from ai_prophet_core.betting.engine import BettingEngine
+
+        mock_adapter = MagicMock()
+        mock_adapter.get_positions.return_value = []
+        mock_adapter.get_balance.return_value = Decimal("1000")
+        mock_get_adapter.return_value = mock_adapter
+
+        engine = BettingEngine(
+            db_engine=MagicMock(),
+            dry_run=False,
+            instance_name="test"
+        )
+
+        with patch('ai_prophet_core.betting.engine.BettingEngine._force_sync_position') as mock_force_sync:
+            with patch('ai_prophet_core.betting.engine._get_position_replay') as mock_replay:
+                mock_replay.return_value = (
+                    lambda *args, **kwargs: [],
+                    lambda orders: {"TEST": MagicMock(current_position=lambda: (None, 0, 0.0))},
+                    lambda positions: (100, 0, {}),
+                )
+
+                side, qty, cash = engine._live_ledger_state("TEST")
+
+        self.assertIsNone(side)
+        self.assertEqual(qty, 0)
         mock_force_sync.assert_not_called()
 
 

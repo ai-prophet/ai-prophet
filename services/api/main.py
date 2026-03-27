@@ -658,19 +658,6 @@ def get_trades(
                 ):
                     preds_by_id[p.id] = p
 
-            prediction_market_ids = list({
-                p.market_id for p in preds_by_id.values() if p.market_id
-            })
-            model_runs_by_market: dict[str, list[ModelRun]] = defaultdict(list)
-            if prediction_market_ids:
-                for run in (
-                    _instance_query(session, ModelRun, resolved_instance)
-                    .filter(ModelRun.market_id.in_(prediction_market_ids))
-                    .order_by(ModelRun.timestamp.desc())
-                    .all()
-                ):
-                    model_runs_by_market[run.market_id].append(run)
-
             snapshot_tickers = {snap.ticker for snap in latest_snapshots if snap.ticker}
             trade_market_ids = list({f"kalshi:{r.ticker}" for r in local_rows if r.ticker} | {f"kalshi:{ticker}" for ticker in snapshot_tickers})
             market_titles: dict[str, str] = {}
@@ -682,6 +669,43 @@ def get_trades(
                 ):
                     market_titles[m.market_id] = m.title
 
+            fallback_signals_by_market: dict[str, list[tuple[BettingSignal, BettingPrediction, dict[str, Any]]]] = defaultdict(list)
+            if trade_market_ids:
+                fallback_signal_rows = (
+                    session.query(BettingSignal, BettingPrediction)
+                    .join(BettingPrediction, BettingPrediction.id == BettingSignal.prediction_id)
+                    .filter(
+                        BettingSignal.instance_name == resolved_instance,
+                        BettingPrediction.market_id.in_(trade_market_ids),
+                        BettingSignal.created_at >= DISPLAY_CUTOFF_UTC,
+                    )
+                    .order_by(BettingSignal.created_at.desc(), BettingSignal.id.desc())
+                    .all()
+                )
+                for sig, pred in fallback_signal_rows:
+                    metadata: dict[str, Any] = {}
+                    if sig.metadata_json:
+                        try:
+                            loaded = json.loads(sig.metadata_json)
+                            if isinstance(loaded, dict):
+                                metadata = loaded
+                        except (json.JSONDecodeError, TypeError):
+                            metadata = {}
+                    fallback_signals_by_market[pred.market_id].append((sig, pred, metadata))
+
+            prediction_market_ids = list({
+                p.market_id for p in preds_by_id.values() if p.market_id
+            } | set(trade_market_ids))
+            model_runs_by_market: dict[str, list[ModelRun]] = defaultdict(list)
+            if prediction_market_ids:
+                for run in (
+                    _instance_query(session, ModelRun, resolved_instance)
+                    .filter(ModelRun.market_id.in_(prediction_market_ids))
+                    .order_by(ModelRun.timestamp.desc())
+                    .all()
+                ):
+                    model_runs_by_market[run.market_id].append(run)
+
             local_by_exchange_order_id: dict[str, BettingOrder] = {}
             local_by_internal_order_id: dict[str, BettingOrder] = {}
             for row in local_rows:
@@ -689,55 +713,103 @@ def get_trades(
                     local_by_exchange_order_id[row.exchange_order_id] = row
                 local_by_internal_order_id[row.order_id] = row
 
+            def find_nearest_signal_prediction(row: BettingOrder) -> tuple[BettingSignal | None, BettingPrediction | None]:
+                if not row.ticker:
+                    return None, None
+                market_id = f"kalshi:{row.ticker}"
+                candidates = fallback_signals_by_market.get(market_id, [])
+                if not candidates:
+                    return None, None
+
+                trade_ts = row.created_at
+                match_window = timedelta(minutes=15)
+                best_match: tuple[int, float, int, BettingSignal, BettingPrediction] | None = None
+                action = (row.action or "").upper()
+                side = (row.side or "").lower()
+
+                for sig, pred, metadata in candidates:
+                    delta_seconds = abs((sig.created_at - trade_ts).total_seconds())
+                    if delta_seconds > match_window.total_seconds():
+                        continue
+
+                    score = 0
+                    if action == "SELL":
+                        if side and sig.side and side != sig.side.lower():
+                            score += 5
+                        raw_portion = metadata.get("sell_portion")
+                    elif action == "BUY":
+                        if side and sig.side and side == sig.side.lower():
+                            score += 5
+                        raw_portion = metadata.get("buy_portion")
+                    else:
+                        raw_portion = None
+
+                    if raw_portion is not None:
+                        try:
+                            portion_count = max(0, round(abs(float(raw_portion)) * 100))
+                            if abs(portion_count - int(row.count or 0)) <= 1:
+                                score += 20
+                        except (TypeError, ValueError):
+                            pass
+
+                    candidate = (score, -delta_seconds, sig.id, sig, pred)
+                    if best_match is None or candidate > best_match:
+                        best_match = candidate
+
+                if best_match is None:
+                    return None, None
+                return best_match[3], best_match[4]
+
             def build_prediction(row: BettingOrder | None) -> dict[str, Any] | None:
-                if row is None or not row.signal_id:
+                if row is None:
                     return None
-                prediction = None
-                sig = signals_by_id.get(row.signal_id)
-                if sig and sig.prediction_id:
-                    pred = preds_by_id.get(sig.prediction_id)
-                    if pred:
-                        reasoning = None
-                        sources: list[dict[str, str]] = []
-                        trade_ts = row.created_at
-                        match_window = timedelta(minutes=15)
-                        market_runs = model_runs_by_market.get(pred.market_id, [])
-                        matched_meta = None
-                        matched_delta = None
+                sig = signals_by_id.get(row.signal_id) if row.signal_id else None
+                pred = preds_by_id.get(sig.prediction_id) if sig and sig.prediction_id else None
+                if pred is None:
+                    sig, pred = find_nearest_signal_prediction(row)
+                if pred is None:
+                    return None
 
-                        for run in market_runs:
-                            if run.model_name != pred.source:
-                                continue
-                            delta_seconds = abs((run.timestamp - trade_ts).total_seconds())
-                            if delta_seconds > match_window.total_seconds():
-                                continue
-                            if not run.metadata_json:
-                                continue
-                            try:
-                                meta = json.loads(run.metadata_json)
-                            except (json.JSONDecodeError, TypeError):
-                                continue
-                            p_yes = meta.get("p_yes")
-                            if p_yes is None or abs(float(p_yes) - float(pred.p_yes)) > 0.0005:
-                                continue
-                            if matched_delta is None or delta_seconds < matched_delta:
-                                matched_meta = meta
-                                matched_delta = delta_seconds
+                reasoning = None
+                sources: list[dict[str, str]] = []
+                trade_ts = row.created_at
+                match_window = timedelta(minutes=15)
+                market_runs = model_runs_by_market.get(pred.market_id, [])
+                matched_meta = None
+                matched_delta = None
 
-                        if matched_meta:
-                            reasoning = matched_meta.get("reasoning")
-                            sources = matched_meta.get("sources", [])
+                for run in market_runs:
+                    if run.model_name != pred.source:
+                        continue
+                    delta_seconds = abs((run.timestamp - trade_ts).total_seconds())
+                    if delta_seconds > match_window.total_seconds():
+                        continue
+                    if not run.metadata_json:
+                        continue
+                    try:
+                        meta = json.loads(run.metadata_json)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    p_yes = meta.get("p_yes")
+                    if p_yes is None or abs(float(p_yes) - float(pred.p_yes)) > 0.0005:
+                        continue
+                    if matched_delta is None or delta_seconds < matched_delta:
+                        matched_meta = meta
+                        matched_delta = delta_seconds
 
-                        prediction = {
-                            "p_yes": pred.p_yes,
-                            "yes_ask": pred.yes_ask,
-                            "no_ask": pred.no_ask,
-                            "source": pred.source,
-                            "market_id": pred.market_id,
-                            "reasoning": reasoning,
-                            "sources": sources,
-                        }
-                return prediction
+                if matched_meta:
+                    reasoning = matched_meta.get("reasoning")
+                    sources = matched_meta.get("sources", [])
+
+                return {
+                    "p_yes": pred.p_yes,
+                    "yes_ask": pred.yes_ask,
+                    "no_ask": pred.no_ask,
+                    "source": pred.source,
+                    "market_id": pred.market_id,
+                    "reasoning": reasoning,
+                    "sources": sources,
+                }
 
             merged_results: list[dict[str, Any]] = []
             seen_keys: set[str] = set()
