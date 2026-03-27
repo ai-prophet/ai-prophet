@@ -18,7 +18,6 @@ import type {
   UnifiedMarketRow,
   PriceHistoryPoint,
   ModelRun,
-  CycleEvaluation,
 } from "@/lib/api";
 import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
@@ -81,52 +80,7 @@ function formatPriceCents(priceCents: number | null | undefined): string | null 
 }
 
 function isHoldLikeDecision(decision: string | null | undefined): boolean {
-  const normalized = decision?.toUpperCase();
-  return normalized === "HOLD";
-}
-
-function normalizeOrderStatus(status: string | null | undefined): string {
-  return status?.toUpperCase() ?? "";
-}
-
-function isTerminalOrderStatus(status: string | null | undefined): boolean {
-  const normalized = normalizeOrderStatus(status);
-  return normalized === "FILLED"
-    || normalized === "DRY_RUN"
-    || normalized === "REJECTED"
-    || normalized === "CANCELLED"
-    || normalized === "ERROR";
-}
-
-function shouldRenderActionableEvaluation(
-  evaluation: CycleEvaluation,
-  hasCurrentPendingExposure: boolean,
-): boolean {
-  const order = evaluation.order;
-  if (!order) return true;
-
-  const filledCount = order.filled ?? 0;
-  if (filledCount > 0) return true;
-
-  return isTerminalOrderStatus(order.status) || hasCurrentPendingExposure;
-}
-
-function buildHoldExplanation(evaluation: CycleEvaluation): string {
-  if (evaluation.action?.reason) {
-    return evaluation.action.reason;
-  }
-
-  const pYes = evaluation.prediction?.p_yes;
-  const yesAsk = evaluation.prediction?.yes_ask;
-  const noAsk = evaluation.prediction?.no_ask;
-
-  if (pYes != null && yesAsk != null && noAsk != null) {
-    const lowerBound = Math.max(0, 1 - noAsk - 0.01);
-    const upperBound = Math.min(1, yesAsk + 0.01);
-    return `Holding because model probability ${(pYes * 100).toFixed(1)}% sits inside the widened no-trade band ${(lowerBound * 100).toFixed(1)}% to ${(upperBound * 100).toFixed(1)}% around the live spread.`;
-  }
-
-  return "Holding because the model probability stayed inside the widened no-trade band around the live spread.";
+  return decision?.toUpperCase() === "HOLD";
 }
 
 function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
@@ -134,7 +88,13 @@ function hasLivePendingExposure(row: UnifiedMarketRow): boolean {
 }
 
 function rowHasActivity(row: UnifiedMarketRow): boolean {
-  return row.has_trades || row.trade_count > 0 || (row.pending_shares != null && row.pending_shares > 0) || hasLivePendingExposure(row);
+  return (
+    row.has_position
+    || row.has_trades
+    || row.trade_count > 0
+    || (row.pending_shares != null && row.pending_shares > 0)
+    || hasLivePendingExposure(row)
+  );
 }
 
 function tradeFeeTotal(row: UnifiedMarketRow): number {
@@ -151,6 +111,13 @@ function formatFeeLabel(fee: number): string {
 
 function formatInvestmentSplit(base: number, fee: number): string {
   return `cost:${fmtDollar(base)} fee:${fmtDollar(fee)}`;
+}
+
+function formatPendingDelta(delta: number): string {
+  const rounded = Math.round(delta);
+  if (rounded > 0) return `+${rounded} pending`;
+  if (rounded < 0) return `${rounded} pending`;
+  return "0 pending";
 }
 
 type SortKey =
@@ -973,9 +940,9 @@ function MarketRow({
                   {pos.contract.toUpperCase()}
                 </span>
               </span>
-              {row.pending_shares != null && row.pending_shares > 0 && (
+              {row.pending_delta_shares != null && row.pending_shares != null && row.pending_shares > 0 && (
                 <span className="text-[9px] font-mono text-yellow-400" title="Open Kalshi orders captured during the latest sync">
-                  +{row.pending_shares} pending
+                  {formatPendingDelta(row.pending_delta_shares)}
                 </span>
               )}
               {row.target_shares != null && row.target_shares !== pos.quantity && (
@@ -988,9 +955,9 @@ function MarketRow({
           ) : row.edge && Math.abs(row.edge) > 0.01 ? (
             <span className="flex flex-col items-center gap-0.5">
               <span className="font-mono text-txt-muted">0</span>
-              {row.pending_shares != null && row.pending_shares > 0 && (
+              {row.pending_delta_shares != null && row.pending_shares != null && row.pending_shares > 0 && (
                 <span className="text-[9px] font-mono text-yellow-400" title="Open Kalshi orders captured during the latest sync">
-                  +{row.pending_shares} pending
+                  {formatPendingDelta(row.pending_delta_shares)}
                 </span>
               )}
               {row.target_shares != null && (
@@ -1070,19 +1037,6 @@ function ExpandedPanel({
   const [loadingRuns, setLoadingRuns] = useState(false);
   const modelRunsCacheRef = useRef<Map<string, ModelRun[]>>(new Map());
 
-  // Cycle evaluations state (moved up from TimelineTab)
-  const [cycleEvaluations, setCycleEvaluations] = useState<CycleEvaluation[]>([]);
-  const [totalCycleEvaluations, setTotalCycleEvaluations] = useState(0);
-  const [loadingEvaluations, setLoadingEvaluations] = useState(false);
-  const [evaluationsOffset, setEvaluationsOffset] = useState(0);
-  const EVALUATIONS_BATCH_SIZE = 10;
-  const cycleEvaluationsCacheRef = useRef<
-    Map<string, { evaluations: CycleEvaluation[]; total: number; offset: number }>
-  >(new Map());
-  const cycleEvaluationsRequestRef = useRef(0);
-
-  const cycleEvaluationsCacheKey = `evals:${instanceCacheKey}:${row.market_id}`;
-
   useEffect(() => {
     const cacheKey = `runs:${instanceCacheKey}:${row.market_id}`;
     const cachedRuns = modelRunsCacheRef.current.get(cacheKey);
@@ -1106,88 +1060,13 @@ function ExpandedPanel({
     return () => { cancelled = true; };
   }, [apiClient, instanceCacheKey, row.market_id]);
 
-  useEffect(() => {
-    const cached = cycleEvaluationsCacheRef.current.get(cycleEvaluationsCacheKey);
-    if (cached) {
-      setCycleEvaluations(cached.evaluations);
-      setTotalCycleEvaluations(cached.total);
-      setEvaluationsOffset(cached.offset);
-      setLoadingEvaluations(false);
-      return;
-    }
-
-    setCycleEvaluations([]);
-    setTotalCycleEvaluations(0);
-    setEvaluationsOffset(0);
-    setLoadingEvaluations(false);
-  }, [cycleEvaluationsCacheKey]);
-
-  // Fetch cycle evaluations
-  const fetchCycleEvaluations = useCallback((offset: number, append = false) => {
-    // Extract ticker from market_id (format: "kalshi:TICKER")
-    const ticker = row.market_id?.startsWith('kalshi:')
-      ? row.market_id.substring(7)
-      : row.ticker || row.event_ticker || '';
-
-    if (!ticker) return;
-
-    const requestId = ++cycleEvaluationsRequestRef.current;
-    setLoadingEvaluations(true);
-
-    apiClient.getCycleEvaluations(ticker, EVALUATIONS_BATCH_SIZE, offset)
-      .then((data) => {
-        if (requestId !== cycleEvaluationsRequestRef.current) return;
-        const existingEvaluations = append
-          ? (cycleEvaluationsCacheRef.current.get(cycleEvaluationsCacheKey)?.evaluations ?? [])
-          : [];
-        const nextEvaluations = append
-          ? [...existingEvaluations, ...(data.evaluations || [])]
-          : (data.evaluations || []);
-
-        cycleEvaluationsCacheRef.current.set(cycleEvaluationsCacheKey, {
-          evaluations: nextEvaluations,
-          total: data.total || 0,
-          offset: offset + EVALUATIONS_BATCH_SIZE,
-        });
-
-        if (append) {
-          setCycleEvaluations(prev => [...prev, ...(data.evaluations || [])]);
-        } else {
-          setCycleEvaluations(nextEvaluations);
-        }
-        setTotalCycleEvaluations(data.total || 0);
-        setEvaluationsOffset(offset + EVALUATIONS_BATCH_SIZE);
-      })
-      .catch((error) => {
-        if (requestId !== cycleEvaluationsRequestRef.current) return;
-        console.error('[Timeline] Failed to fetch cycle evaluations:', error);
-        if (!append) {
-          setCycleEvaluations([]);
-        }
-      })
-      .finally(() => {
-        if (requestId !== cycleEvaluationsRequestRef.current) return;
-        setLoadingEvaluations(false);
-      });
-  }, [apiClient, row.market_id, row.ticker, row.event_ticker, cycleEvaluationsCacheKey]);
-
-  // Fetch initial evaluations when timeline tab is selected
-  useEffect(() => {
-    if (activeTab !== "timeline" || loadingEvaluations) return;
-    if (cycleEvaluationsCacheRef.current.has(cycleEvaluationsCacheKey)) return;
-    fetchCycleEvaluations(0);
-  }, [activeTab, loadingEvaluations, fetchCycleEvaluations, cycleEvaluationsCacheKey]);
-
   const timelineCount = useMemo(() => {
-    // Once fetched for this market, count only the entries that would actually render.
-    if (cycleEvaluationsCacheRef.current.has(cycleEvaluationsCacheKey)) {
-      return countRenderableCycleEvaluations(cycleEvaluations, row);
-    }
+    if (!modelRuns) return row.trade_count;
     const chronTrades = [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const chronRuns = [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const chronRuns = [...modelRuns].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
     const tradesWithRuns = matchTradesToRuns(chronTrades, chronRuns);
-    return tradesWithRuns.length + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
-  }, [row, modelRuns, cycleEvaluations, cycleEvaluationsCacheKey]);
+    return row.trade_count + unmatchedTimelineRuns(tradesWithRuns, chronRuns).length;
+  }, [row.trade_count, row.trades, modelRuns]);
 
   const tabs: { key: typeof activeTab; label: string; count?: number }[] = [
     { key: "trades", label: "Trades", count: row.trade_count },
@@ -1234,15 +1113,10 @@ function ExpandedPanel({
       {/* Tab content */}
       <div className="px-4 py-3">
         {activeTab === "timeline" && (
-          <TimelineTab
+          <SubmittedTradesTimelineTab
             row={row}
             modelRuns={modelRuns}
             loadingRuns={loadingRuns}
-            cycleEvaluations={cycleEvaluations}
-            totalCycleEvaluations={totalCycleEvaluations}
-            loadingEvaluations={loadingEvaluations}
-            hasMore={cycleEvaluations.length < totalCycleEvaluations}
-            onLoadMore={() => fetchCycleEvaluations(evaluationsOffset, true)}
           />
         )}
         {activeTab === "trades" && <TradesTab row={row} />}
@@ -1262,19 +1136,382 @@ function ExpandedPanel({
 
 // ── Tab 1: Activity Timeline ────────────────────────────────
 
-const CYCLE_INTERVAL_MS = 60 * 60 * 1000; // 1 hour — worker poll interval
-const SKIP_THRESHOLD_MS = 90 * 60 * 1000; // 90 min — 1.5× the 1-hour poll interval
+type SubmittedTradeTimelineItem = {
+  trade: Trade;
+  qty: number;
+  isSell: boolean;
+  fee: number;
+  price: number;
+  cashFlow: number | null;
+};
+
+type TimelinePositionState = {
+  quantity: number;
+  side: string;
+} | null;
+
+function getExecutedTradeQuantity(trade: Trade): number {
+  const status = trade.status?.toUpperCase() ?? "";
+  if ((trade.filled_shares ?? 0) > 0) return trade.filled_shares;
+  if (status === "FILLED" || status === "DRY_RUN") return trade.count;
+  return 0;
+}
+
+function submittedTradeTimelineItem(trade: Trade): SubmittedTradeTimelineItem {
+  const qty = getExecutedTradeQuantity(trade);
+  const price = trade.price_cents / 100;
+  const fee = trade.fee_paid || 0;
+  const isSell = trade.action?.toUpperCase() === "SELL";
+  const cashFlow = qty > 0
+    ? (isSell ? (qty * price) - fee : -((qty * price) + fee))
+    : null;
+  return { trade, qty, isSell, fee, price, cashFlow };
+}
+
+function SubmittedTradesTimelineTab({
+  row,
+  modelRuns,
+  loadingRuns,
+}: {
+  row: UnifiedMarketRow;
+  modelRuns: ModelRun[] | null;
+  loadingRuns: boolean;
+}) {
+  const [expandedTradeId, setExpandedTradeId] = useState<number | null>(null);
+  const [showPnLChart, setShowPnLChart] = useState(false);
+
+  const chronTrades = useMemo(
+    () => [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
+    [row.trades]
+  );
+  const chronRuns = useMemo(
+    () => [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+    [modelRuns]
+  );
+  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
+  const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
+
+  const cyclePnLData = useMemo(() => {
+    const cycleMap = new Map<number, { timestamp: number; pnl: number; tradeCount: number }>();
+
+    chronTrades.forEach((trade) => {
+      const entry = submittedTradeTimelineItem(trade);
+      const tradeTs = new Date(trade.created_at).getTime();
+      const cycleTs = Math.floor(tradeTs / (60 * 60 * 1000)) * (60 * 60 * 1000);
+      const cycle = cycleMap.get(cycleTs) ?? { timestamp: cycleTs, pnl: 0, tradeCount: 0 };
+      cycle.pnl += entry.cashFlow ?? 0;
+      cycle.tradeCount += 1;
+      cycleMap.set(cycleTs, cycle);
+    });
+
+    let cumulativePnL = 0;
+    return Array.from(cycleMap.values())
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .map((cycle) => {
+        cumulativePnL += cycle.pnl;
+        return {
+          time: new Date(cycle.timestamp).toLocaleTimeString("en-US", {
+            hour: "numeric",
+            minute: "2-digit",
+            month: "short",
+            day: "numeric",
+          }),
+          timestamp: cycle.timestamp,
+          cyclePnL: cycle.pnl,
+          cumulativePnL,
+          tradeCount: cycle.tradeCount,
+        };
+      });
+  }, [chronTrades]);
+
+  type SubmittedTimelineEvent =
+    | { type: "trade"; key: string; sortTs: number; item: TimelineTradeItem }
+    | { type: "switch"; key: string; sortTs: number; sell: TimelineTradeItem; buy: TimelineTradeItem }
+    | { type: "run"; key: string; sortTs: number; run: ModelRun };
+
+  const mergedEvents = useMemo<SubmittedTimelineEvent[]>(() => {
+    const events: SubmittedTimelineEvent[] = [];
+    const consumed = new Set<number>();
+
+    for (let i = 0; i < tradesWithRuns.length; i++) {
+      if (consumed.has(i)) continue;
+      const current = tradesWithRuns[i];
+      const next = tradesWithRuns[i + 1];
+      const currentTs = new Date(current.trade.created_at).getTime();
+      const nextTs = next ? new Date(next.trade.created_at).getTime() : Number.NaN;
+      const isFlipPair = !!next
+        && !consumed.has(i + 1)
+        && current.trade.action?.toUpperCase() === "SELL"
+        && next.trade.action?.toUpperCase() === "BUY"
+        && current.trade.side?.toUpperCase() !== next.trade.side?.toUpperCase()
+        && Math.abs(nextTs - currentTs) <= SAME_ACTION_WINDOW_MS;
+
+      if (isFlipPair) {
+        events.push({
+          type: "switch",
+          key: `switch-${current.trade.id}-${next!.trade.id}`,
+          sortTs: nextTs,
+          sell: current,
+          buy: next!,
+        });
+        consumed.add(i + 1);
+        continue;
+      }
+
+      events.push({
+        type: "trade",
+        key: `trade-${current.trade.id}`,
+        sortTs: currentTs,
+        item: current,
+      });
+    }
+
+    unmatchedRuns.forEach((run) => {
+      events.push({
+        type: "run",
+        key: `run-${run.id}`,
+        sortTs: new Date(run.timestamp).getTime(),
+        run,
+      });
+    });
+
+    return events.sort((a, b) => b.sortTs - a.sortTs);
+  }, [tradesWithRuns, unmatchedRuns]);
+
+  if (mergedEvents.length === 0) {
+    return <div className="text-[10px] text-txt-muted">No timeline activity for this market</div>;
+  }
+
+  return (
+    <div>
+      {cyclePnLData.length > 0 && (
+        <div className="mb-3">
+          <button
+            onClick={() => setShowPnLChart(!showPnLChart)}
+            className="text-[10px] font-medium text-accent hover:text-accent/80 transition-colors"
+          >
+            {showPnLChart ? "▼" : "▶"} Submitted Trade Cash Flow ({cyclePnLData.length} cycles)
+          </button>
+        </div>
+      )}
+
+      {showPnLChart && cyclePnLData.length > 0 && (
+        <div className="mb-4 p-3 bg-t-bg-secondary/30 rounded">
+          <div className="text-[9px] text-txt-muted uppercase tracking-widest font-medium mb-2">
+            Submitted Trade Cash Flow by Cycle
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={cyclePnLData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
+              <XAxis dataKey="time" tick={{ fontSize: 8, fill: "#888" }} angle={-45} textAnchor="end" height={60} />
+              <YAxis tick={{ fontSize: 8, fill: "#888" }} width={40} tickFormatter={(v) => `$${v.toFixed(0)}`} />
+              <Tooltip
+                contentStyle={{ backgroundColor: "#1a1a1a", border: "1px solid #333", borderRadius: "4px" }}
+                labelStyle={{ fontSize: 10, color: "#ccc" }}
+                formatter={(value: any) => {
+                  const num = Number(value);
+                  return [`${num >= 0 ? "+" : ""}$${num.toFixed(2)}`, ""];
+                }}
+              />
+              <Line type="stepAfter" dataKey="cumulativePnL" stroke="#22c55e" strokeWidth={2} dot={{ r: 3, fill: "#22c55e" }} name="Cumulative Cash Flow" />
+              <Line type="monotone" dataKey="cyclePnL" stroke="#888" strokeWidth={1} strokeDasharray="5 5" dot={{ r: 2, fill: "#888" }} name="Cycle Cash Flow" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <div className="relative pl-4 max-h-[400px] overflow-y-auto">
+        <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
+        {loadingRuns && (
+          <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
+        )}
+        {mergedEvents.map((event) => {
+          if (event.type === "run") {
+            const { run } = event;
+            const isExpanded = expandedTradeId === -run.id;
+            const hasDetail = !!(run.reasoning || (run.sources && run.sources.length > 0));
+            const isHold = isHoldLikeDecision(run.decision);
+            const isSkip = run.decision === "CYCLE_SKIPPED";
+            const edge = run.p_yes != null && row.yes_ask != null ? run.p_yes - row.yes_ask : null;
+            return (
+              <div key={event.key} className="relative py-1.5">
+                <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
+                  isSkip ? "bg-txt-muted" : isHold ? "bg-orange-400" : "bg-accent/70"
+                }`} />
+                <button
+                  type="button"
+                  className={`w-full text-left rounded px-1 -mx-1 transition-colors ${hasDetail ? "cursor-pointer hover:bg-t-panel-hover/40" : ""}`}
+                  onClick={() => {
+                    if (!hasDetail) return;
+                    setExpandedTradeId(isExpanded ? null : -run.id);
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                      {fmtTime(run.timestamp)}
+                    </div>
+                    <div className="flex-1 min-w-0 overflow-hidden">
+                      <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                        <span className={`text-[9px] px-1 py-px rounded font-bold ${
+                          isSkip ? "bg-t-border/50 text-txt-muted" : isHold ? "bg-yellow-900/30 text-yellow-500" : "bg-accent-dim text-accent"
+                        }`}>
+                          {isSkip ? "SKIP" : run.decision}
+                        </span>
+                        <span className={MODEL_COLORS[run.id % MODEL_COLORS.length]}>
+                          {shortModelName(run.model_name)}
+                        </span>
+                        {run.p_yes != null && <span className="text-accent">model: {(run.p_yes * 100).toFixed(0)}%</span>}
+                        {row.yes_ask != null && <span className="text-txt-secondary">mkt: {(row.yes_ask * 100).toFixed(0)}c</span>}
+                        {edge != null && <span className={pnlCls(edge)}>edge: {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)}pp</span>}
+                        {run.confidence != null && <span className="text-txt-muted">conf: {(run.confidence * 100).toFixed(0)}%</span>}
+                        {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
+                      </div>
+                      {isExpanded && hasDetail && (
+                        <div className="pt-2 pb-1">
+                          <RationalePanel reasoning={run.reasoning} sources={run.sources ?? []} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              </div>
+            );
+          }
+
+          if (event.type === "switch") {
+            const sellEntry = submittedTradeTimelineItem(event.sell.trade);
+            const buyEntry = submittedTradeTimelineItem(event.buy.trade);
+            const resultingPosition = event.buy.resultingPosition;
+            return (
+              <div key={event.key} className="relative py-1.5">
+                <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-500 border-2 border-t-bg z-10" />
+                <div className="flex items-start gap-3">
+                  <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                    {fmtTime(event.sell.trade.created_at)}
+                  </div>
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                      <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
+                      <span className={sideToneClass(event.sell.trade.side)}>{event.sell.trade.side.toUpperCase()} {event.sell.trade.count}</span>
+                      <span className="text-txt-muted">@ {(sellEntry.price * 100).toFixed(0)}c</span>
+                      <span className="text-warn">{formatFeeLabel(sellEntry.fee)}</span>
+                      {sellEntry.cashFlow != null && <span className={pnlCls(sellEntry.cashFlow)}>cash: {sellEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(sellEntry.cashFlow)}</span>}
+                      <StatusBadge status={event.sell.trade.status} />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono mt-1 ml-4">
+                      <span className="text-txt-muted">↳</span>
+                      <span className="text-[9px] px-1 py-px rounded font-bold bg-profit-dim text-profit">BUY</span>
+                      <span className={sideToneClass(event.buy.trade.side)}>{event.buy.trade.side.toUpperCase()} {event.buy.trade.count}</span>
+                      <span className="text-txt-muted">@ {(buyEntry.price * 100).toFixed(0)}c</span>
+                      <span className="text-warn">{formatFeeLabel(buyEntry.fee)}</span>
+                      {buyEntry.cashFlow != null && <span className={pnlCls(buyEntry.cashFlow)}>cash: {buyEntry.cashFlow >= 0 ? "+" : ""}{fmtDollar(buyEntry.cashFlow)}</span>}
+                      <StatusBadge status={event.buy.trade.status} />
+                      {resultingPosition ? (
+                        <span className="text-txt-muted">
+                          hold: <span className={sideToneClass(resultingPosition.side, true)}>{resultingPosition.quantity} {resultingPosition.side}</span>
+                        </span>
+                      ) : (
+                        <span className="text-txt-muted">hold: flat</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          const { trade } = event.item;
+          const { qty, isSell, fee, price, cashFlow } = submittedTradeTimelineItem(trade);
+          const matchedRun = event.item.matchedRun;
+          const rationale = trade.prediction?.reasoning ?? matchedRun?.reasoning ?? null;
+          const sources = trade.prediction?.sources ?? matchedRun?.sources ?? [];
+          const hasDetail = !!(rationale || sources.length > 0);
+          const isExpanded = expandedTradeId === trade.id;
+          const pYes = trade.prediction?.p_yes ?? matchedRun?.p_yes ?? null;
+          const mktAsk = trade.prediction?.yes_ask ?? null;
+          const edge = pYes != null && mktAsk != null ? pYes - mktAsk : null;
+          const resultingPosition = event.item.resultingPosition;
+
+          return (
+            <div key={trade.id} className="relative py-1.5">
+              <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
+              <button
+                type="button"
+                className={`w-full text-left rounded px-1 -mx-1 transition-colors ${hasDetail ? "cursor-pointer hover:bg-t-panel-hover/40" : ""}`}
+                onClick={() => {
+                  if (!hasDetail) return;
+                  setExpandedTradeId(isExpanded ? null : trade.id);
+                }}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                    {fmtTime(trade.created_at)}
+                  </div>
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                      {isSell && <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>}
+                      <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
+                        {trade.side.toUpperCase()}
+                      </span>
+                      <span className="text-txt-primary">
+                        {trade.count} submitted
+                        {qty > 0 && qty !== trade.count ? ` · ${qty} filled` : ""}
+                      </span>
+                      <span className="text-txt-muted">@ {(price * 100).toFixed(0)}c</span>
+                      <span className="text-warn">{formatFeeLabel(fee)}</span>
+                      <span className={cashFlow != null ? pnlCls(cashFlow) : "text-txt-muted"}>
+                        cash: {cashFlow != null ? `${cashFlow >= 0 ? "+" : ""}${fmtDollar(cashFlow)}` : "--"}
+                      </span>
+                      {resultingPosition ? (
+                        <span className="text-txt-muted">
+                          hold: <span className={sideToneClass(resultingPosition.side, true)}>{resultingPosition.quantity} {resultingPosition.side}</span>
+                        </span>
+                      ) : (
+                        <span className="text-txt-muted">hold: flat</span>
+                      )}
+                      {matchedRun && (
+                        <span className={`${isHoldLikeDecision(matchedRun.decision) ? holdEdgeToneClass() : "text-accent"}`}>
+                          {matchedRun.decision === "CYCLE_SKIPPED" ? "SKIP" : matchedRun.decision}
+                        </span>
+                      )}
+                      {pYes != null && <span className="text-accent">model: {(pYes * 100).toFixed(0)}%</span>}
+                      {mktAsk != null && <span className="text-txt-secondary">mkt: {(mktAsk * 100).toFixed(0)}c</span>}
+                      {edge != null && <span className={pnlCls(edge)}>edge: {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(0)}pp</span>}
+                      <StatusBadge status={trade.status} />
+                      <span className={`text-[9px] font-bold px-1 py-px rounded ${trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
+                        {trade.dry_run ? "DRY" : "LIVE"}
+                      </span>
+                      {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
+                    </div>
+                    {isExpanded && hasDetail && (
+                      <div className="pt-2 pb-1">
+                        <RationalePanel reasoning={rationale} sources={sources} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const SAME_ACTION_WINDOW_MS = 2 * 60 * 1000; // 2 min — trades within same cycle
 
 type TimelineTradeItem = {
   trade: Trade;
-  idx: number;
   matchedRun: ModelRun | null;
+  resultingPosition: TimelinePositionState;
 };
 
 function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): TimelineTradeItem[] {
   const matchWindowMs = 15 * 60 * 1000;
-  return chronTrades.map((trade, idx) => {
+  let currentPosition: TimelinePositionState = null;
+
+  return chronTrades.map((trade) => {
     const pred = trade.prediction;
     const tradeTs = new Date(trade.created_at).getTime();
     let matchedRun: ModelRun | null = null;
@@ -1297,7 +1534,27 @@ function matchTradesToRuns(chronTrades: Trade[], chronRuns: ModelRun[]): Timelin
       }
     }
 
-    return { trade, idx, matchedRun };
+    const qty = getExecutedTradeQuantity(trade);
+    const side = trade.side?.toUpperCase() ?? null;
+    const isSell = trade.action?.toUpperCase() === "SELL";
+    if (qty > 0 && side) {
+      if (isSell) {
+        if (currentPosition?.side === side) {
+          const remaining = Math.max(0, currentPosition.quantity - qty);
+          currentPosition = remaining > 0 ? { quantity: remaining, side } : null;
+        }
+      } else if (currentPosition?.side === side) {
+        currentPosition = { quantity: currentPosition.quantity + qty, side };
+      } else {
+        currentPosition = { quantity: qty, side };
+      }
+    }
+
+    return {
+      trade,
+      matchedRun,
+      resultingPosition: currentPosition ? { ...currentPosition } : null,
+    };
   });
 }
 
@@ -1307,1352 +1564,7 @@ function unmatchedTimelineRuns(tradesWithRuns: TimelineTradeItem[], chronRuns: M
       .map((item) => item.matchedRun?.id)
       .filter((id): id is number => id != null)
   );
-  return chronRuns.filter((run) => !matchedIds.has(run.id) && isHoldLikeDecision(run.decision));
-}
-
-function countRenderableCycleEvaluations(
-  cycleEvaluations: CycleEvaluation[],
-  row: UnifiedMarketRow,
-): number {
-  const hasCurrentPendingExposure = (row.pending_shares ?? 0) > 0;
-  const hasCurrentOpenPosition = (row.position?.quantity ?? 0) > 0;
-  const hasTradeHistory = row.trades.length > 0;
-  const hasActionableEvaluation = cycleEvaluations.some((evaluation) => {
-    const actionType = evaluation.action?.type?.toLowerCase();
-    return actionType != null && actionType !== "hold";
-  });
-
-  return cycleEvaluations.filter((evaluation) => {
-    const actionType = evaluation.action?.type?.toLowerCase();
-
-    if (actionType !== "hold") {
-      return shouldRenderActionableEvaluation(evaluation, hasCurrentPendingExposure);
-    }
-
-    if (!hasActionableEvaluation && !hasTradeHistory) return true;
-    if (hasCurrentPendingExposure) return true;
-    if (hasCurrentOpenPosition) return true;
-    return false;
-  }).length;
-}
-
-function TimelineTab({
-  row,
-  modelRuns,
-  loadingRuns,
-  cycleEvaluations,
-  totalCycleEvaluations,
-  loadingEvaluations,
-  hasMore,
-  onLoadMore,
-}: {
-  row: UnifiedMarketRow;
-  modelRuns: ModelRun[] | null;
-  loadingRuns: boolean;
-  cycleEvaluations: CycleEvaluation[];
-  totalCycleEvaluations: number;
-  loadingEvaluations: boolean;
-  hasMore: boolean;
-  onLoadMore: () => void;
-}) {
-  const [expandedEntryId, setExpandedEntryId] = useState<string | null>(null);
-  const [showPnLChart, setShowPnLChart] = useState(false);
-
-  // Show trades in chronological order (oldest first)
-  const chronTrades = useMemo(
-    () => [...row.trades].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()),
-    [row.trades]
-  );
-
-  const chronRuns = useMemo(
-    () => [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
-    [modelRuns]
-  );
-
-  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns), [chronTrades, chronRuns]);
-  const unmatchedRuns = useMemo(() => unmatchedTimelineRuns(tradesWithRuns, chronRuns), [tradesWithRuns, chronRuns]);
-  const events = useMemo(() => {
-    // First sort chronologically to track positions correctly
-    const sortedEvaluations = [...cycleEvaluations].sort((a, b) => {
-      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-      return aTime - bTime; // Oldest first for position tracking
-    });
-
-    // Track positions and last orders as we process events
-    const positionsByMarket = new Map<string, { quantity: number; side: string }>();
-    const lastOrderByMarket = new Map<string, { evaluation: CycleEvaluation; idx: number; filled: boolean }>();
-
-    // First pass: mark superseded orders
-    const evaluationsWithSuperseding = sortedEvaluations.map((evaluation, idx) => {
-      const marketId = evaluation.market_id;
-      const order = evaluation.order;
-
-      // Look ahead to see if this unfilled order gets superseded
-      let wasSuperseded = false;
-      if (order && order.filled != null && order.filled < order.count) {
-        // Check if a later order for the same market supersedes this one
-        for (let j = idx + 1; j < sortedEvaluations.length; j++) {
-          const laterEval = sortedEvaluations[j];
-          if (laterEval.market_id === marketId && laterEval.order && laterEval.action?.type !== 'hold') {
-            wasSuperseded = true;
-            break;
-          }
-        }
-      }
-
-      return {
-        ...evaluation,
-        wasSuperseded,
-      } as any;
-    });
-
-    const getExecutedCount = (order: CycleEvaluation["order"] | null): number => {
-      if (!order) return 0;
-      return order.filled != null ? order.filled : order.count;
-    };
-
-    const applyPositionChange = (
-      currentPos: { quantity: number; side: string } | undefined,
-      actionType: string | undefined,
-      orderSide: string | null,
-      order: CycleEvaluation["order"] | null,
-    ): { quantity: number; side: string } | undefined => {
-      if (!order || !orderSide) return currentPos;
-
-      const executedCount = getExecutedCount(order);
-      if (executedCount <= 0) return currentPos;
-
-      if (actionType === "buy") {
-        if (currentPos?.side === orderSide) {
-          return {
-            quantity: currentPos.quantity + executedCount,
-            side: orderSide,
-          };
-        }
-
-        return {
-          quantity: executedCount,
-          side: orderSide,
-        };
-      }
-
-      if (actionType === "sell" && currentPos?.side === orderSide) {
-        const remaining = Math.max(0, currentPos.quantity - executedCount);
-        if (remaining === 0) return undefined;
-        return {
-          quantity: remaining,
-          side: orderSide,
-        };
-      }
-
-      return currentPos;
-    };
-
-    // Process each evaluation and detect position adjustments
-    const evaluationEvents = evaluationsWithSuperseding.map((evaluation, idx) => {
-      const marketId = evaluation.market_id;
-      const order = evaluation.order;
-      const orderSide = evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase();
-      const normalizedActionType = evaluation.action?.type?.toLowerCase();
-
-      let modifiedEvaluation = evaluation;
-
-      // Check if there was a previous unfilled order for this market
-      const lastOrder = lastOrderByMarket.get(marketId);
-      if (lastOrder && !lastOrder.filled && order && evaluation.action?.type !== 'hold') {
-        // Mark the previous order as superseded/cancelled
-        // We'll handle this by modifying the description of the current order
-        modifiedEvaluation = {
-          ...evaluation,
-          previousUnfilledOrder: lastOrder.evaluation.order,
-        } as any;
-      }
-
-      // Check if this is a position adjustment
-      if (order && marketId && orderSide && normalizedActionType === 'buy') {
-        const currentPos = positionsByMarket.get(marketId);
-
-        if (currentPos && currentPos.side === orderSide) {
-          // This is increasing an existing position - mark as adjustment
-          modifiedEvaluation = {
-            ...modifiedEvaluation,
-            action: {
-              ...evaluation.action,
-              type: "adjustment" as any,
-              description: `BUY ${orderSide} ${order.count}`,
-              originalDescription: evaluation.action?.description,
-            },
-          };
-        }
-      }
-
-      const currentPos = marketId ? positionsByMarket.get(marketId) : undefined;
-      const resultingPos = applyPositionChange(currentPos, normalizedActionType, orderSide, order);
-
-      if (resultingPos) {
-        positionsByMarket.set(marketId, resultingPos);
-      } else if (marketId && currentPos) {
-        positionsByMarket.delete(marketId);
-      }
-
-      if (resultingPos) {
-        modifiedEvaluation = {
-          ...modifiedEvaluation,
-          resultingPosition: resultingPos,
-        } as any;
-      }
-
-      // Track this order for future superseding detection
-      if (order && marketId) {
-        const isFilled = order.filled != null && order.filled === order.count;
-        lastOrderByMarket.set(marketId, {
-          evaluation,
-          idx,
-          filled: isFilled,
-        });
-      }
-
-      return {
-        type: "evaluation" as const,
-        key: `eval-${evaluation.id}-${idx}`,
-        sortTs: evaluation.timestamp ? new Date(evaluation.timestamp).getTime() : Date.now(),
-        evaluation: modifiedEvaluation,
-      };
-    });
-
-    // Group events by timestamp - events within 1 minute are considered same timestep
-    const grouped = new Map<number, typeof evaluationEvents[0][]>();
-
-    evaluationEvents.forEach(event => {
-      // Round to nearest minute
-      const roundedTs = Math.floor(event.sortTs / 60000) * 60000;
-
-      if (!grouped.has(roundedTs)) {
-        grouped.set(roundedTs, []);
-      }
-      grouped.get(roundedTs)!.push(event);
-    });
-
-    // Convert grouped events to final list
-    const finalEvents: typeof evaluationEvents = [];
-
-    grouped.forEach((eventsAtTime, timestamp) => {
-      if (eventsAtTime.length === 1) {
-        // Single event at this timestamp
-        finalEvents.push(eventsAtTime[0]);
-      } else {
-        // Multiple events at same timestamp - could be a complex adjustment
-        const sellEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'sell');
-        const buyEvent = eventsAtTime.find(e => e.evaluation.action?.type === 'buy' || e.evaluation.action?.type === 'adjustment');
-
-        if (sellEvent && buyEvent) {
-          // This is a SELL + BUY adjustment - create a combined event
-          finalEvents.push({
-            ...sellEvent,
-            type: "evaluation" as const,
-            key: `adjustment-${timestamp}`,
-            evaluation: {
-              ...sellEvent.evaluation,
-              action: {
-                type: "adjustment" as any,
-                description: `SELL ${sellEvent.evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() || ""} ${sellEvent.evaluation.order?.count || 0} → BUY ${buyEvent.evaluation.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() || ""} ${buyEvent.evaluation.order?.count || 0}`,
-                reason: "Position flip",
-              },
-              // Combine order information
-              adjustment: {
-                sell: sellEvent.evaluation,
-                buy: buyEvent.evaluation,
-              },
-              resultingPosition: (buyEvent.evaluation as any).resultingPosition,
-            } as any,
-          });
-        } else {
-          // Not a sell+buy adjustment, keep all events
-          finalEvents.push(...eventsAtTime);
-        }
-      }
-    });
-
-    const hasCurrentPendingExposure = (row.pending_shares ?? 0) > 0;
-    const hasCurrentOpenPosition = (row.position?.quantity ?? 0) > 0;
-
-    const hasActionableEvaluation = finalEvents.some((event) => {
-      const actionType = event.evaluation.action?.type?.toLowerCase();
-      return actionType != null && actionType !== "hold";
-    });
-    const hasTradeHistory = row.trades.length > 0;
-
-    // Sort all events by timestamp, newest first, then drop phantom rows:
-    // - HOLD evaluations on dead markets
-    // - zero-fill action rows once there is no longer any live pending exposure
-    return finalEvents
-      .sort((a, b) => b.sortTs - a.sortTs)
-      .filter((event) => {
-        const actionType = event.evaluation.action?.type?.toLowerCase();
-
-        if (actionType !== "hold") {
-          return shouldRenderActionableEvaluation(event.evaluation, hasCurrentPendingExposure);
-        }
-
-        const resultingPosition = (event.evaluation as any).resultingPosition;
-        if (!hasActionableEvaluation && !hasTradeHistory) return true;
-        if (hasCurrentPendingExposure) return true;
-        if (hasCurrentOpenPosition) return true;
-        if (!resultingPosition) return false;
-
-        return false;
-      });
-  }, [cycleEvaluations, row.pending_shares, row.position?.quantity, row.trades]);
-
-  type TradeEvent = { type: "trade"; key: string; sortTs: number; item: TimelineTradeItem };
-  type PredEvent = { type: "prediction"; key: string; sortTs: number; run: ModelRun };
-  type EvalEvent = { type: "evaluation"; key: string; sortTs: number; evaluation: CycleEvaluation };
-  type TradeGroupEvent = { type: "trade-group"; key: string; sortTs: number; items: TradeEvent[] };
-  type GroupedTimelineEvent = TradeEvent | PredEvent | EvalEvent | TradeGroupEvent;
-
-  const groupedEvents = useMemo((): GroupedTimelineEvent[] => {
-    // Since we only have evaluation events, just return them directly
-    // Later we can group SELL+BUY adjustments if needed
-    return events as EvalEvent[];
-  }, [events]);
-
-  // Sorted prediction timestamps (oldest first, deduplicated by exact timestamp)
-  const predTimes = useMemo(() => {
-    const unique = new Set<number>();
-    for (const run of [
-      ...tradesWithRuns.map((item) => item.matchedRun).filter((run): run is ModelRun => run != null),
-      ...unmatchedRuns,
-    ]) {
-      const ts = new Date(run.timestamp).getTime();
-      if (!isNaN(ts)) unique.add(ts);
-    }
-    return Array.from(unique).sort((a, b) => a - b);
-  }, [tradesWithRuns, unmatchedRuns]);
-
-  // Build skip gap markers between consecutive predictions based on CYCLE_SKIPPED events
-  const skipGaps = useMemo(() => {
-    const gaps: { afterMs: number; skippedCycles: number; actualCount: boolean }[] = [];
-
-    // Count CYCLE_SKIPPED runs between predictions
-    if (modelRuns) {
-      const sortedRuns = [...modelRuns].sort((a, b) =>
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-      );
-
-      let skipCount = 0;
-      let lastPredTime: number | null = null;
-
-      for (const run of sortedRuns) {
-        const runTime = new Date(run.timestamp).getTime();
-
-        if (run.decision === "CYCLE_SKIPPED") {
-          skipCount++;
-        } else if (skipCount > 0) {
-          // Found a non-skip run after skips
-          if (lastPredTime) {
-            gaps.push({
-              afterMs: lastPredTime,
-              skippedCycles: skipCount,
-              actualCount: true
-            });
-          }
-          skipCount = 0;
-          lastPredTime = runTime;
-        } else {
-          lastPredTime = runTime;
-        }
-      }
-
-      // Handle trailing skips (up to current time)
-      if (skipCount > 0 && lastPredTime) {
-        gaps.push({
-          afterMs: lastPredTime,
-          skippedCycles: skipCount,
-          actualCount: true
-        });
-      }
-    } else {
-      // Fallback to time-based estimation if no model runs available
-      const checkpoints = [...predTimes, Date.now()];
-      for (let i = 0; i + 1 < checkpoints.length; i++) {
-        const gap = checkpoints[i + 1] - checkpoints[i];
-        if (gap > SKIP_THRESHOLD_MS) {
-          const estimatedCycles = Math.floor(gap / CYCLE_INTERVAL_MS);
-          gaps.push({
-            afterMs: checkpoints[i],
-            skippedCycles: estimatedCycles,
-            actualCount: false
-          });
-        }
-      }
-    }
-
-    return gaps;
-  }, [predTimes, modelRuns]);
-
-  const skipGapsByAfterMs = useMemo(() => {
-    const map = new Map<number, Array<{ afterMs: number; skippedCycles: number; actualCount: boolean }>>();
-    for (const gap of skipGaps) {
-      const existing = map.get(gap.afterMs) ?? [];
-      existing.push(gap);
-      map.set(gap.afterMs, existing);
-    }
-    return map;
-  }, [skipGaps]);
-
-  // Pagination state for timeline events
-  const [visibleEventCount, setVisibleEventCount] = useState(10);
-  const paginatedGroupedEvents = useMemo(
-    () => groupedEvents.slice(0, visibleEventCount),
-    [groupedEvents, visibleEventCount]
-  );
-  const hasMoreEvents = groupedEvents.length > visibleEventCount;
-
-  // Calculate P&L data per cycle for the chart
-  const cyclePnLData = useMemo(() => {
-    // Group trades by cycle timestamp (rounded to nearest hour since cycles run hourly)
-    const cycleMap = new Map<number, { timestamp: number; trades: Trade[]; pnl: number }>();
-
-    // Process all trades and group them by cycle
-    chronTrades.forEach(trade => {
-      const tradeTs = new Date(trade.created_at).getTime();
-      // Round to nearest hour (cycle boundary)
-      const cycleTs = Math.floor(tradeTs / (60 * 60 * 1000)) * (60 * 60 * 1000);
-
-      if (!cycleMap.has(cycleTs)) {
-        cycleMap.set(cycleTs, { timestamp: cycleTs, trades: [], pnl: 0 });
-      }
-
-      const cycle = cycleMap.get(cycleTs)!;
-      cycle.trades.push(trade);
-
-      // Calculate P&L for this trade
-      const qty = trade.filled_shares || trade.count;
-      const price = trade.price_cents / 100;
-      const fee = trade.fee_paid || 0;
-      const isSell = trade.action?.toUpperCase() === "SELL";
-      // BUY = negative cash flow (spending), SELL = positive cash flow (receiving)
-      const cashFlow = isSell ? (qty * price) - fee : -((qty * price) + fee);
-      cycle.pnl += cashFlow;
-    });
-
-    // Convert to array and sort by timestamp
-    const cycles = Array.from(cycleMap.values()).sort((a, b) => a.timestamp - b.timestamp);
-
-    // Calculate cumulative P&L
-    let cumulativePnL = 0;
-    const chartData = cycles.map(cycle => {
-      cumulativePnL += cycle.pnl;
-      return {
-        time: new Date(cycle.timestamp).toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-          month: 'short',
-          day: 'numeric'
-        }),
-        timestamp: cycle.timestamp,
-        cyclePnL: cycle.pnl,
-        cumulativePnL: cumulativePnL,
-        tradeCount: cycle.trades.length
-      };
-    });
-
-    return chartData;
-  }, [chronTrades]);
-
-  // Show both cycle evaluations AND old timeline together
-  return (
-    <div>
-      {/* P&L Chart Toggle */}
-      {cyclePnLData.length > 0 && (
-        <div className="mb-3">
-          <button
-            onClick={() => setShowPnLChart(!showPnLChart)}
-            className="text-[10px] font-medium text-accent hover:text-accent/80 transition-colors"
-          >
-            {showPnLChart ? '▼' : '▶'} P&L per Cycle ({cyclePnLData.length} cycles)
-          </button>
-        </div>
-      )}
-
-      {/* P&L Chart */}
-      {showPnLChart && cyclePnLData.length > 0 && (
-        <div className="mb-4 p-3 bg-t-bg-secondary/30 rounded">
-          <div className="text-[9px] text-txt-muted uppercase tracking-widest font-medium mb-2">
-            Cumulative P&L per Trading Cycle
-          </div>
-          <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={cyclePnLData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
-              <XAxis
-                dataKey="time"
-                tick={{ fontSize: 8, fill: "#888" }}
-                angle={-45}
-                textAnchor="end"
-                height={60}
-              />
-              <YAxis
-                tick={{ fontSize: 8, fill: "#888" }}
-                width={40}
-                tickFormatter={(v) => `$${v.toFixed(0)}`}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#1a1a1a",
-                  border: "1px solid #333",
-                  borderRadius: "4px",
-                }}
-                labelStyle={{ fontSize: 10, color: "#ccc" }}
-                formatter={(value: any, name: string) => {
-                  if (name === "Cumulative P&L") {
-                    const num = Number(value);
-                    return [`$${num.toFixed(2)}`, name];
-                  }
-                  if (name === "Cycle P&L") {
-                    const num = Number(value);
-                    const sign = num >= 0 ? '+' : '';
-                    return [`${sign}$${num.toFixed(2)}`, name];
-                  }
-                  return [value, name];
-                }}
-              />
-              <Line
-                type="stepAfter"
-                dataKey="cumulativePnL"
-                stroke="#22c55e"
-                strokeWidth={2}
-                dot={{ r: 3, fill: "#22c55e" }}
-                name="Cumulative P&L"
-              />
-              <Line
-                type="monotone"
-                dataKey="cyclePnL"
-                stroke="#888"
-                strokeWidth={1}
-                strokeDasharray="5 5"
-                dot={{ r: 2, fill: "#888" }}
-                name="Cycle P&L"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-          <div className="mt-2 text-[9px] text-txt-muted">
-            Each point represents net P&L from trades executed in that cycle.
-            Current total: <span className={cyclePnLData.length > 0 ? pnlCls(cyclePnLData[cyclePnLData.length - 1].cumulativePnL) : ''}>
-              ${cyclePnLData.length > 0 ? cyclePnLData[cyclePnLData.length - 1].cumulativePnL.toFixed(2) : '0.00'}
-            </span>
-          </div>
-        </div>
-      )}
-
-      <div className="relative pl-4 max-h-[400px] overflow-y-auto">
-      <div className="absolute left-[5px] top-2 bottom-2 w-px bg-t-border" />
-
-      {loadingEvaluations && (
-        <div className="mb-2 text-[9px] text-txt-muted italic">Loading cycle evaluations...</div>
-      )}
-      {loadingRuns && !loadingEvaluations && (
-        <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
-      )}
-
-      {/* Show "No predictions yet" if no events */}
-      {!loadingEvaluations && !loadingRuns && events.length === 0 && (
-        <div className="text-[10px] text-txt-muted italic py-4">No predictions yet</div>
-      )}
-
-      {/* Unified Timeline Section - Trades, Model Predictions and Cycle Evaluations */}
-      {events.length > 0 && (
-        <>
-
-      {paginatedGroupedEvents.map((event, eventIdx) => {
-        const currentRunTs = event.type === "prediction"
-          ? new Date(event.run.timestamp).getTime()
-          : event.type === "evaluation"
-            ? event.evaluation.timestamp ? new Date(event.evaluation.timestamp).getTime() : null
-            : event.type === "trade-group"
-              ? event.items[event.items.length - 1].sortTs
-              : event.item.matchedRun
-                ? new Date(event.item.matchedRun.timestamp).getTime()
-                : null;
-        const nextRunTs = (() => {
-          for (const nextEvent of paginatedGroupedEvents.slice(eventIdx + 1)) {
-            if (nextEvent.type === "prediction") return new Date(nextEvent.run.timestamp).getTime();
-            if (nextEvent.type === "evaluation" && nextEvent.evaluation.timestamp) return new Date(nextEvent.evaluation.timestamp).getTime();
-            if (nextEvent.type === "trade-group") return nextEvent.items[nextEvent.items.length - 1].sortTs;
-            if (nextEvent.type === "trade" && nextEvent.item.matchedRun) return new Date(nextEvent.item.matchedRun.timestamp).getTime();
-          }
-          return null;
-        })();
-        const showGapAfterEvent = currentRunTs != null && currentRunTs !== nextRunTs;
-
-        if (event.type === "trade-group") {
-          return (
-            <div key={event.key}>
-              {(() => {
-                // Shared rationale: first trade in group that has reasoning/sources
-                const groupReasoning = event.items.map(s => s.item.trade.prediction?.reasoning ?? s.item.matchedRun?.reasoning ?? null).find(r => r) ?? null;
-                const groupSources = event.items.map(s => s.item.trade.prediction?.sources ?? s.item.matchedRun?.sources ?? []).find(s => s.length > 0) ?? [];
-                const hasGroupDetail = !!(groupReasoning || groupSources.length > 0);
-                const isGroupExpanded = expandedEntryId === event.key;
-
-                // Pre-compute display values for each sub-trade
-                const subRows = event.items.map((subEvent) => {
-                  const { trade, idx } = subEvent.item;
-                  const qty = trade.filled_shares || trade.count;
-                  const isSell = trade.action?.toUpperCase() === "SELL";
-                  const cost = (trade.price_cents / 100) * qty;
-                  const fee = trade.fee_paid || 0;
-                  let netShares = 0, totalCost = 0, sellPnl = 0;
-                  for (let i = 0; i <= idx; i++) {
-                    const t = chronTrades[i];
-                    const tQty = t.filled_shares || t.count;
-                    const tSell = (t.action ?? "BUY").toUpperCase() === "SELL";
-                    let tPrice = t.price_cents / 100;
-                    if (tPrice > 1.0) tPrice /= 100;
-                    const tFee = t.fee_paid || 0;
-                    const isYes = t.side.toLowerCase() === "yes";
-                    if (tSell) {
-                      const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
-                      sellPnl = (tPrice - avgAtSell) * tQty - tFee;
-                      if (isYes) { netShares -= tQty; totalCost -= avgAtSell * tQty; }
-                      else { netShares += tQty; totalCost += avgAtSell * tQty; }
-                      if (Math.abs(netShares) < 0.001) { netShares = 0; totalCost = 0; }
-                    } else {
-                      if (isYes) { netShares += tQty; totalCost += (tQty * tPrice) + tFee; }
-                      else { netShares -= tQty; totalCost -= (tQty * tPrice) + tFee; }
-                      sellPnl = 0;
-                    }
-                  }
-                  return { trade, qty, isSell, cost, fee, currentSellPnl: isSell ? sellPnl : 0, cumulativeQty: Math.abs(netShares), cumulativeSide: netShares > 0 ? "YES" : netShares < 0 ? "NO" : null, totalCost };
-                });
-
-                return (
-                  <div className="relative py-1.5">
-                    <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
-                    <div
-                      role="button"
-                      className={`rounded px-1 -mx-1 transition-colors ${hasGroupDetail ? "cursor-pointer hover:bg-t-panel-hover/40" : ""}`}
-                      onClick={() => { if (!hasGroupDetail) return; setExpandedEntryId(isGroupExpanded ? null : event.key); }}
-                    >
-                      {subRows.map(({ trade, qty, isSell, cost, fee, currentSellPnl, cumulativeQty, cumulativeSide, totalCost }, subIdx) => {
-                        const pred = trade.prediction;
-                        return (
-                          <div key={subIdx} className={`flex items-start gap-3 ${subIdx > 0 ? "mt-0.5" : ""}`}>
-                            <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0 text-right pr-1">
-                              {subIdx === 0 ? fmtTime(trade.created_at) : "↳"}
-                            </div>
-                            <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
-                              {isSell && <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>}
-                              <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
-                                {trade.side.toUpperCase()}
-                              </span>
-                              <span className="text-txt-primary">{isSell ? "-" : "+"}{qty} @ {trade.price_cents}c</span>
-                              <span className="text-warn">{formatFeeLabel(fee)}</span>
-                              <span className="text-txt-muted">{isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}</span>
-                              {isSell && <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>{currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}</span>}
-                              <span className="text-txt-muted">total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}</span>
-                              {pred && (
-                                <>
-                                  <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
-                                  <span className="text-accent">model: {(pred.p_yes * 100).toFixed(0)}%</span>
-                                  <span className={pnlCls(pred.p_yes - pred.yes_ask)}>edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}{((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp</span>
-                                </>
-                              )}
-                              <span className={`text-[9px] px-1 py-px rounded font-bold ${trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"}`}>
-                                {trade.dry_run ? "DRY" : "LIVE"}
-                              </span>
-                              {subIdx === 0 && groupSources.length > 0 && <span className="text-[9px] text-txt-muted">{groupSources.length} source{groupSources.length !== 1 ? "s" : ""}</span>}
-                              {subIdx === 0 && hasGroupDetail && <span className="text-[8px] text-txt-muted ml-auto">{isGroupExpanded ? "▲" : "▼"}</span>}
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {isGroupExpanded && hasGroupDetail && (
-                        <div className="flex items-start gap-3 pt-1">
-                          <div className="w-[100px] flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <RationalePanel reasoning={groupReasoning} sources={groupSources} />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-              {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
-                return (
-                  <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
-                    <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
-                    <div className="w-[100px] flex-shrink-0" />
-                    <div className="text-[9px] text-txt-muted italic">
-                      {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
-                      {isOngoing && " (monitoring continues)"}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        }
-
-        if (event.type === "evaluation") {
-          const { evaluation } = event;
-          const edge = evaluation.prediction?.edge ?? null;
-          const isPositiveEdge = edge != null && edge >= 0;
-          const actionType = evaluation.action?.type?.toUpperCase() ?? "HOLD";
-          const isHoldAction = isHoldLikeDecision(actionType);
-          const holdExplanation = isHoldAction ? buildHoldExplanation(evaluation) : null;
-          const modelRationale =
-            evaluation.action?.rationale
-            || (isHoldAction ? evaluation.action?.reason : null)
-            || (!isHoldAction ? evaluation.action?.reason : null)
-            || null;
-          const isExpanded = expandedEntryId === event.key;
-          const hasRationale = !!(modelRationale || holdExplanation || evaluation.action?.description);
-
-          // Extract YES/NO from action description (e.g., "BUY 10 YES" -> "YES")
-          const actionDescription = evaluation.action?.description ?? "";
-          const sideMatch = actionDescription.match(/\b(YES|NO)\b/i);
-          const side = (
-            sideMatch ? sideMatch[1].toUpperCase() : (evaluation.order?.side?.toUpperCase() ?? null)
-          );
-          const adjustmentMatch = actionDescription.match(/^(BUY|SELL)\s+(YES|NO)\s+(\d+)/i);
-          const adjustmentVerb = adjustmentMatch ? adjustmentMatch[1].toUpperCase() : null;
-          const adjustmentSide = adjustmentMatch ? adjustmentMatch[2].toUpperCase() : side;
-          const adjustmentCount = adjustmentMatch ? adjustmentMatch[3] : null;
-          const orderPriceLabel = formatPriceCents(evaluation.order?.price_cents);
-          const orderFee = evaluation.order?.fee_paid ?? 0;
-          const orderStatus = normalizeOrderStatus(evaluation.order?.status);
-
-          // Check if this is a position adjustment
-          const isAdjustment = actionType === "ADJUSTMENT";
-          const adjustment = (evaluation as any).adjustment;
-
-          if (isAdjustment && adjustment) {
-            const adjustmentSellSide =
-              adjustment.sell.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() ?? null;
-            const adjustmentBuySide =
-              adjustment.buy.action?.description?.match(/\b(YES|NO)\b/i)?.[1]?.toUpperCase() ?? null;
-
-            // Render position adjustment (SELL + BUY in same timestep)
-            return (
-              <div key={event.key}>
-                <div className="relative py-1.5">
-                  {/* Purple dot for adjustments */}
-                  <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-500 border-2 border-t-bg z-10" />
-
-                  <div className="flex items-start gap-3">
-                    <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-                      {evaluation.timestamp ? fmtTime(evaluation.timestamp) : "--:--"}
-                    </div>
-
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
-                        <span className="text-[9px] px-1 py-px rounded font-bold bg-purple-900/30 text-purple-400">
-                          ADJUST
-                        </span>
-
-                        {/* Show SELL part with side */}
-                        <span className="text-loss font-semibold">SELL</span>
-                        {adjustmentSellSide && (
-                          <span className={sideToneClass(adjustmentSellSide)}>
-                            {adjustmentSellSide} {adjustment.sell.order?.count || 0}
-                          </span>
-                        )}
-                        {formatPriceCents(adjustment.sell.order?.price_cents) && (
-                          <span className="text-txt-muted">
-                            {formatPriceCents(adjustment.sell.order?.price_cents)}
-                          </span>
-                        )}
-                        <span className="text-warn">
-                          {formatFeeLabel(adjustment.sell.order?.fee_paid ?? 0)}
-                        </span>
-                        {adjustment.sell.order && (
-                          <span className={`text-[9px] ${
-                            adjustment.sell.order.filled === adjustment.sell.order.count ? 'text-profit-dim' : 'text-txt-muted'
-                          }`}>
-                            ({adjustment.sell.order.filled}/{adjustment.sell.order.count} filled)
-                          </span>
-                        )}
-
-                        <span className="text-txt-muted">→</span>
-
-                        {/* Show BUY part with side */}
-                        <span className="text-profit font-semibold">BUY</span>
-                        {adjustmentBuySide && (
-                          <span className={sideToneClass(adjustmentBuySide)}>
-                            {adjustmentBuySide} {adjustment.buy.order?.count || 0}
-                          </span>
-                        )}
-                        {formatPriceCents(adjustment.buy.order?.price_cents) && (
-                          <span className="text-txt-muted">
-                            {formatPriceCents(adjustment.buy.order?.price_cents)}
-                          </span>
-                        )}
-                        <span className="text-warn">
-                          {formatFeeLabel(adjustment.buy.order?.fee_paid ?? 0)}
-                        </span>
-                        {adjustment.buy.order && (
-                          <span className={`text-[9px] ${
-                            adjustment.buy.order.filled === adjustment.buy.order.count ? 'text-profit-dim' : 'text-txt-muted'
-                          }`}>
-                            ({adjustment.buy.order.filled}/{adjustment.buy.order.count} filled)
-                          </span>
-                        )}
-
-                        {(evaluation as any).resultingPosition && (
-                          <span>
-                            <span className="text-txt-muted">hold:</span>{" "}
-                            <span className={sideToneClass((evaluation as any).resultingPosition.side, true)}>
-                              {(evaluation as any).resultingPosition.quantity} {(evaluation as any).resultingPosition.side}
-                            </span>
-                          </span>
-                        )}
-
-                        {/* Show edge if available */}
-                        {adjustment.buy.prediction?.edge != null && (
-                          <span className={adjustment.buy.prediction.edge >= 0 ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
-                            edge: {adjustment.buy.prediction.edge >= 0 ? '+' : ''}{adjustment.buy.prediction.edge.toFixed(1)}%
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          }
-
-          return (
-            <div key={event.key}>
-              <div className="relative py-1.5">
-                {/* Different colored dot for evaluations - use orange for HOLD, green for BUY, purple for ADJUSTMENT, red for SELL */}
-                <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
-                  isHoldAction ? "bg-orange-400" :
-                  actionType === "SKIP" ? "bg-txt-muted" :
-                  actionType === "ADJUSTMENT" ? "bg-purple-500" :
-                  actionType === "BUY" ? "bg-profit" : "bg-loss"
-                }`} />
-
-                <div className="flex items-start gap-3">
-                  <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-                    {evaluation.timestamp ? fmtTime(evaluation.timestamp) : "--:--"}
-                  </div>
-
-                  <div className="flex-1 min-w-0 overflow-hidden">
-                    <button
-                      type="button"
-                      className={`w-full text-left rounded px-1 -mx-1 transition-colors ${
-                        hasRationale ? "cursor-pointer hover:bg-t-panel-hover/40" : ""
-                      }`}
-                      onClick={() => {
-                        if (!hasRationale) return;
-                        setExpandedEntryId(isExpanded ? null : event.key);
-                      }}
-                    >
-                      <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
-                      {/* Action badge */}
-                      <span className={`text-[9px] px-1 py-px rounded font-bold ${
-                        isHoldAction ? "bg-yellow-900/30 text-yellow-500" :
-                        actionType === "SKIP" ? "bg-t-border/50 text-txt-muted" :
-                        actionType === "ADJUSTMENT" ? "bg-purple-900/30 text-purple-400" :
-                        actionType === "BUY" ? "bg-profit-dim text-profit" :
-                        "bg-loss-dim text-loss"
-                      }`}>
-                        {actionType === "ADJUSTMENT" ? "ADJUST" : isHoldAction ? "HOLD" : actionType}
-                      </span>
-
-                      {/* For adjustments, show the change */}
-                      {actionType === "ADJUSTMENT" && evaluation.action?.description && (
-                        <>
-                          <span className={adjustmentVerb === "SELL" ? "text-loss font-semibold" : "text-profit font-semibold"}>
-                            {adjustmentVerb ?? "BUY"}
-                          </span>
-                          {adjustmentSide && adjustmentCount && (
-                            <span className={sideToneClass(adjustmentSide)}>
-                              {adjustmentSide} {adjustmentCount}
-                            </span>
-                          )}
-                          {orderPriceLabel && (
-                            <span className="text-txt-muted">
-                              {orderPriceLabel}
-                            </span>
-                          )}
-                          <span className="text-warn">
-                            {formatFeeLabel(orderFee)}
-                          </span>
-                        </>
-                      )}
-
-                      {(evaluation as any).resultingPosition && actionType === "ADJUSTMENT" && (
-                        <span>
-                          <span className="text-txt-muted">hold:</span>{" "}
-                          <span className={sideToneClass((evaluation as any).resultingPosition.side, true)}>
-                            {(evaluation as any).resultingPosition.quantity} {(evaluation as any).resultingPosition.side}
-                          </span>
-                        </span>
-                      )}
-
-                      {evaluation.order && evaluation.order.count > 0 && (
-                        <>
-                          {actionType === "ADJUSTMENT" ? (
-                            <span className={`text-[10px] font-mono ${
-                              evaluation.order.filled === evaluation.order.count
-                                ? 'text-profit font-semibold'
-                                : (evaluation.order.filled ?? 0) > 0
-                                ? 'text-accent font-semibold'
-                                : 'text-txt-muted'
-                            }`}>
-                              ({evaluation.order.filled ?? 0}/{evaluation.order.count} filled)
-                            </span>
-                          ) : (
-                            <>
-                              {isHoldAction && (
-                                <span className="text-loss font-semibold">
-                                  {evaluation.order.action?.toUpperCase() ?? "SELL"}
-                                </span>
-                              )}
-                              <span className={sideToneClass(side)}>
-                                {side ? `${side} ${evaluation.order.count} shares` : `${evaluation.order.count} shares`}
-                              </span>
-                              {orderPriceLabel && (
-                                <span className="text-txt-muted">
-                                  {orderPriceLabel}
-                                </span>
-                              )}
-                              <span className="text-warn">
-                                {formatFeeLabel(orderFee)}
-                              </span>
-                              {(evaluation as any).resultingPosition && (
-                                <span>
-                                  <span className="text-txt-muted">hold:</span>{" "}
-                                  <span className={sideToneClass((evaluation as any).resultingPosition.side, true)}>
-                                    {(evaluation as any).resultingPosition.quantity} {(evaluation as any).resultingPosition.side}
-                                  </span>
-                                </span>
-                              )}
-                              <span className={`text-[10px] font-mono ${
-                                evaluation.order.filled != null && evaluation.order.filled === evaluation.order.count
-                                  ? 'text-profit font-semibold'
-                                : evaluation.order.filled != null && evaluation.order.filled > 0
-                                  ? 'text-accent font-semibold'
-                                : 'text-txt-muted'
-                              }`}>
-                                {evaluation.order.filled != null ? (
-                                  evaluation.order.filled === evaluation.order.count ? (
-                                    '✓ filled'
-                                  ) : (
-                                    (evaluation as any).wasSuperseded ? (
-                                      `cancelled`
-                                    ) : (
-                                      `(${evaluation.order.filled}/${evaluation.order.count} filled)`
-                                    )
-                                  )
-                                ) : (
-                                  'ordered'
-                                )}
-                              </span>
-                              {orderStatus && <StatusBadge status={orderStatus} />}
-                              {(evaluation as any).previousUnfilledOrder && (
-                                <span className="text-[9px] text-txt-muted italic">
-                                  (replaces {(evaluation as any).previousUnfilledOrder.count} unfilled)
-                                </span>
-                              )}
-                            </>
-                          )}
-                        </>
-                      )}
-
-                      {/* Model probability */}
-                      {evaluation.prediction?.p_yes != null && (
-                        <span className="text-accent">
-                          model: {(evaluation.prediction.p_yes * 100).toFixed(0)}%
-                        </span>
-                      )}
-
-                      {/* Market price */}
-                      {evaluation.prediction?.yes_ask != null && (
-                        <span className="text-txt-secondary">
-                          mkt: {(evaluation.prediction.yes_ask * 100).toFixed(0)}c
-                        </span>
-                      )}
-
-                      {/* Edge with color coding - only show for actionable decisions, not HOLDs */}
-                      {edge != null && !isHoldAction && (
-                        <span className={isPositiveEdge ? 'text-profit font-semibold' : 'text-loss font-semibold'}>
-                          edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
-                        </span>
-                      )}
-                      {/* For HOLD, show why we're not trading */}
-                      {edge != null && isHoldAction && (
-                        <span className={`${holdEdgeToneClass()} text-[9px]`}>
-                          edge: {edge >= 0 ? '+' : ''}{edge.toFixed(1)}%
-                        </span>
-                      )}
-
-                      {/* Show expand indicator if has rationale */}
-                      {hasRationale && (
-                        <span className="text-[8px] text-txt-muted ml-auto">
-                          {isExpanded ? "▲" : "▼"}
-                        </span>
-                      )}
-                    </div>
-                    </button>
-
-                    {/* Expanded rationale section */}
-                    {isExpanded && hasRationale && (
-                      <div className="mt-2 p-2 bg-t-panel-hover/30 rounded text-[10px] text-txt-secondary">
-                        {isHoldAction && holdExplanation && (
-                          <div className="mb-2">
-                            <div className="font-semibold mb-1 text-txt-primary">Why Holding:</div>
-                            <div className="text-txt-muted whitespace-pre-wrap">
-                              {holdExplanation}
-                            </div>
-                          </div>
-                        )}
-                        <div className="font-semibold mb-1">Model Rationale:</div>
-                        <div className="text-txt-muted whitespace-pre-wrap">
-                          {modelRationale || "No rationale available"}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
-                return (
-                  <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
-                    <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
-                    <div className="w-[100px] flex-shrink-0" />
-                    <div className="text-[9px] text-txt-muted italic">
-                      {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
-                      {isOngoing && " (monitoring continues)"}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        }
-
-        if (event.type === "prediction") {
-          const { run } = event;
-          const detailReasoning = run.reasoning ?? null;
-          const detailSources = run.sources ?? [];
-          const hasDetail = !!(detailReasoning || detailSources.length > 0);
-          const isExpanded = expandedEntryId === event.key;
-
-          return (
-            <div key={event.key}>
-              <div className="relative py-1.5">
-                <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-400 border-2 border-t-bg z-10" />
-
-                <div className="flex items-start gap-3">
-                  <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-                    {fmtTime(run.timestamp)}
-                  </div>
-
-                  <div className="flex-1 min-w-0 overflow-hidden">
-                    <button
-                      type="button"
-                      className={`w-full flex flex-wrap items-center gap-2.5 rounded px-1 -mx-1 text-[10px] font-mono text-left transition-colors ${
-                        hasDetail ? "hover:bg-t-panel-hover/40" : ""
-                      }`}
-                      onClick={() => {
-                        if (!hasDetail) return;
-                        setExpandedEntryId(isExpanded ? null : event.key);
-                      }}
-                    >
-                      <span className={`font-medium ${MODEL_COLORS[0]}`}>
-                        {shortModelName(run.model_name)}
-                      </span>
-                      <span className="text-accent">
-                        p: {run.p_yes != null ? `${(run.p_yes * 100).toFixed(1)}%` : "--"}
-                      </span>
-                      <span
-                        className={`text-[9px] px-1 py-px rounded font-bold ${
-                          run.decision === "BUY_YES"
-                            ? "bg-profit-dim text-profit"
-                            : run.decision === "BUY_NO"
-                              ? "bg-loss-dim text-loss"
-                              : isHoldLikeDecision(run.decision)
-                                ? "bg-yellow-900/30 text-yellow-500"
-                                : "bg-t-border/30 text-txt-muted"
-                        }`}
-                      >
-                        {run.decision}
-                      </span>
-                      {detailSources.length > 0 && (
-                        <span className="text-[9px] text-txt-muted">
-                          {detailSources.length} source{detailSources.length !== 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {hasDetail && (
-                        <span className="text-[8px] text-txt-muted ml-auto">
-                          {isExpanded ? "▲" : "▼"}
-                        </span>
-                      )}
-                    </button>
-                    {isExpanded && hasDetail && (
-                      <div className="pt-1">
-                        <RationalePanel reasoning={detailReasoning} sources={detailSources} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-                const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
-                return (
-                  <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
-                    <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
-                    <div className="w-[100px] flex-shrink-0" />
-                    <div className="text-[9px] text-txt-muted italic">
-                      {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
-                      {isOngoing && " (monitoring continues)"}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        }
-
-        const { trade, idx, matchedRun } = event.item;
-        const qty = trade.filled_shares || trade.count;
-        const isSell = trade.action?.toUpperCase() === "SELL";
-        const cost = (trade.price_cents / 100) * qty;
-        const pred = trade.prediction;
-        const detailReasoning = pred?.reasoning ?? matchedRun?.reasoning ?? null;
-        const detailSources = pred?.sources ?? matchedRun?.sources ?? [];
-        const hasDetail = !!(detailReasoning || detailSources.length > 0);
-        const isExpanded = expandedEntryId === event.key;
-
-        // Replay trades up to this row using the same signed-share logic as the server.
-        let netShares = 0;
-        let totalCost = 0;
-        let sellPnl = 0;
-        for (let i = 0; i <= idx; i++) {
-          const t = chronTrades[i];
-          const tQty = t.filled_shares || t.count;
-          const tSell = (t.action ?? "BUY").toUpperCase() === "SELL";
-          let tPrice = t.price_cents / 100;
-          if (tPrice > 1.0) tPrice /= 100;
-          const tFee = t.fee_paid || 0;
-          const isYes = t.side.toLowerCase() === "yes";
-
-          if (tSell) {
-            const avgAtSell = Math.abs(netShares) > 0.001 ? Math.abs(totalCost / netShares) : 0;
-            sellPnl = (tPrice - avgAtSell) * tQty - tFee;
-            if (isYes) {
-              netShares -= tQty;
-              totalCost -= avgAtSell * tQty;
-            } else {
-              netShares += tQty;
-              totalCost += avgAtSell * tQty;
-            }
-            if (Math.abs(netShares) < 0.001) {
-              netShares = 0;
-              totalCost = 0;
-            }
-          } else {
-            if (isYes) {
-              netShares += tQty;
-              totalCost += (tQty * tPrice) + tFee;
-            } else {
-              netShares -= tQty;
-              totalCost -= (tQty * tPrice) + tFee;
-            }
-            sellPnl = 0;
-          }
-        }
-        const cumulativeQty = Math.abs(netShares);
-        const cumulativeSide = netShares > 0 ? "YES" : netShares < 0 ? "NO" : null;
-        const currentSellPnl = isSell ? sellPnl : 0;
-        const tradeFee = trade.fee_paid || 0;
-
-        return (
-          <div key={event.key}>
-            <div className="relative py-1.5">
-              <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-accent border-2 border-t-bg z-10" />
-
-              <div className="flex items-start gap-3">
-                <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-                  {fmtTime(trade.created_at)}
-                </div>
-
-                <div className="flex-1 min-w-0 overflow-hidden">
-                  <button
-                    type="button"
-                    className={`w-full flex flex-wrap items-center gap-2.5 rounded px-1 -mx-1 text-[10px] font-mono text-left transition-colors ${
-                      hasDetail ? "hover:bg-t-panel-hover/40" : ""
-                    }`}
-                    onClick={() => {
-                      if (!hasDetail) return;
-                      setExpandedEntryId(isExpanded ? null : event.key);
-                    }}
-                  >
-                    {isSell && (
-                      <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
-                    )}
-                    <span
-                      className={`text-[9px] px-1 py-px rounded font-bold ${
-                        trade.side.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"
-                      }`}
-                    >
-                      {trade.side.toUpperCase()}
-                    </span>
-                    <span className="text-txt-primary">
-                      {isSell ? "-" : "+"}{qty} @ {trade.price_cents}c
-                    </span>
-                    <span className="text-warn">
-                      {formatFeeLabel(tradeFee)}
-                    </span>
-                    <span className="text-txt-muted">
-                      {isSell ? "proceeds" : "cost"}: ${cost.toFixed(2)}
-                    </span>
-                    {isSell && (
-                      <span className={currentSellPnl >= 0 ? "text-profit" : "text-loss"}>
-                        {currentSellPnl >= 0 ? "+" : ""}{currentSellPnl.toFixed(2)}
-                      </span>
-                    )}
-                    <span className="text-txt-muted">
-                      total: {cumulativeQty}{cumulativeSide ? ` ${cumulativeSide}` : ""} · ${Math.abs(totalCost).toFixed(2)}
-                    </span>
-                    {pred && (
-                      <>
-                        <span className="text-txt-secondary">mkt: {(pred.yes_ask * 100).toFixed(0)}c</span>
-                        <span className="text-accent">
-                          model: {(pred.p_yes * 100).toFixed(0)}%
-                        </span>
-                        <span className={pnlCls(pred.p_yes - pred.yes_ask)}>
-                          edge: {pred.p_yes - pred.yes_ask >= 0 ? "+" : ""}
-                          {((pred.p_yes - pred.yes_ask) * 100).toFixed(0)}pp
-                        </span>
-                      </>
-                    )}
-                    <span
-                      className={`text-[9px] px-1 py-px rounded font-bold ${
-                        trade.dry_run ? "bg-warn-dim text-warn" : "bg-profit-dim text-profit"
-                      }`}
-                    >
-                      {trade.dry_run ? "DRY" : "LIVE"}
-                    </span>
-                    {detailSources.length > 0 && (
-                      <span className="text-[9px] text-txt-muted">
-                        {detailSources.length} source{detailSources.length !== 1 ? "s" : ""}
-                      </span>
-                    )}
-                    {hasDetail && (
-                      <span className="text-[8px] text-txt-muted ml-auto">
-                        {isExpanded ? "▲" : "▼"}
-                      </span>
-                    )}
-                  </button>
-                  {isExpanded && hasDetail && (
-                    <div className="pt-1">
-                      <RationalePanel reasoning={detailReasoning} sources={detailSources} />
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {showGapAfterEvent && (skipGapsByAfterMs.get(currentRunTs!) ?? []).map((gap, i) => {
-              const isOngoing = gap.afterMs === predTimes[predTimes.length - 1] || predTimes.length === 0;
-              return (
-                <div key={`${event.key}-gap-${i}`} className="relative flex items-start gap-3 py-1">
-                  <div className="absolute left-[-12px] top-[7px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
-                  <div className="w-[100px] flex-shrink-0" />
-                  <div className="text-[9px] text-txt-muted italic">
-                    {gap.actualCount ? "" : "~"}{gap.skippedCycles} cycle{gap.skippedCycles !== 1 ? "s" : ""} skipped — price unchanged
-                    {isOngoing && " (monitoring continues)"}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
-
-          {/* Current state */}
-          <div className="relative flex items-start gap-3 py-1.5 mt-1 border-t border-t-border/30">
-            <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-txt-secondary border-2 border-t-bg z-10" />
-            <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
-              NOW
-            </div>
-        <div className="flex items-center gap-3 text-[10px] font-mono">
-          {row.position && row.position.quantity > 0 ? (
-            (() => {
-              const heldBid = row.position.contract.toLowerCase() === "yes"
-                ? (row.yes_bid ?? (row.no_ask != null ? 1.0 - row.no_ask : null))
-                : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null));
-              return (
-                <>
-              <span className="text-txt-primary">
-                Holding {row.position.quantity}{" "}
-                <span className={row.position.contract.toLowerCase() === "yes" ? "text-profit" : "text-loss"}>
-                  {row.position.contract.toUpperCase()}
-                </span>
-              </span>
-              <span className="text-txt-muted">
-                avg: {(row.position.avg_price * 100).toFixed(0)}c
-              </span>
-              {heldBid != null && (
-                <span className="text-txt-muted">
-                  mkt: {(heldBid * 100).toFixed(0)}c
-                </span>
-              )}
-              <span className={`font-medium ${pnlCls(liveNetPnl(row) ?? 0)}`}>
-                P&L: {liveNetPnl(row) != null ? fmtDollar(liveNetPnl(row)!) : "--"}
-              </span>
-                </>
-              );
-            })()
-          ) : (
-            <span className="text-txt-muted">No open position</span>
-          )}
-        </div>
-      </div>
-
-      {/* Show more button for timeline events */}
-      {hasMoreEvents && (
-        <div className="mt-3 mb-2 flex justify-center">
-          <button
-            onClick={() => setVisibleEventCount(prev => prev + 10)}
-            className="px-3 py-1 text-[10px] font-medium text-txt-secondary bg-t-bg-secondary/50 hover:bg-t-bg-secondary hover:text-txt-primary rounded transition-colors"
-          >
-            Show more ({groupedEvents.length - visibleEventCount} remaining)
-          </button>
-        </div>
-      )}
-
-      {/* Show more button for loading more cycle evaluations from API */}
-      {hasMore && (
-        <div className="mt-1 flex justify-center">
-          <button
-            onClick={onLoadMore}
-            disabled={loadingEvaluations}
-            className="px-3 py-1 text-[10px] font-medium text-accent bg-accent/10 hover:bg-accent/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loadingEvaluations ? 'Loading...' : `Load older evaluations (${totalCycleEvaluations - cycleEvaluations.length} remaining)`}
-          </button>
-        </div>
-      )}
-        </>
-      )}
-
-      {/* Show "No activity" only if both are empty */}
-      {!cycleEvaluations.length && !events.length && !loadingEvaluations && !loadingRuns && (
-        <div className="text-[10px] text-txt-muted">No activity for this market</div>
-      )}
-      </div>
-    </div>
-  );
+  return chronRuns.filter((run) => !matchedIds.has(run.id));
 }
 
 // ── Tab 2: Trade History ────────────────────────────────────
@@ -2662,12 +1574,10 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
     return <div className="text-[10px] text-txt-muted">No trades for this market</div>;
   }
 
-  // Sort trades by created_at descending (newest first)
   const sortedTrades = [...row.trades].sort((a, b) =>
     new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
 
-  // Cash flow per trade: BUY = negative (money out), SELL = positive (money back)
   const tradeRows = sortedTrades.map((trade) => {
     const status = trade.status?.toUpperCase() ?? "";
     const isExecuted = status === "FILLED" || status === "DRY_RUN";
@@ -2675,14 +1585,12 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
     const price = trade.price_cents / 100;
     const fee = trade.fee_paid || 0;
     const isSell = trade.action?.toUpperCase() === "SELL";
-    // BUY: you spend -qty×price. SELL: you receive +qty×price.
     const cashFlow = isSell ? (qty * price) - fee : -((qty * price) + fee);
     return { trade, qty, displayQty: trade.count, price, fee, isSell, cashFlow, isExecuted };
   });
 
   const totalCashFlow = tradeRows.reduce((sum, r) => sum + r.cashFlow, 0);
 
-  // Current value of remaining open position
   const pos = row.position;
   const currentBid = pos
     ? pos.contract.toLowerCase() === "yes"
@@ -2690,8 +1598,6 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
       : (row.no_bid ?? (row.yes_ask != null ? 1.0 - row.yes_ask : null))
     : null;
   const openValue = pos && currentBid != null ? pos.quantity * currentBid : null;
-
-  // Total realized + open value
   const totalNet = openValue != null ? totalCashFlow + openValue : null;
 
   return (
@@ -2710,7 +1616,7 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-t-border/20">
-          {tradeRows.map(({ trade, qty, displayQty, price, fee, isSell, cashFlow, isExecuted }) => (
+          {tradeRows.map(({ trade, displayQty, price, fee, isSell, cashFlow, isExecuted }) => (
             <tr key={trade.id} className="hover:bg-t-panel-hover/50">
               <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
                 {fmtTime(trade.created_at)}
@@ -2734,9 +1640,7 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
                 ) : null}
               </td>
               <td className="px-2 py-1.5 text-right font-mono text-txt-primary">{Math.round(price * 100)}c</td>
-              <td className="px-2 py-1.5 text-right font-mono text-warn">
-                {fmtDollar(fee)}
-              </td>
+              <td className="px-2 py-1.5 text-right font-mono text-warn">{fmtDollar(fee)}</td>
               <td className={`px-2 py-1.5 text-right font-mono font-medium ${isExecuted ? pnlCls(cashFlow) : "text-txt-muted"}`}>
                 {isExecuted ? `${cashFlow >= 0 ? "+" : ""}${fmtDollar(cashFlow)}` : "--"}
               </td>
@@ -2801,8 +1705,6 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// ── Tab 3: Model Predictions ────────────────────────────────
-
 function RationalePanel({
   reasoning,
   sources,
@@ -2837,6 +1739,7 @@ function RationalePanel({
     </div>
   );
 }
+
 
 function ModelsTab({
   row,

@@ -519,6 +519,7 @@ export interface UnifiedMarketRow {
   target_shares: number | null;
   filled_shares: number | null;
   pending_shares: number | null;
+  pending_delta_shares: number | null;
   pending_orders: PendingOrder[];
 
   has_position: boolean;
@@ -587,7 +588,7 @@ function buildPendingPositionState(
   pendingOrders: PendingOrder[],
   currentPosition: UnifiedMarketRow["position"],
   latestResolvedTradeMs: number | null,
-): Pick<UnifiedMarketRow, "pending_orders" | "pending_shares" | "target_shares"> {
+): Pick<UnifiedMarketRow, "pending_orders" | "pending_shares" | "pending_delta_shares" | "target_shares"> {
   const effectivePendingOrders = pendingOrders.filter((order) => {
     if (latestResolvedTradeMs == null) return true;
     const createdMs = new Date(order.created_at).getTime();
@@ -599,6 +600,7 @@ function buildPendingPositionState(
     return {
       pending_orders: [],
       pending_shares: null,
+      pending_delta_shares: null,
       target_shares: null,
     };
   }
@@ -622,10 +624,12 @@ function buildPendingPositionState(
       ? signedQty - sideSign * remaining
       : signedQty + sideSign * remaining;
   }, currentSignedQuantity);
+  const pending_delta_shares = targetSignedQuantity - currentSignedQuantity;
 
   return {
     pending_orders: effectivePendingOrders,
     pending_shares,
+    pending_delta_shares,
     target_shares: Math.abs(targetSignedQuantity),
   };
 }
@@ -800,6 +804,7 @@ export function buildUnifiedMarketRows(
       target_shares: pendingState.target_shares,
       filled_shares,
       pending_shares: pendingState.pending_shares,
+      pending_delta_shares: pendingState.pending_delta_shares,
       pending_orders: pendingState.pending_orders,
       has_position: pos != null,
       has_prediction: predicted != null,
@@ -871,6 +876,7 @@ export function buildUnifiedMarketRows(
       target_shares: pendingState.target_shares,
       filled_shares,
       pending_shares: pendingState.pending_shares,
+      pending_delta_shares: pendingState.pending_delta_shares,
       pending_orders: pendingState.pending_orders,
       has_position: true,
       has_prediction: false,
