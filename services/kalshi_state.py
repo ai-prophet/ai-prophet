@@ -14,6 +14,7 @@ from db_models import (
     KalshiBalanceSnapshot,
     KalshiOrderSnapshot,
     KalshiPositionSnapshot,
+    TradingMarket,
     TradingPosition,
 )
 from position_replay import InventoryPosition, replay_orders_by_ticker
@@ -97,6 +98,14 @@ def _order_avg_fill_price(order: dict[str, Any]) -> float | None:
 
 def _order_fee_paid(order: dict[str, Any]) -> float:
     return _to_float(order.get("taker_fees_dollars")) + _to_float(order.get("maker_fees_dollars"))
+
+
+def _last_traded_unit_value(contract: str, last_price: float | None) -> float | None:
+    if last_price is None:
+        return None
+    if contract.lower() == "yes":
+        return last_price
+    return 1.0 - last_price
 
 
 def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: datetime | None = None) -> dict[str, int]:
@@ -389,18 +398,32 @@ def build_position_views(session, instance_name: str) -> list[KalshiPositionView
 
 
 def build_portfolio_summary(session, instance_name: str) -> KalshiPortfolioSummary:
-    latest_balance = get_latest_balance_snapshot(session, instance_name)
     position_views = build_position_views(session, instance_name)
     pending_by_ticker = build_pending_orders_by_ticker(session, instance_name)
+    latest_balance = get_latest_balance_snapshot(session, instance_name)
+
+    market_map = {
+        row.market_id: row
+        for row in (
+            session.query(TradingMarket)
+            .filter(
+                TradingMarket.instance_name == instance_name,
+                TradingMarket.market_id.in_([view.market_id for view in position_views]),
+            )
+            .all()
+        )
+    } if position_views else {}
 
     cash_balance = float(latest_balance.balance) if latest_balance else 0.0
     cash_pnl = sum(float(view.realized_pnl or 0.0) for view in position_views)
-    derived_open_value = sum(float(view.market_exposure or 0.0) for view in position_views)
-    open_value = (
-        float(latest_balance.portfolio_value)
-        if latest_balance and latest_balance.portfolio_value is not None
-        else derived_open_value
-    )
+    open_value = 0.0
+    for view in position_views:
+        market = market_map.get(view.market_id)
+        unit_value = _last_traded_unit_value(view.contract, market.last_price if market else None)
+        if unit_value is None:
+            open_value += float(view.market_exposure or 0.0)
+        else:
+            open_value += unit_value * float(view.quantity or 0.0)
     cash_spent = sum(float(view.total_cost or 0.0) for view in position_views)
     total_fees = sum(float(view.fees_paid or 0.0) for view in position_views)
     net_pnl = open_value - cash_spent + cash_pnl

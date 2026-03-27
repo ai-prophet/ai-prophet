@@ -619,14 +619,16 @@ export default function Dashboard() {
 
     const mkt = marketById.get(row.market_id);
     let currentUnitValue: number | null = null;
-    if (mkt && dbQty > 0.001) {
+    if (mkt?.last_price != null && dbQty > 0.001) {
       currentUnitValue = contract === "yes"
-        ? (mkt.yes_bid ?? (mkt.no_ask != null ? 1.0 - mkt.no_ask : null))
-        : (mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null));
+        ? mkt.last_price
+        : 1.0 - mkt.last_price;
     }
     const cashSpent = row.position?.total_cost ?? (avgEntry * dbQty);
-    const openValue = row.position?.market_exposure ?? (currentUnitValue != null ? currentUnitValue * dbQty : 0);
-    if (dbQty > 0.001 && row.position?.market_exposure != null) {
+    const openValue = currentUnitValue != null
+      ? currentUnitValue * dbQty
+      : (row.position?.market_exposure ?? 0);
+    if (dbQty > 0.001 && currentUnitValue == null && row.position?.market_exposure != null) {
       currentUnitValue = openValue / dbQty;
     }
     totalOpenValue += openValue;
@@ -887,7 +889,7 @@ export default function Dashboard() {
                 {expandedMetric === "realized"
                   ? "(sell_price − avg_entry) × qty_sold"
                   : expandedMetric === "unrealized"
-                    ? "Kalshi position value by market"
+                    ? "Last traded price × shares"
                     : expandedMetric === "fees"
                       ? "Recorded by market, plus live Kalshi fee reconciliation if needed"
                       : "Markets with realized wins/losses"}
