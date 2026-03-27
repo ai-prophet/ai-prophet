@@ -64,7 +64,7 @@ if "fastapi" not in sys.modules:
     fastapi_responses.JSONResponse = object
     sys.modules["fastapi.responses"] = fastapi_responses
 
-from services.api.main import get_trades
+from services.api.main import get_markets, get_trades
 
 
 def test_get_trades_recovers_prediction_for_signal_less_net_sell():
@@ -269,3 +269,57 @@ def test_get_trades_includes_deferred_flip_buy_as_pending_intent():
     assert synthetic["prediction"]["p_yes"] == 0.31
     assert synthetic["prediction"]["yes_ask"] == 0.32
     assert synthetic["pending_reason"] == "Queued after the sell leg finishes."
+
+
+def test_get_markets_prefers_latest_non_skip_probability():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    latest_skip_ts = datetime(2026, 3, 27, 16, 0, tzinfo=UTC)
+    actionable_ts = latest_skip_ts - timedelta(hours=8)
+
+    with get_session(engine) as session:
+        session.add(
+            TradingMarket(
+                instance_name="Haifeng",
+                market_id="kalshi:PROB",
+                ticker="PROB",
+                event_ticker="PROB-EVENT",
+                title="Probability Test",
+                category="Politics",
+                yes_ask=0.02,
+                no_ask=0.99,
+                updated_at=latest_skip_ts,
+            )
+        )
+        session.add_all([
+            ModelRun(
+                instance_name="Haifeng",
+                market_id="kalshi:PROB",
+                model_name="gpt-5",
+                timestamp=actionable_ts,
+                decision="BUY_NO",
+                confidence=None,
+                metadata_json=json.dumps({"p_yes": 0.15}),
+            ),
+            ModelRun(
+                instance_name="Haifeng",
+                market_id="kalshi:PROB",
+                model_name="gpt-5",
+                timestamp=latest_skip_ts,
+                decision="SKIP",
+                confidence=None,
+                metadata_json=json.dumps({"skip_reason": "spread"}),
+            ),
+        ])
+
+    with (
+        patch("services.api.main.get_db", return_value=engine),
+        patch("services.api.main._display_visible_market_activity", return_value=({"PROB"}, {"kalshi:PROB"})),
+    ):
+        rows = get_markets(limit=10, instance_name="Haifeng")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["latest_non_skip_p_yes"] == 0.15
+    assert row["aggregated_p_yes"] == 0.15

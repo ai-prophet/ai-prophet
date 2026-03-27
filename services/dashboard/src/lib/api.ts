@@ -146,6 +146,7 @@ export interface Market {
   model_prediction: ModelPrediction | null;
   model_predictions?: ModelPrediction[];
   aggregated_p_yes?: number | null;
+  latest_non_skip_p_yes?: number | null;
   pending_orders?: PendingOrder[];
   latest_order_time?: string | null;
   kalshi_order_count?: number;
@@ -670,6 +671,11 @@ export function buildUnifiedMarketRows(
   positions: Position[],
   trades: Trade[],
 ): UnifiedMarketRow[] {
+  const isNonSkipDecision = (decision: string | null | undefined): boolean => {
+    const normalized = (decision ?? "").toUpperCase();
+    return normalized !== "" && normalized !== "SKIP" && normalized !== "HOLD" && normalized !== "CYCLE_SKIPPED";
+  };
+
   const isSyntheticTradePrediction = (trade: Trade): boolean => {
     const source = trade.prediction?.source?.toLowerCase() ?? "";
     return source.startsWith("kalshi:");
@@ -749,8 +755,27 @@ export function buildUnifiedMarketRows(
     const sortedEdgeTrades = [...mktEdgeTrades].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
-
-    const predicted = mkt.aggregated_p_yes ?? mkt.model_prediction?.p_yes ?? null;
+    const modelPreds = mkt.model_predictions?.filter((p) => p.model_name !== "aggregated") ?? [];
+    const latestNonSkipModelPrediction =
+      [...modelPreds]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .find((p) => isNonSkipDecision(p.decision) && p.p_yes != null)
+      ?? null;
+    const latestNonSkipTradePrediction =
+      [...sortedEdgeTrades]
+        .reverse()
+        .find((trade) => {
+          const action = (trade.action ?? "").toUpperCase();
+          return !isSyntheticTradePrediction(trade) && trade.prediction?.p_yes != null && action !== "SKIP";
+        })
+      ?? null;
+    const predicted =
+      latestNonSkipModelPrediction?.p_yes
+      ?? mkt.latest_non_skip_p_yes
+      ?? latestNonSkipTradePrediction?.prediction?.p_yes
+      ?? mkt.aggregated_p_yes
+      ?? mkt.model_prediction?.p_yes
+      ?? null;
 
     // Calculate edge from most recent trade's prediction
     let edge: number | null = null;
@@ -766,14 +791,10 @@ export function buildUnifiedMarketRows(
       }
     }
 
-    const modelPreds = mkt.model_predictions?.filter((p) => p.model_name !== "aggregated") ?? [];
     const latestActionablePrediction =
       [...modelPreds]
-        .reverse()
-        .find((p) => {
-          const decision = p.decision?.toUpperCase();
-          return decision != null && decision !== "HOLD" && decision !== "CYCLE_SKIPPED";
-        })
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .find((p) => isNonSkipDecision(p.decision) && p.p_yes != null)
       ?? null;
 
     // Fallback to the latest actionable model edge. Ignore HOLD-only predictions.

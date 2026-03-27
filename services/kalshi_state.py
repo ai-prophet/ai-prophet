@@ -469,13 +469,19 @@ def build_portfolio_summary(
         open_value = float(latest_balance.portfolio_value or 0.0)
     cash_spent = sum(float(view.total_cost or 0.0) for view in position_views)
     total_fees = sum(float(view.fees_paid or 0.0) for view in position_views)
-    net_pnl = open_value - cash_spent + cash_pnl
+    baseline_total = float(starting_total or 0.0)
+    if baseline_total > 1e-9:
+        # When we have an explicit display baseline, the headline P&L should
+        # reconcile to current account equity rather than a partial cost-basis
+        # decomposition that may include a different history window.
+        net_pnl = (cash_balance + open_value) - baseline_total
+    else:
+        net_pnl = open_value - cash_spent + cash_pnl
     open_positions = len(position_views)
     active_markets = len({
         *[view.ticker for view in position_views if view.quantity > 1e-9],
         *[ticker for ticker, orders in pending_by_ticker.items() if orders],
     })
-    baseline_total = float(starting_total or 0.0)
     return_pct = (net_pnl / baseline_total) if baseline_total > 1e-9 else 0.0
     if not math.isfinite(return_pct):
         return_pct = 0.0

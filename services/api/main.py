@@ -1124,6 +1124,32 @@ def get_markets(
     engine = get_db()
     try:
       with get_session(engine) as session:
+        def _build_model_prediction(run: ModelRun) -> dict[str, Any]:
+            p_yes = None
+            reasoning = None
+            sources: list[dict[str, Any]] = []
+            if run.metadata_json:
+                try:
+                    meta = json.loads(run.metadata_json)
+                    p_yes = meta.get("p_yes")
+                    reasoning = meta.get("reasoning")
+                    sources = meta.get("sources", [])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return {
+                "model_name": run.model_name,
+                "decision": run.decision,
+                "confidence": run.confidence,
+                "p_yes": p_yes,
+                "timestamp": run.timestamp.isoformat(),
+                "reasoning": reasoning,
+                "sources": sources,
+            }
+
+        def _is_non_skip_prediction(pred: dict[str, Any]) -> bool:
+            decision = str(pred.get("decision") or "").upper()
+            return pred.get("p_yes") is not None and decision not in {"SKIP", "HOLD", "CYCLE_SKIPPED"}
+
         visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
         rows = (
             _instance_query(session, TradingMarket, resolved_instance)
@@ -1181,6 +1207,13 @@ def get_markets(
             model_predictions = []
             aggregated_p_yes = None
             model_prediction = None
+            latest_non_skip_prediction = None
+
+            for run in market_runs:
+                pred = _build_model_prediction(run)
+                if _is_non_skip_prediction(pred):
+                    latest_non_skip_prediction = pred
+                    break
 
             if latest_run:
                 # Filter to same cycle (within 10min of latest) using the pre-loaded runs
@@ -1195,31 +1228,16 @@ def get_markets(
                     if run.model_name in seen_models:
                         continue
                     seen_models.add(run.model_name)
-                    p_yes = None
-                    reasoning = None
-                    sources = []
-                    if run.metadata_json:
-                        try:
-                            meta = json.loads(run.metadata_json)
-                            p_yes = meta.get("p_yes")
-                            reasoning = meta.get("reasoning")
-                            sources = meta.get("sources", [])
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    pred = {
-                        "model_name": run.model_name,
-                        "decision": run.decision,
-                        "confidence": run.confidence,
-                        "p_yes": p_yes,
-                        "timestamp": run.timestamp.isoformat(),
-                        "reasoning": reasoning,
-                        "sources": sources,
-                    }
+                    pred = _build_model_prediction(run)
                     model_predictions.append(pred)
                     if aggregated_p_yes is None:
-                        aggregated_p_yes = p_yes
+                        aggregated_p_yes = pred["p_yes"]
 
                 model_prediction = model_predictions[-1] if model_predictions else None
+            if latest_non_skip_prediction is not None:
+                aggregated_p_yes = latest_non_skip_prediction["p_yes"]
+                if model_prediction is None or model_prediction.get("p_yes") is None:
+                    model_prediction = latest_non_skip_prediction
 
             results.append({
                 "id": row.id,
@@ -1239,6 +1257,7 @@ def get_markets(
                 "model_prediction": model_prediction,
                 "model_predictions": model_predictions,
                 "aggregated_p_yes": aggregated_p_yes,
+                "latest_non_skip_p_yes": latest_non_skip_prediction["p_yes"] if latest_non_skip_prediction else None,
                 "pending_orders": pending_orders_by_ticker.get(row.ticker, []),
                 "latest_order_time": latest_order_time_by_ticker.get(row.ticker),
                 "kalshi_order_count": kalshi_order_count_by_ticker.get(row.ticker, 0),
