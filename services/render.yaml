@@ -25,6 +25,12 @@ envVarGroups:
         value: "false"
       - key: WORKER_POLL_INTERVAL_SEC
         value: "14400"
+      - key: WORKER_POLL_OFFSET_SEC
+        value: "0"
+      - key: COMPARISON_POLL_INTERVAL_SEC
+        value: "3600"
+      - key: COMPARISON_POLL_OFFSET_SEC
+        value: "1800"
       - key: SYNC_INTERVAL_SEC
         value: "600"
       - key: GEMINI_API_KEY_HAIFENG
@@ -180,8 +186,6 @@ services:
         value: Haifeng
       - key: COMPARISON_STARTING_CASH
         value: "10000"
-      - key: COMPARISON_POLL_INTERVAL_SEC
-        value: "3600"
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
@@ -218,8 +222,6 @@ services:
         value: Haifeng
       - key: COMPARISON_STARTING_CASH
         value: "10000"
-      - key: COMPARISON_POLL_INTERVAL_SEC
-        value: "3600"
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN
@@ -256,8 +258,6 @@ services:
         value: Haifeng
       - key: COMPARISON_STARTING_CASH
         value: "10000"
-      - key: COMPARISON_POLL_INTERVAL_SEC
-        value: "3600"
       - key: LIVE_BETTING_ENABLED
         value: "true"
       - key: LIVE_BETTING_DRY_RUN

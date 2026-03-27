@@ -86,6 +86,8 @@ MAX_PROFITABLE_PRICE = 0.97
 MIN_REBALANCE_TRADE = 0.005
 WITHIN_SPREAD_BUFFER = 0.02
 DISPLAY_CUTOFF_UTC = datetime(2026, 3, 24, 23, 0, tzinfo=UTC)  # Mar 24, 2026 6:00 PM America/Chicago
+DISPLAY_CUTOFF_LABEL = "Mar 24, 2026 6:00 PM CDT"
+DISPLAY_BASELINE_INSTANCE_NAMES = ["Haifeng", "Jibang"]
 
 
 def get_db():
@@ -242,6 +244,14 @@ def _instance_bool_setting(key: str, instance_name: str, default: bool) -> bool:
 def _instance_list_setting(key: str, instance_name: str) -> list[str]:
     raw = _instance_setting(key, instance_name, "")
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _instance_float_setting(key: str, instance_name: str, default: float) -> float:
+    raw = _instance_setting(key, instance_name, str(default))
+    try:
+        return float(raw if raw is not None else default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _hold_reason_from_market_context(
@@ -2882,6 +2892,71 @@ def get_kalshi_balance(instance_name: str | None = Query(None)) -> dict[str, Any
             "instance_name": _instance_name(instance_name),
             "timestamp": datetime.now(UTC).isoformat(),
         }
+
+
+@app.get("/display-baseline")
+def get_display_baseline() -> dict[str, Any]:
+    """Return the post-cutoff starting bankroll baseline for Haifeng + Jibang.
+
+    The dashboard excludes pre-cutoff test trades, so the effective starting
+    total should be the first recorded account equity on or after the cutoff.
+    """
+    engine = get_db()
+    per_instance: list[dict[str, Any]] = []
+    starting_total = 0.0
+    initial_loaded_total = 0.0
+
+    with get_session(engine) as session:
+        for instance_name in DISPLAY_BASELINE_INSTANCE_NAMES:
+            initial_loaded = _instance_float_setting("WORKER_STARTING_CASH", instance_name, 10000.0)
+            initial_loaded_total += initial_loaded
+
+            cutoff_snapshot = (
+                session.query(KalshiBalanceSnapshot)
+                .filter(
+                    KalshiBalanceSnapshot.instance_name == instance_name,
+                    KalshiBalanceSnapshot.snapshot_ts >= DISPLAY_CUTOFF_UTC,
+                )
+                .order_by(KalshiBalanceSnapshot.snapshot_ts.asc(), KalshiBalanceSnapshot.id.asc())
+                .first()
+            )
+
+            if cutoff_snapshot is not None:
+                balance = float(cutoff_snapshot.balance or 0.0)
+                portfolio_value = float(cutoff_snapshot.portfolio_value or 0.0)
+                snapshot_ts = cutoff_snapshot.snapshot_ts.isoformat()
+                used_fallback = False
+            else:
+                balance = initial_loaded
+                portfolio_value = 0.0
+                snapshot_ts = None
+                used_fallback = True
+
+            effective_total = balance + portfolio_value
+            starting_total += effective_total
+
+            per_instance.append({
+                "instance_name": instance_name,
+                "initial_loaded": round(initial_loaded, 2),
+                "balance": round(balance, 2),
+                "portfolio_value": round(portfolio_value, 2),
+                "effective_total": round(effective_total, 2),
+                "snapshot_ts": snapshot_ts,
+                "used_fallback": used_fallback,
+            })
+
+    initial_gap = initial_loaded_total - starting_total
+
+    return {
+        "cutoff_timestamp": DISPLAY_CUTOFF_UTC.isoformat(),
+        "cutoff_label": DISPLAY_CUTOFF_LABEL,
+        "instances": per_instance,
+        "starting_total": round(starting_total, 2),
+        "initial_loaded_total": round(initial_loaded_total, 2),
+        "difference_from_initial": round(initial_gap, 2),
+        "all_instances_have_cutoff_snapshots": all(not item["used_fallback"] for item in per_instance),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
 
 
 # ── GET /kalshi/positions ────────────────────────────────────────

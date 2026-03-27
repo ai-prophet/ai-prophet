@@ -21,6 +21,7 @@ import {
   type AnalyticsSummary,
   type ResolvedMarketsData,
   type Alert,
+  type DisplayBaselineData,
 } from "@/lib/api";
 import { fmtDollar } from "@/lib/utils";
 import { PnLChart } from "@/components/PnLChart";
@@ -202,6 +203,7 @@ export default function Dashboard() {
   const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [resolvedMarkets, setResolvedMarkets] = useState<ResolvedMarketsData | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [displayBaseline, setDisplayBaseline] = useState<DisplayBaselineData | null>(null);
   const [clearingAlertKey, setClearingAlertKey] = useState<string | null>(null);
   const [clearingAll, setClearingAll] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>("");
@@ -218,6 +220,10 @@ export default function Dashboard() {
   const instanceApi = useMemo(
     () => createApiClient(selectedInstance.apiUrl, selectedInstance.instanceName),
     [selectedInstance.apiUrl, selectedInstance.instanceName]
+  );
+  const summaryApi = useMemo(
+    () => createApiClient(selectedInstance.apiUrl),
+    [selectedInstance.apiUrl]
   );
   const isSwitchingInstance =
     loadingInstanceKey != null && loadingInstanceKey === selectedInstance.key;
@@ -396,6 +402,11 @@ export default function Dashboard() {
     }
 
     try {
+      summaryApi.getDisplayBaseline().then((baseline) => {
+        if (activeRequestRef.current !== requestId || !baseline) return;
+        setDisplayBaseline(baseline);
+      }).catch(() => {});
+
       // Tier 1: Critical data — renders header, metrics, markets, alerts immediately
       const [t, m, posData, h, b, kp, al] = await Promise.all([
         instanceApi.getTrades(500),
@@ -493,7 +504,7 @@ export default function Dashboard() {
       setRefreshing(false);
       setLoadingInstanceKey((current) => (current === instanceKey ? null : current));
     }
-  }, [applySnapshot, instanceApi, selectedInstance.key, selectedInstance.label]);
+  }, [applySnapshot, instanceApi, selectedInstance.key, selectedInstance.label, summaryApi]);
 
   useEffect(() => {
     // Cancel any pending requests when switching instances
@@ -604,6 +615,7 @@ export default function Dashboard() {
     contract: string;
     sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[];
     totalRealized: number;
+    replayRealized: number;
     avgEntry: number;
     currentUnitValue: number | null;
     dbQty: number;
@@ -646,23 +658,47 @@ export default function Dashboard() {
     const dbPos = positions.find((p) => p.market_id === row.market_id);
     const hasMoreTrades = dbPos != null && Math.abs(totalRealized - dbPos.realized_pnl) > 0.005;
 
-    perMarket.push({ title: row.title, contract, sells, totalRealized: realizedValue, avgEntry, currentUnitValue, dbQty, openValue, cashSpent, hasMoreTrades, feeTotal });
+    perMarket.push({
+      title: row.title,
+      contract,
+      sells,
+      totalRealized: realizedValue,
+      replayRealized: totalRealized,
+      avgEntry,
+      currentUnitValue,
+      dbQty,
+      openValue,
+      cashSpent,
+      hasMoreTrades,
+      feeTotal,
+    });
   }
 
   const totalLiveNetPnl = totalOpenValue - totalCashSpent + totalCashPnl;
   const displayedCashPnl = analytics?.cash_pnl ?? totalCashPnl;
   const displayedOpenValue = analytics?.open_value ?? totalOpenValue;
   const displayedCashSpent = analytics?.cash_spent ?? totalCashSpent;
-  const displayedNetPnl = analytics?.net_pnl ?? totalLiveNetPnl;
+  const displayedNetPnl = displayedOpenValue - displayedCashSpent + displayedCashPnl;
   const displayedFeesPaid = analytics?.total_fees ?? totalFeesPaid;
   const displayedActiveMarkets = analytics?.active_markets ?? liveActiveMarketCount;
   const displayedOpenPositions = analytics?.open_positions ?? liveActiveMarketCount;
   const displayedWinRate = analytics?.win_rate ?? metrics.winRate;
   const displayedReturnPct = analytics ? analytics.return_pct * 100 : metrics.avgReturn;
+  const formatSignedTerm = (value: number) => `${value >= 0 ? "+" : "-"}${fmtDollar(Math.abs(value))}`;
 
   const realizedBreakdown = perMarket
     .filter((r) => r.sells.length > 0)
-    .map((r) => ({ title: r.title, contract: r.contract, sells: r.sells, value: r.totalRealized, hasMoreTrades: r.hasMoreTrades }))
+    .map((r) => {
+      const adjustment = r.totalRealized - r.replayRealized;
+      return {
+        title: r.title,
+        contract: r.contract,
+        sells: r.sells,
+        value: r.totalRealized,
+        adjustment,
+        hasMoreTrades: r.hasMoreTrades,
+      };
+    })
     .sort((a, b) => b.value - a.value);
 
   const unrealizedBreakdown = perMarket
@@ -696,6 +732,25 @@ export default function Dashboard() {
 
   const alertErrors = alerts.filter((a) => a.severity === "error").length;
   const alertWarnings = alerts.filter((a) => a.severity === "warning").length;
+  const selectedBaselineKey = (
+    selectedInstance.instanceName
+    ?? selectedInstance.label
+    ?? selectedInstance.key
+  ).toLowerCase();
+  const selectedDisplayBaseline = displayBaseline?.instances.find(
+    (instance) => instance.instance_name.toLowerCase() === selectedBaselineKey
+  ) ?? null;
+  const selectedBaselineDelta = selectedDisplayBaseline == null
+    ? 0
+    : selectedDisplayBaseline.effective_total - selectedDisplayBaseline.initial_loaded;
+  const displayBaselineLoss = displayBaseline?.difference_from_initial ?? 0;
+  const displayBaselineDifferenceText = displayBaseline == null
+    ? ""
+    : displayBaselineLoss > 0
+      ? `${fmtDollar(displayBaselineLoss)} below`
+      : displayBaselineLoss < 0
+        ? `${fmtDollar(Math.abs(displayBaselineLoss))} above`
+        : "exactly equal to";
 
   return (
     <main className="min-h-screen bg-t-bg">
@@ -782,6 +837,92 @@ export default function Dashboard() {
           </div>
         )}
 
+        {displayBaseline && (
+          <div className="rounded border border-t-border bg-t-panel px-4 py-3">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+              <div>
+                <div className="text-[9px] font-medium uppercase tracking-[0.24em] text-txt-muted">
+                  {selectedDisplayBaseline?.instance_name ?? "Selected Account"} Starting Balance
+                </div>
+                <div className="mt-1 text-2xl font-semibold font-mono text-txt-primary">
+                  {fmtDollar(selectedDisplayBaseline?.effective_total ?? displayBaseline.starting_total)}
+                </div>
+                <div className="mt-1 text-[10px] font-mono text-txt-secondary">
+                  First recorded account total at {displayBaseline.cutoff_label}
+                </div>
+                {selectedDisplayBaseline && (
+                  <div className="mt-1 text-[10px] font-mono text-txt-muted">
+                    Loaded {fmtDollar(selectedDisplayBaseline.initial_loaded)}.
+                    Starting balance is {selectedBaselineDelta >= 0 ? " up " : " down "}
+                    <span className="text-txt-primary">{fmtDollar(Math.abs(selectedBaselineDelta))}</span>
+                    {" "}from that amount.
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="rounded border border-t-border bg-t-panel-hover/60 px-3 py-2 sm:col-span-3">
+                  <div className="text-[9px] font-medium uppercase tracking-widest text-txt-muted">
+                    Both Accounts Combined
+                  </div>
+                  <div className="mt-1 text-sm font-semibold font-mono text-txt-primary">
+                    {fmtDollar(displayBaseline.starting_total)}
+                  </div>
+                  <div className="text-[9px] font-mono text-txt-muted">
+                    Haifeng + Jibang starting total at cutoff
+                  </div>
+                </div>
+                {displayBaseline.instances.map((instance) => (
+                  <div
+                    key={instance.instance_name}
+                    className={`rounded border px-3 py-2 ${
+                      instance.instance_name.toLowerCase() === selectedBaselineKey
+                        ? "border-accent/60 bg-accent/10"
+                        : "border-t-border bg-t-panel-hover/60"
+                    }`}
+                  >
+                    <div className="text-[9px] font-medium uppercase tracking-widest text-txt-muted">
+                      {instance.instance_name}
+                    </div>
+                    <div className="mt-1 text-sm font-semibold font-mono text-txt-primary">
+                      {fmtDollar(instance.effective_total)}
+                    </div>
+                    <div className="text-[9px] font-mono text-txt-muted">
+                      cash {fmtDollar(instance.balance)} + positions {fmtDollar(instance.portfolio_value)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <details className="mt-3 rounded border border-t-border bg-t-panel-hover/40 px-3 py-2">
+              <summary className="cursor-pointer text-[10px] font-mono text-txt-secondary">
+                Why this differs from the money loaded initially
+              </summary>
+              <div className="mt-2 space-y-1.5 text-[10px] font-mono text-txt-muted">
+                <div>
+                  We treat {displayBaseline.cutoff_label} as the live starting line. Trades before that time were test trades, so the dashboard baseline uses the first recorded post-cutoff account total instead of the originally loaded cash.
+                </div>
+                {displayBaseline.instances.map((instance) => (
+                  <div key={`${instance.instance_name}-detail`}>
+                    {instance.instance_name}: loaded <span className="text-txt-primary">{fmtDollar(instance.initial_loaded)}</span>,
+                    starting balance at cutoff <span className="text-txt-primary">{fmtDollar(instance.effective_total)}</span>.
+                  </div>
+                ))}
+                <div>
+                  Originally loaded: <span className="text-txt-primary">{fmtDollar(displayBaseline.initial_loaded_total)}</span>.
+                  Post-cutoff starting total: <span className="text-txt-primary">{fmtDollar(displayBaseline.starting_total)}</span>.
+                  That is <span className="text-txt-primary">{displayBaselineDifferenceText}</span> the loaded amount.
+                </div>
+                {!displayBaseline.all_instances_have_cutoff_snapshots && (
+                  <div className="text-warn">
+                    One or more cutoff snapshots were missing, so the fallback for that account used its configured loaded amount.
+                  </div>
+                )}
+              </div>
+            </details>
+          </div>
+        )}
+
         {/* Row 1: Portfolio Summary Metrics */}
         <div className="grid grid-cols-3 md:grid-cols-5 xl:grid-cols-11 gap-2">
           <MetricCard
@@ -862,15 +1003,15 @@ export default function Dashboard() {
             <div className="text-[11px] font-mono space-y-1">
               <div className="flex justify-between">
                 <span className="text-txt-muted">Open Value <span className="text-[9px]">(bid × qty)</span></span>
-                <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(displayedOpenValue)}</span>
+                <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedOpenValue)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-txt-muted">Cash Spent <span className="text-[9px]">(avg × qty)</span></span>
-                <span className="text-loss">−{fmtDollar(displayedCashSpent)}</span>
+                <span className="text-loss">{formatSignedTerm(-displayedCashSpent)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-txt-muted">Cash P&L <span className="text-[9px]">(realized)</span></span>
-                <span className={displayedCashPnl >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(displayedCashPnl)}</span>
+                <span className={displayedCashPnl >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedCashPnl)}</span>
               </div>
               <div className="flex justify-between border-t border-t-border pt-1 mt-1">
                 <span className="text-txt-primary font-medium">= Net P&L</span>
@@ -932,7 +1073,12 @@ export default function Dashboard() {
                                       ({Math.round(s.sellPrice * 100)}¢ − {Math.round(s.avgAtSell * 100)}¢) × {s.qty}{s.feePaid > 0 ? ` − fee ${fmtDollar(s.feePaid)}` : ""} = <span className={s.contribution >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(s.contribution)}</span>
                                     </div>
                                   ))}
-                                  {row.hasMoreTrades && <div className="text-txt-muted/50 text-[9px]">* additional historical trades not shown</div>}
+                                  {Math.abs(row.adjustment) > 0.005 && (
+                                    <div>
+                                      Kalshi historical adjustment = <span className={row.adjustment >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(row.adjustment)}</span>
+                                    </div>
+                                  )}
+                                  {row.hasMoreTrades && <div className="text-txt-muted/50 text-[9px]">* local visible trades do not fully explain the Kalshi realized P&L</div>}
                                 </>
                               : <span className="text-txt-muted/50">no sell trades in current view</span>
                             }

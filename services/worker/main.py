@@ -18,6 +18,7 @@ Environment variables:
     LIVE_BETTING_ENABLED      — Master kill switch (default: false)
     LIVE_BETTING_DRY_RUN      — Dry-run mode (default: true)
     WORKER_POLL_INTERVAL_SEC  — Poll interval in seconds (default: 14400 = every 4 hours)
+    WORKER_POLL_OFFSET_SEC    — Optional phase offset in seconds for cycle boundaries (default: 0)
     WORKER_MODELS             — Comma-separated model specs (default: gemini:gemini-3.1-pro-preview)
                                  Providers: openai, anthropic, gemini
                                  Examples: gemini:gemini-3.1-pro-preview, anthropic:claude-sonnet-4-5-20250929
@@ -54,6 +55,7 @@ from position_replay import (
     summarize_replayed_positions,
     sync_replayed_positions,
 )
+from schedule_utils import next_interval_boundary
 
 load_dotenv()
 
@@ -204,10 +206,7 @@ signal.signal(signal.SIGINT, _handle_signal)
 
 def _next_cycle_boundary(now: datetime, poll_interval_sec: int) -> datetime:
     """Return the next UTC-aligned cycle boundary for the configured interval."""
-    interval = max(1, int(poll_interval_sec))
-    now_ts = int(now.timestamp())
-    next_ts = ((now_ts // interval) + 1) * interval
-    return datetime.fromtimestamp(next_ts, tz=UTC)
+    return next_interval_boundary(now, poll_interval_sec, _instance_int_setting("WORKER_POLL_OFFSET_SEC", 0))
 
 
 # ── Logging setup ─────────────────────────────────────────────────
@@ -2156,14 +2155,16 @@ def main() -> None:
     _validate_instance_profile_or_raise()
 
     poll_interval = _instance_int_setting("WORKER_POLL_INTERVAL_SEC", DEFAULT_WORKER_POLL_INTERVAL_SEC)
+    poll_offset_sec = _instance_int_setting("WORKER_POLL_OFFSET_SEC", 0)
     peer_instances_str = _instance_setting("WORKER_PEER_INSTANCES", "")
     peer_instances = [p.strip() for p in peer_instances_str.split(",") if p.strip()] if peer_instances_str else []
     all_sync_instances = list({INSTANCE_NAME} | set(peer_instances))
 
     logger.info(
-        "Worker starting (instance=%s, poll_interval=%ds, cli_dry_run=%s, env_dry_run=%s, peers=%s)",
+        "Worker starting (instance=%s, poll_interval=%ds, poll_offset=%ds, cli_dry_run=%s, env_dry_run=%s, peers=%s)",
         INSTANCE_NAME,
         poll_interval,
+        poll_offset_sec,
         args.dry_run,
         _instance_bool_setting("LIVE_BETTING_DRY_RUN", True),
         peer_instances or "none",
@@ -2177,8 +2178,8 @@ def main() -> None:
         seconds_until_next_cycle = (next_cycle - now).total_seconds()
 
         logger.info(
-            "Waiting until next cycle boundary: %s UTC (%.0f seconds, interval=%ds)",
-            next_cycle.strftime("%H:%M"), seconds_until_next_cycle, poll_interval
+            "Waiting until next cycle boundary: %s UTC (%.0f seconds, interval=%ds, offset=%ds)",
+            next_cycle.strftime("%H:%M"), seconds_until_next_cycle, poll_interval, poll_offset_sec
         )
 
         # Show local time too

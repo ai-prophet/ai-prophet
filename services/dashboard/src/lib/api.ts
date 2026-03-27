@@ -245,7 +245,9 @@ export interface SystemLogEntry {
 
 export interface KalshiBalanceData {
   balance: number;
+  portfolio_value?: number;
   dry_run: boolean;
+  instance_name?: string;
   error?: string;
   timestamp: string;
 }
@@ -262,6 +264,27 @@ export interface KalshiPositionsData {
   }>;
   dry_run: boolean;
   error?: string;
+  timestamp: string;
+}
+
+export interface DisplayBaselineInstance {
+  instance_name: string;
+  initial_loaded: number;
+  balance: number;
+  portfolio_value: number;
+  effective_total: number;
+  snapshot_ts: string | null;
+  used_fallback: boolean;
+}
+
+export interface DisplayBaselineData {
+  cutoff_timestamp: string;
+  cutoff_label: string;
+  instances: DisplayBaselineInstance[];
+  starting_total: number;
+  initial_loaded_total: number;
+  difference_from_initial: number;
+  all_instances_have_cutoff_snapshots: boolean;
   timestamp: string;
 }
 
@@ -1070,6 +1093,11 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
     getSystemLogs: (limit = 50) =>
       fetchJSON<SystemLogEntry[]>(normalizedBaseUrl, buildPath(`/system-logs?limit=${limit}`)),
     getKalshiBalance: () => fetchJSON<KalshiBalanceData>(normalizedBaseUrl, buildPath("/kalshi/balance")),
+    getDisplayBaseline: () =>
+      fetchJSON<DisplayBaselineData>(normalizedBaseUrl, "/display-baseline").catch((e) => {
+        console.warn("Failed to fetch display baseline:", e);
+        return null;
+      }),
     getKalshiPositions: () =>
       fetchJSON<KalshiPositionsData>(normalizedBaseUrl, buildPath("/kalshi/positions")),
     getAnalyticsSummary: () =>

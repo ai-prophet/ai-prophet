@@ -19,7 +19,8 @@ Environment variables:
     COMPARISON_MODEL             — Model spec (e.g. openai:gpt-5.4:market)
     COMPARISON_SOURCE_INSTANCE   — Instance to mirror markets from (default: Haifeng)
     COMPARISON_STARTING_CASH     — Starting virtual balance (default: WORKER_STARTING_CASH or 10000)
-    COMPARISON_POLL_INTERVAL_SEC — (Deprecated) Workers now run at the top of each hour
+    COMPARISON_POLL_INTERVAL_SEC — Poll interval in seconds (default: 3600)
+    COMPARISON_POLL_OFFSET_SEC   — Optional phase offset in seconds for comparison cycle boundaries
     PREDICTOR_SERVICE_URL        — Cloud Run predictor URL (required)
     PREDICTOR_API_KEY            — Predictor service API key
     KALSHI_API_KEY_ID            — Kalshi credentials (needed by BettingEngine even in dry-run)
@@ -36,7 +37,7 @@ import os
 import signal
 import sys
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import requests
@@ -51,6 +52,7 @@ from position_replay import (
     summarize_replayed_positions,
     sync_replayed_positions,
 )
+from schedule_utils import next_interval_boundary
 
 load_dotenv()
 
@@ -66,6 +68,9 @@ STARTING_CASH = float(
 )
 POLL_INTERVAL = int(
     os.getenv("COMPARISON_POLL_INTERVAL_SEC", os.getenv("WORKER_POLL_INTERVAL_SEC", "3600"))
+)
+POLL_OFFSET_SEC = int(
+    os.getenv("COMPARISON_POLL_OFFSET_SEC", os.getenv("WORKER_POLL_OFFSET_SEC", "0"))
 )
 PREDICTOR_SERVICE_URL = os.getenv("PREDICTOR_SERVICE_URL", "").rstrip("/")
 PREDICTOR_API_KEY = os.getenv("PREDICTOR_API_KEY", "")
@@ -539,9 +544,9 @@ def main() -> None:
 
     logger.info(
         "Comparison worker starting: instance=%s model=%s source=%s "
-        "starting_cash=$%.0f poll_interval=%ds predictor=%s",
+        "starting_cash=$%.0f poll_interval=%ds poll_offset=%ds predictor=%s",
         INSTANCE_NAME, COMPARISON_MODEL, SOURCE_INSTANCE,
-        STARTING_CASH, POLL_INTERVAL, PREDICTOR_SERVICE_URL or "(not set)",
+        STARTING_CASH, POLL_INTERVAL, POLL_OFFSET_SEC, PREDICTOR_SERVICE_URL or "(not set)",
     )
 
     while not _shutdown_requested:
@@ -553,30 +558,32 @@ def main() -> None:
         if args.once or _shutdown_requested:
             break
 
-        # Calculate time until the next top of the hour
+        # Calculate time until the next configured cycle boundary
         now = datetime.now(UTC)
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        seconds_until_next_hour = int((next_hour - now).total_seconds())
+        next_cycle = next_interval_boundary(now, POLL_INTERVAL, POLL_OFFSET_SEC)
+        seconds_until_next_cycle = int((next_cycle - now).total_seconds())
 
         # Show local time too
         try:
             import zoneinfo
             local_tz = zoneinfo.ZoneInfo('America/Los_Angeles')
-            next_hour_local = next_hour.astimezone(local_tz)
+            next_cycle_local = next_cycle.astimezone(local_tz)
             logger.info(
-                "Next cycle will run at the top of the hour: %s UTC / %s PST (%d seconds)",
-                next_hour.strftime("%H:%M"),
-                next_hour_local.strftime("%H:%M"),
-                seconds_until_next_hour
+                "Next cycle will run at the configured boundary: %s UTC / %s PST (%d seconds, interval=%ds, offset=%ds)",
+                next_cycle.strftime("%H:%M"),
+                next_cycle_local.strftime("%H:%M"),
+                seconds_until_next_cycle,
+                POLL_INTERVAL,
+                POLL_OFFSET_SEC,
             )
         except:
             logger.info(
-                "Next cycle will run at the top of the hour: %s UTC (%d seconds)",
-                next_hour.strftime("%H:%M"), seconds_until_next_hour
+                "Next cycle will run at the configured boundary: %s UTC (%d seconds, interval=%ds, offset=%ds)",
+                next_cycle.strftime("%H:%M"), seconds_until_next_cycle, POLL_INTERVAL, POLL_OFFSET_SEC
             )
 
-        # Sleep until the next hour, checking for shutdown every second
-        for _ in range(seconds_until_next_hour):
+        # Sleep until the next boundary, checking for shutdown every second
+        for _ in range(seconds_until_next_cycle):
             if _shutdown_requested:
                 break
             time.sleep(1)

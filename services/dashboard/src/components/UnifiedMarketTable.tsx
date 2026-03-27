@@ -1658,6 +1658,23 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
     const cashFlow = isSell ? (qty * price) - fee : -((qty * price) + fee);
     return { trade, qty, displayQty: trade.count, price, fee, isSell, cashFlow, isExecuted };
   });
+  const switchPairMeta = new Map<number, "lead" | "follow">();
+  for (let i = 0; i < tradeRows.length - 1; i++) {
+    const current = tradeRows[i];
+    const next = tradeRows[i + 1];
+    const currentTs = new Date(current.trade.created_at).getTime();
+    const nextTs = new Date(next.trade.created_at).getTime();
+    const isSwitchPair =
+      current.trade.action?.toUpperCase() === "BUY"
+      && next.trade.action?.toUpperCase() === "SELL"
+      && current.trade.side?.toUpperCase() !== next.trade.side?.toUpperCase()
+      && Math.abs(currentTs - nextTs) <= SAME_ACTION_WINDOW_MS;
+    if (isSwitchPair) {
+      switchPairMeta.set(current.trade.id, "lead");
+      switchPairMeta.set(next.trade.id, "follow");
+      i += 1;
+    }
+  }
 
   const totalCashFlow = tradeRows.reduce((sum, r) => sum + r.cashFlow, 0);
 
@@ -1689,7 +1706,15 @@ function TradesTab({ row }: { row: UnifiedMarketRow }) {
           {tradeRows.map(({ trade, displayQty, price, fee, isSell, cashFlow, isExecuted }) => (
             <tr key={trade.id} className="hover:bg-t-panel-hover/50">
               <td className="px-2 py-1.5 font-mono text-txt-muted whitespace-nowrap">
-                {fmtTime(trade.created_at)}
+                <div className="flex flex-col">
+                  <span>{fmtTime(trade.created_at)}</span>
+                  {switchPairMeta.get(trade.id) === "lead" && (
+                    <span className="text-[8px] text-accent">switch step</span>
+                  )}
+                  {switchPairMeta.get(trade.id) === "follow" && (
+                    <span className="text-[8px] text-accent">↳ same step</span>
+                  )}
+                </div>
               </td>
               <td className="px-2 py-1.5 text-center">
                 <span className="flex items-center justify-center gap-1">
