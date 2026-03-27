@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Iterable
@@ -271,6 +272,19 @@ class KalshiPositionView:
     updated_at: datetime
 
 
+@dataclass
+class KalshiPortfolioSummary:
+    cash_balance: float
+    cash_pnl: float
+    open_value: float
+    cash_spent: float
+    net_pnl: float
+    total_fees: float
+    open_positions: int
+    active_markets: int
+    return_pct: float
+
+
 def build_position_views(session, instance_name: str) -> list[KalshiPositionView]:
     latest_positions = get_latest_position_snapshots(session, instance_name)
     if not latest_positions:
@@ -336,6 +350,44 @@ def build_position_views(session, instance_name: str) -> list[KalshiPositionView
         )
 
     return views
+
+
+def build_portfolio_summary(session, instance_name: str) -> KalshiPortfolioSummary:
+    latest_balance = get_latest_balance_snapshot(session, instance_name)
+    position_views = build_position_views(session, instance_name)
+    pending_by_ticker = build_pending_orders_by_ticker(session, instance_name)
+
+    cash_balance = float(latest_balance.balance) if latest_balance else 0.0
+    cash_pnl = sum(float(view.realized_pnl or 0.0) for view in position_views)
+    derived_open_value = sum(float(view.market_exposure or 0.0) for view in position_views)
+    open_value = (
+        float(latest_balance.portfolio_value)
+        if latest_balance and latest_balance.portfolio_value is not None
+        else derived_open_value
+    )
+    cash_spent = sum(float(view.total_cost or 0.0) for view in position_views)
+    total_fees = sum(float(view.fees_paid or 0.0) for view in position_views)
+    net_pnl = open_value - cash_spent + cash_pnl
+    open_positions = len(position_views)
+    active_markets = len({
+        *[view.ticker for view in position_views if view.quantity > 1e-9],
+        *[ticker for ticker, orders in pending_by_ticker.items() if orders],
+    })
+    return_pct = (net_pnl / cash_spent) if cash_spent > 1e-9 else 0.0
+    if not math.isfinite(return_pct):
+        return_pct = 0.0
+
+    return KalshiPortfolioSummary(
+        cash_balance=cash_balance,
+        cash_pnl=cash_pnl,
+        open_value=open_value,
+        cash_spent=cash_spent,
+        net_pnl=net_pnl,
+        total_fees=total_fees,
+        open_positions=open_positions,
+        active_markets=active_markets,
+        return_pct=return_pct,
+    )
 
 
 def build_pending_orders_by_ticker(

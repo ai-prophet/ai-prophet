@@ -70,6 +70,7 @@ from db_models import (
 )
 from kalshi_state import (
     build_pending_orders_by_ticker,
+    build_portfolio_summary,
     build_position_views,
     get_latest_balance_snapshot,
     get_latest_position_snapshots,
@@ -1202,6 +1203,7 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
 
     engine = get_db()
     with get_session(engine) as session:
+        portfolio_summary = build_portfolio_summary(session, resolved_instance)
         latest_kalshi_orders = get_latest_order_snapshots(session, resolved_instance)
         orders = [
             SimpleNamespace(
@@ -1433,6 +1435,15 @@ def get_analytics_summary(instance_name: str | None = Query(None)) -> dict[str, 
             "pnl_by_market": formatted_pnl_by_market,
             "today_pnl": round(today_pnl, 4),
             "total_exposure": round(total_exposure, 4),
+            "cash_balance": round(portfolio_summary.cash_balance, 4),
+            "cash_pnl": round(portfolio_summary.cash_pnl, 4),
+            "open_value": round(portfolio_summary.open_value, 4),
+            "cash_spent": round(portfolio_summary.cash_spent, 4),
+            "net_pnl": round(portfolio_summary.net_pnl, 4),
+            "total_fees": round(portfolio_summary.total_fees, 4),
+            "open_positions": portfolio_summary.open_positions,
+            "active_markets": portfolio_summary.active_markets,
+            "return_pct": round(portfolio_summary.return_pct, 6),
         }
 
         # Update cache

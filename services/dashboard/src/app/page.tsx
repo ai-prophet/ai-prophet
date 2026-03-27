@@ -640,6 +640,15 @@ export default function Dashboard() {
   }
 
   const totalLiveNetPnl = totalOpenValue - totalCashSpent + totalCashPnl;
+  const displayedCashPnl = analytics?.cash_pnl ?? totalCashPnl;
+  const displayedOpenValue = analytics?.open_value ?? totalOpenValue;
+  const displayedCashSpent = analytics?.cash_spent ?? totalCashSpent;
+  const displayedNetPnl = analytics?.net_pnl ?? totalLiveNetPnl;
+  const displayedFeesPaid = analytics?.total_fees ?? totalFeesPaid;
+  const displayedActiveMarkets = analytics?.active_markets ?? liveActiveMarketCount;
+  const displayedOpenPositions = analytics?.open_positions ?? liveActiveMarketCount;
+  const displayedWinRate = analytics?.win_rate ?? metrics.winRate;
+  const displayedReturnPct = analytics ? analytics.return_pct * 100 : metrics.avgReturn;
 
   const realizedBreakdown = perMarket
     .filter((r) => r.sells.length > 0)
@@ -672,9 +681,8 @@ export default function Dashboard() {
     .sort((a, b) => b.value - a.value);
 
   const cashBalance =
-    balance == null
-      ? null
-      : balance.balance;
+    analytics?.cash_balance
+    ?? (balance == null ? null : balance.balance);
 
   const alertErrors = alerts.filter((a) => a.severity === "error").length;
   const alertWarnings = alerts.filter((a) => a.severity === "warning").length;
@@ -777,55 +785,55 @@ export default function Dashboard() {
           />
           <MetricCard
             label="Net P&L"
-            value={fmtDollar(totalLiveNetPnl)}
-            pnl={totalLiveNetPnl}
+            value={fmtDollar(displayedNetPnl)}
+            pnl={displayedNetPnl}
             tooltip="Open Value − Cash Spent + Cash P&L"
             onClick={() => setExpandedMetric(expandedMetric === "netpnl" ? null : "netpnl")}
             active={expandedMetric === "netpnl"}
           />
           <MetricCard
             label="Cash P&L"
-            value={fmtDollar(totalCashPnl)}
-            pnl={totalCashPnl}
+            value={fmtDollar(displayedCashPnl)}
+            pnl={displayedCashPnl}
             tooltip="Gains/losses locked in through completed sells: (sell_price − avg_entry) × qty_sold"
             onClick={() => setExpandedMetric(expandedMetric === "realized" ? null : "realized")}
             active={expandedMetric === "realized"}
           />
           <MetricCard
             label="Open Value"
-            value={fmtDollar(totalOpenValue)}
-            pnl={totalOpenValue}
+            value={fmtDollar(displayedOpenValue)}
+            pnl={displayedOpenValue}
             tooltip="Current market value of open shares: bid × qty"
             onClick={() => setExpandedMetric(expandedMetric === "unrealized" ? null : "unrealized")}
             active={expandedMetric === "unrealized"}
           />
           <MetricCard
             label="Cash Spent"
-            value={fmtDollar(totalCashSpent)}
+            value={fmtDollar(displayedCashSpent)}
             tooltip="Total cost of your open shares: avg entry price × quantity held."
           />
           <MetricCard
             label="Markets"
-            value={`${liveActiveMarketCount} / ${liveActiveMarketCount}`}
+            value={`${displayedActiveMarkets} / ${displayedOpenPositions}`}
             sub="markets / positions"
           />
           <MetricCard
             label="Win Rate"
-            value={`${(metrics.winRate * 100).toFixed(0)}%`}
-            pnl={metrics.winRate >= 0.5 ? 1 : -1}
+            value={`${(displayedWinRate * 100).toFixed(0)}%`}
+            pnl={displayedWinRate >= 0.5 ? 1 : -1}
             tooltip={WIN_RATE_TOOLTIP}
             onClick={() => setExpandedMetric(expandedMetric === "winrate" ? null : "winrate")}
             active={expandedMetric === "winrate"}
           />
           <MetricCard
             label="Return"
-            value={`${metrics.avgReturn >= 0 ? "+" : ""}${metrics.avgReturn.toFixed(1)}%`}
-            pnl={metrics.avgReturn}
+            value={`${displayedReturnPct >= 0 ? "+" : ""}${displayedReturnPct.toFixed(1)}%`}
+            pnl={displayedReturnPct}
           />
           <MetricCard
             label="Total Fees"
-            value={fmtDollar(totalFeesPaid)}
-            pnl={-Math.abs(totalFeesPaid)}
+            value={fmtDollar(displayedFeesPaid)}
+            pnl={-Math.abs(displayedFeesPaid)}
             tooltip="Total fees paid across recorded trades in the current display window."
             onClick={() => setExpandedMetric(expandedMetric === "fees" ? null : "fees")}
             active={expandedMetric === "fees"}
@@ -844,19 +852,19 @@ export default function Dashboard() {
             <div className="text-[11px] font-mono space-y-1">
               <div className="flex justify-between">
                 <span className="text-txt-muted">Open Value <span className="text-[9px]">(bid × qty)</span></span>
-                <span className={totalOpenValue >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(totalOpenValue)}</span>
+                <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(displayedOpenValue)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-txt-muted">Cash Spent <span className="text-[9px]">(avg × qty)</span></span>
-                <span className="text-loss">−{fmtDollar(totalCashSpent)}</span>
+                <span className="text-loss">−{fmtDollar(displayedCashSpent)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-txt-muted">Cash P&L <span className="text-[9px]">(realized)</span></span>
-                <span className={totalCashPnl >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(totalCashPnl)}</span>
+                <span className={displayedCashPnl >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(displayedCashPnl)}</span>
               </div>
               <div className="flex justify-between border-t border-t-border pt-1 mt-1">
                 <span className="text-txt-primary font-medium">= Net P&L</span>
-                <span className={`font-medium ${totalLiveNetPnl >= 0 ? "text-profit" : "text-loss"}`}>{fmtDollar(totalLiveNetPnl)}</span>
+                <span className={`font-medium ${displayedNetPnl >= 0 ? "text-profit" : "text-loss"}`}>{fmtDollar(displayedNetPnl)}</span>
               </div>
             </div>
           </div>

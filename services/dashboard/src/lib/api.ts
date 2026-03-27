@@ -288,6 +288,15 @@ export interface AnalyticsSummary {
   pnl_by_market: Record<string, MarketPnLBreakdown>;
   today_pnl: number;
   total_exposure: number;
+  cash_balance: number;
+  cash_pnl: number;
+  open_value: number;
+  cash_spent: number;
+  net_pnl: number;
+  total_fees: number;
+  open_positions: number;
+  active_markets: number;
+  return_pct: number;
 }
 
 export interface CalibrationBin {
