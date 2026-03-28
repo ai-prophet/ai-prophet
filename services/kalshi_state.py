@@ -296,24 +296,20 @@ def get_latest_balance_snapshot(session, instance_name: str) -> KalshiBalanceSna
 
 
 def get_latest_position_snapshots(session, instance_name: str) -> dict[str, KalshiPositionSnapshot]:
-    subquery = (
-        session.query(
-            KalshiPositionSnapshot.ticker.label("ticker"),
-            func.max(KalshiPositionSnapshot.snapshot_ts).label("max_snapshot_ts"),
-        )
+    latest_snapshot_ts = (
+        session.query(func.max(KalshiPositionSnapshot.snapshot_ts))
         .filter(KalshiPositionSnapshot.instance_name == instance_name)
-        .group_by(KalshiPositionSnapshot.ticker)
-        .subquery()
+        .scalar()
     )
+    if latest_snapshot_ts is None:
+        return {}
 
     rows = (
         session.query(KalshiPositionSnapshot)
-        .join(
-            subquery,
-            (KalshiPositionSnapshot.ticker == subquery.c.ticker)
-            & (KalshiPositionSnapshot.snapshot_ts == subquery.c.max_snapshot_ts),
+        .filter(
+            KalshiPositionSnapshot.instance_name == instance_name,
+            KalshiPositionSnapshot.snapshot_ts == latest_snapshot_ts,
         )
-        .filter(KalshiPositionSnapshot.instance_name == instance_name)
         .all()
     )
     return {row.ticker: row for row in rows}
@@ -351,8 +347,9 @@ def build_latest_order_activity_by_ticker(
     *,
     tickers: Iterable[str] | None = None,
     min_created_ts: datetime | None = None,
+    latest_orders: Iterable[KalshiOrderSnapshot] | None = None,
 ) -> tuple[dict[str, str], dict[str, int]]:
-    latest_order_snaps = get_latest_order_snapshots(session, instance_name, tickers=tickers)
+    latest_order_snaps = list(latest_orders) if latest_orders is not None else get_latest_order_snapshots(session, instance_name, tickers=tickers)
     latest_order_time_by_ticker: dict[str, str] = {}
     order_count_by_ticker: dict[str, int] = {}
 
@@ -549,8 +546,9 @@ def build_pending_orders_by_ticker(
     *,
     tickers: Iterable[str] | None = None,
     min_created_ts: datetime | None = None,
+    latest_orders: Iterable[KalshiOrderSnapshot] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    latest_orders = get_latest_order_snapshots(session, instance_name, tickers=tickers)
+    latest_orders = list(latest_orders) if latest_orders is not None else get_latest_order_snapshots(session, instance_name, tickers=tickers)
     pending_by_ticker: dict[str, list[dict[str, Any]]] = {}
     for order in latest_orders:
         if order.status != "PENDING" or order.remaining_count <= 0:

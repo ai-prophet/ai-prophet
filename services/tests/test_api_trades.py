@@ -64,7 +64,7 @@ if "fastapi" not in sys.modules:
     fastapi_responses.JSONResponse = object
     sys.modules["fastapi.responses"] = fastapi_responses
 
-from services.api.main import get_markets, get_trades
+from services.api.main import get_alerts, get_markets, get_trades
 
 
 def test_get_trades_recovers_prediction_for_signal_less_net_sell():
@@ -383,3 +383,54 @@ def test_get_markets_keeps_live_positions_visible_without_recent_trade_activity(
     assert rows[0]["market_id"] == "kalshi:LEGACY-MENTION"
     assert rows[0]["market_status"] == "inactive"
     assert rows[0]["market_result"] is None
+
+
+def test_get_alerts_uses_latest_prediction_per_market():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 3, 28, 12, 0, tzinfo=UTC)
+
+    with get_session(engine) as session:
+        session.add(
+            TradingMarket(
+                instance_name="Haifeng",
+                market_id="kalshi:TEST",
+                ticker="TEST",
+                event_ticker="TEST-EVENT",
+                title="Test market",
+                category="Sports",
+                yes_ask=0.70,
+                no_ask=0.31,
+                last_price=0.70,
+                updated_at=now,
+            )
+        )
+        session.add_all([
+            BettingPrediction(
+                instance_name="Haifeng",
+                tick_ts=now - timedelta(minutes=10),
+                market_id="kalshi:TEST",
+                source="model-a",
+                p_yes=0.10,
+                yes_ask=0.70,
+                no_ask=0.31,
+                created_at=now - timedelta(minutes=10),
+            ),
+            BettingPrediction(
+                instance_name="Haifeng",
+                tick_ts=now - timedelta(minutes=1),
+                market_id="kalshi:TEST",
+                source="model-a",
+                p_yes=0.55,
+                yes_ask=0.70,
+                no_ask=0.31,
+                created_at=now - timedelta(minutes=1),
+            ),
+        ])
+        session.commit()
+
+    with patch("services.api.main.get_db", return_value=engine):
+        response = get_alerts(instance_name="Haifeng")
+
+    divergence_alerts = [alert for alert in response["alerts"] if alert["type"] == "divergence"]
+    assert divergence_alerts == []

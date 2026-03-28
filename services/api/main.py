@@ -195,8 +195,48 @@ def _display_visible_market_activity(session, instance_name: str) -> tuple[set[s
                 .all()
             )
             if ticker
-        )
+    )
     return visible_tickers, visible_market_ids
+
+
+def _latest_predictions_by_market_id(
+    session,
+    instance_name: str,
+    market_ids: list[str] | set[str] | tuple[str, ...],
+) -> dict[str, BettingPrediction]:
+    market_id_list = sorted({market_id for market_id in market_ids if market_id})
+    if not market_id_list:
+        return {}
+
+    latest_created_at = (
+        session.query(
+            BettingPrediction.market_id.label("market_id"),
+            func.max(BettingPrediction.created_at).label("latest_created_at"),
+        )
+        .filter(
+            BettingPrediction.instance_name == instance_name,
+            BettingPrediction.market_id.in_(market_id_list),
+        )
+        .group_by(BettingPrediction.market_id)
+        .subquery()
+    )
+
+    rows = (
+        session.query(BettingPrediction)
+        .join(
+            latest_created_at,
+            (BettingPrediction.market_id == latest_created_at.c.market_id)
+            & (BettingPrediction.created_at == latest_created_at.c.latest_created_at),
+        )
+        .filter(BettingPrediction.instance_name == instance_name)
+        .order_by(BettingPrediction.market_id.asc(), BettingPrediction.id.desc())
+        .all()
+    )
+
+    latest_by_market_id: dict[str, BettingPrediction] = {}
+    for row in rows:
+        latest_by_market_id.setdefault(row.market_id, row)
+    return latest_by_market_id
 
 
 @asynccontextmanager
@@ -1350,17 +1390,22 @@ def get_markets(
         # (these are shown regardless of spread)
         kalshi_position_views = build_position_views(session, resolved_instance)
         active_positions: set[str] = {p.market_id for p in kalshi_position_views}
-        pending_orders_by_ticker = build_pending_orders_by_ticker(
+        latest_order_snaps = get_latest_order_snapshots(
             session,
             resolved_instance,
             tickers=(row.ticker for row in rows),
+        )
+        pending_orders_by_ticker = build_pending_orders_by_ticker(
+            session,
+            resolved_instance,
             min_created_ts=DISPLAY_CUTOFF_UTC,
+            latest_orders=latest_order_snaps,
         )
         latest_order_time_by_ticker, kalshi_order_count_by_ticker = build_latest_order_activity_by_ticker(
             session,
             resolved_instance,
-            tickers=(row.ticker for row in rows),
             min_created_ts=DISPLAY_CUTOFF_UTC,
+            latest_orders=latest_order_snaps,
         )
 
         # Bulk-load all recent model runs for these markets (avoid N+1)
@@ -1508,17 +1553,22 @@ def get_positions(
             (pos_markets.get(row.market_id).ticker if pos_markets.get(row.market_id) else getattr(row, "ticker", None))
             for row in rows
         ]
-        latest_order_time_by_ticker, kalshi_order_count_by_ticker = build_latest_order_activity_by_ticker(
+        latest_order_snaps = get_latest_order_snapshots(
             session,
             resolved_instance,
             tickers=tickers,
+        )
+        latest_order_time_by_ticker, kalshi_order_count_by_ticker = build_latest_order_activity_by_ticker(
+            session,
+            resolved_instance,
             min_created_ts=DISPLAY_CUTOFF_UTC,
+            latest_orders=latest_order_snaps,
         )
         pending_orders_by_ticker = build_pending_orders_by_ticker(
             session,
             resolved_instance,
-            tickers=tickers,
             min_created_ts=DISPLAY_CUTOFF_UTC,
+            latest_orders=latest_order_snaps,
         )
 
         results = []
@@ -2713,16 +2763,15 @@ def get_alerts(instance_name: str | None = Query(None)) -> dict[str, Any]:
 
         # 3. Model-market divergence > 20pp
         markets = _instance_query(session, TradingMarket, resolved_instance).all()
+        latest_predictions = _latest_predictions_by_market_id(
+            session,
+            resolved_instance,
+            [mkt.market_id for mkt in markets],
+        )
         for mkt in markets:
             if mkt.yes_ask is None:
                 continue
-            # Get latest prediction for this market
-            latest_pred = (
-                _instance_query(session, BettingPrediction, resolved_instance)
-                .filter(BettingPrediction.market_id == mkt.market_id)
-                .order_by(BettingPrediction.created_at.desc())
-                .first()
-            )
+            latest_pred = latest_predictions.get(mkt.market_id)
             if latest_pred:
                 divergence = abs(latest_pred.p_yes - mkt.yes_ask)
                 if divergence > 0.20:
