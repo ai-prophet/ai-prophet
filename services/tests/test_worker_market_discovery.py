@@ -10,6 +10,7 @@ from db_models import TradingMarket, TradingPosition
 from services.worker.main import (
     _is_excluded_market,
     _mark_market_resolved,
+    fetch_market_by_ticker,
     fetch_kalshi_markets,
     get_peer_tickers,
     purge_excluded_tracked_markets,
@@ -225,6 +226,113 @@ def test_purge_excluded_tracked_markets_removes_mentions_rows():
     with get_session(engine) as session:
         tickers = [row[0] for row in session.query(TradingMarket.ticker).all()]
     assert tickers == ["REAL-ONE"]
+
+
+def test_purge_excluded_tracked_markets_preserves_rows_with_live_position():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with get_session(engine) as session:
+        session.add(
+            TradingMarket(
+                instance_name="Haifeng",
+                market_id="kalshi:MENTION-ONE",
+                ticker="KXNCAABMENTION-26MAR28MSUCONN-DOUB",
+                event_ticker="KXNCAABMENTION-26MAR28MSUCONN",
+                title="Mention row",
+                category="Sports",
+                last_price=0.5,
+                yes_bid=0.49,
+                yes_ask=0.5,
+                no_bid=0.5,
+                no_ask=0.51,
+                volume_24h=100,
+                updated_at=now,
+            )
+        )
+        session.add(
+            TradingPosition(
+                instance_name="Haifeng",
+                market_id="kalshi:MENTION-ONE",
+                contract="yes",
+                quantity=6.0,
+                avg_price=0.29,
+                realized_pnl=0.0,
+                unrealized_pnl=0.0,
+                max_position=6.0,
+                realized_trades=0,
+                updated_at=now,
+            )
+        )
+
+    removed = purge_excluded_tracked_markets(engine, "Haifeng")
+
+    assert removed == 0
+    with get_session(engine) as session:
+        tickers = [row[0] for row in session.query(TradingMarket.ticker).all()]
+    assert tickers == ["KXNCAABMENTION-26MAR28MSUCONN-DOUB"]
+
+
+def test_fetch_market_by_ticker_can_keep_excluded_inactive_market_for_display():
+    default_adapter = _FakeAdapter(
+        [
+            {
+                "market": {
+                    **_market_payload("KXNCAABMENTION-26MAR27SJUDUKE-ALLA"),
+                    "status": "inactive",
+                    "yes_ask_dollars": None,
+                    "no_ask_dollars": None,
+                    "last_price_dollars": "0.07",
+                    "event_ticker": "KXNCAABMENTION-26MAR27SJUDUKE",
+                    "yes_sub_title": "Allan makes first free throw",
+                }
+            },
+            {
+                "event": {
+                    "title": "St. John's vs Duke mentions",
+                    "category": "Sports",
+                }
+            },
+        ]
+    )
+
+    assert fetch_market_by_ticker(default_adapter, "KXNCAABMENTION-26MAR27SJUDUKE-ALLA") is None
+
+    display_adapter = _FakeAdapter(
+        [
+            {
+                "market": {
+                    **_market_payload("KXNCAABMENTION-26MAR27SJUDUKE-ALLA"),
+                    "status": "inactive",
+                    "yes_ask_dollars": None,
+                    "no_ask_dollars": None,
+                    "last_price_dollars": "0.07",
+                    "event_ticker": "KXNCAABMENTION-26MAR27SJUDUKE",
+                    "yes_sub_title": "Allan makes first free throw",
+                }
+            },
+            {
+                "event": {
+                    "title": "St. John's vs Duke mentions",
+                    "category": "Sports",
+                }
+            },
+        ]
+    )
+
+    market = fetch_market_by_ticker(
+        display_adapter,
+        "KXNCAABMENTION-26MAR27SJUDUKE-ALLA",
+        allow_excluded=True,
+        allow_inactive=True,
+    )
+
+    assert market is not None
+    assert market["status"] == "inactive"
+    assert market["result"] == ""
+    assert market["last_price"] == "0.07"
+    assert market["title"] == "St. John's vs Duke mentions: Allan makes first free throw"
 
 
 def test_get_peer_tickers_excludes_mentions_and_preserves_recent_order():

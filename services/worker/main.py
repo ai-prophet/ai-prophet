@@ -644,9 +644,52 @@ def purge_excluded_tracked_markets(db_engine, instance_name: str = INSTANCE_NAME
         return 0
     try:
         from ai_prophet_core.betting.db import get_session
-        from db_models import TradingMarket
+        from ai_prophet_core.betting.db_schema import BettingOrder
+        from db_models import KalshiOrderSnapshot, TradingMarket, TradingPosition
+        from kalshi_state import build_position_views
 
         with get_session(db_engine) as session:
+            live_position_views = build_position_views(session, instance_name)
+            protected_tickers = {
+                view.ticker
+                for view in live_position_views
+                if view.ticker
+            }
+            protected_market_ids = {
+                view.market_id
+                for view in live_position_views
+                if view.market_id
+            }
+            protected_market_ids.update(
+                market_id
+                for (market_id,) in (
+                    session.query(TradingPosition.market_id)
+                    .filter(
+                        TradingPosition.instance_name == instance_name,
+                        TradingPosition.quantity > 1e-9,
+                    )
+                    .all()
+                )
+                if market_id
+            )
+            protected_tickers.update(
+                ticker
+                for (ticker,) in (
+                    session.query(BettingOrder.ticker)
+                    .filter(BettingOrder.instance_name == instance_name)
+                    .all()
+                )
+                if ticker
+            )
+            protected_tickers.update(
+                ticker
+                for (ticker,) in (
+                    session.query(KalshiOrderSnapshot.ticker)
+                    .filter(KalshiOrderSnapshot.instance_name == instance_name)
+                    .all()
+                )
+                if ticker
+            )
             rows = (
                 session.query(TradingMarket)
                 .filter(TradingMarket.instance_name == instance_name)
@@ -661,19 +704,51 @@ def purge_excluded_tracked_markets(db_engine, instance_name: str = INSTANCE_NAME
                     title=row.title,
                 )
             ]
-            for row in excluded_rows:
+            removable_rows = [
+                row
+                for row in excluded_rows
+                if row.ticker not in protected_tickers
+                and row.market_id not in protected_market_ids
+            ]
+            for row in removable_rows:
                 session.delete(row)
-        removed = len(excluded_rows)
+        removed = len(removable_rows)
+        preserved = len(excluded_rows) - removed
         if removed:
             logger.info(
                 "Removed %d excluded tracked markets for %s before discovery",
                 removed,
                 instance_name,
             )
+        if preserved:
+            logger.info(
+                "Preserved %d excluded tracked markets for %s because they still have positions or order history",
+                preserved,
+                instance_name,
+            )
         return removed
     except Exception as e:
         logger.warning("Failed to purge excluded tracked markets for %s: %s", instance_name, e)
         return 0
+
+
+def get_live_position_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
+    """Return tickers that still have a live synced Kalshi position."""
+    if db_engine is None:
+        return set()
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from kalshi_state import build_position_views
+
+        with get_session(db_engine) as session:
+            return {
+                view.ticker
+                for view in build_position_views(session, instance_name)
+                if view.ticker
+            }
+    except Exception as e:
+        logger.warning("Failed to query live position tickers: %s", e)
+        return set()
 
 
 def _fetch_raw_market(adapter, ticker: str) -> dict | None:
@@ -784,7 +859,13 @@ def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
         logger.warning("  Failed to mark %s resolved: %s", ticker, e)
 
 
-def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
+def fetch_market_by_ticker(
+    adapter,
+    ticker: str,
+    *,
+    allow_excluded: bool = False,
+    allow_inactive: bool = False,
+) -> dict | None:
     """Fetch a single market by ticker, then its parent event for clean title/category."""
     base_url = adapter._base_url
 
@@ -801,8 +882,8 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
         response.raise_for_status()
         mkt = response.json().get("market", {})
 
-        status = mkt.get("status", "")
-        if status not in ("open", "active"):
+        status = str(mkt.get("status", "") or "").lower()
+        if status not in ("open", "active") and not allow_inactive:
             return None
 
         yes_bid = mkt.get("yes_bid_dollars")
@@ -844,7 +925,7 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
             ticker=ticker,
             event_ticker=event_ticker,
             title=title,
-        ):
+        ) and not allow_excluded:
             return None
 
         return {
@@ -853,6 +934,8 @@ def fetch_market_by_ticker(adapter, ticker: str) -> dict | None:
             "title": title,
             "subtitle": mkt.get("rules_primary", ""),
             "category": category,
+            "status": status,
+            "result": str(mkt.get("result", "") or "").lower(),
             "yes_bid": yes_bid,
             "yes_ask": yes_ask,
             "no_bid": no_bid,
@@ -1505,17 +1588,32 @@ def run_cycle(args) -> None:
             f"Removed {purged_markets} excluded tracked markets before discovery",
             instance_name=INSTANCE_NAME,
         )
+    live_position_tickers = get_live_position_tickers(db_engine, INSTANCE_NAME)
     tracked_tickers = (
         get_tracked_tickers(db_engine, INSTANCE_NAME)
         | get_traded_tickers(db_engine, INSTANCE_NAME)
+        | live_position_tickers
     )
     sticky_markets: list[dict] = []
 
     if tracked_tickers:
         logger.info("Re-fetching %d sticky markets: %s", len(tracked_tickers), tracked_tickers)
         for ticker in tracked_tickers:
-            mkt = fetch_market_by_ticker(adapter, ticker)
+            keep_for_display = ticker in live_position_tickers
+            mkt = fetch_market_by_ticker(
+                adapter,
+                ticker,
+                allow_excluded=keep_for_display,
+                allow_inactive=keep_for_display,
+            )
             if mkt:
+                market_status = str(mkt.get("status", "") or "").lower()
+                market_result = str(mkt.get("result", "") or "").lower()
+                if market_result in ("yes", "no") and market_status not in ("open", "active"):
+                    logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
+                    if db_engine is not None:
+                        _mark_market_resolved(db_engine, adapter, ticker)
+                    continue
                 sticky_markets.append(mkt)
             else:
                 logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
@@ -1632,25 +1730,6 @@ def run_cycle(args) -> None:
 
         market_id = f"kalshi:{ticker}"
 
-        if _is_excluded_market(
-            category=category,
-            ticker=ticker,
-            event_ticker=market.get("event_ticker", ""),
-            title=title,
-        ):
-            logger.debug("Skipping %s: mentions markets are excluded from tracking and betting", ticker)
-            log_cycle_skip_for_models(
-                db_engine,
-                model_specs,
-                market_id,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-                reason="Skipped because mentions markets are excluded from tracking and betting.",
-                instance_name=INSTANCE_NAME,
-            )
-            all_market_prices[market_id] = (yes_ask, no_ask)
-            continue
-
         # Save market snapshot for dashboard even when the market is skipped for this cycle.
         if db_engine:
             expiration = None
@@ -1669,6 +1748,25 @@ def run_cycle(args) -> None:
                 volume_24h=float(market.get("volume_24h", 0) or 0),
                 instance_name=INSTANCE_NAME,
             )
+
+        if _is_excluded_market(
+            category=category,
+            ticker=ticker,
+            event_ticker=market.get("event_ticker", ""),
+            title=title,
+        ):
+            logger.debug("Skipping %s: mentions markets are excluded from tracking and betting", ticker)
+            log_cycle_skip_for_models(
+                db_engine,
+                model_specs,
+                market_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
+                reason="Skipped because mentions markets are excluded from new trading, but tracked holdings stay visible.",
+                instance_name=INSTANCE_NAME,
+            )
+            all_market_prices[market_id] = (yes_ask, no_ask)
+            continue
 
         if yes_ask + no_ask > MAX_SPREAD:
             logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
@@ -2072,13 +2170,30 @@ def run_cycle(args) -> None:
     #    Re-fetch current prices for ALL traded tickers so unrealized PnL
     #    reflects actual market movement, not just this cycle's markets.
     if db_engine:
-        traded = get_traded_tickers(db_engine, INSTANCE_NAME)
+        traded = get_traded_tickers(db_engine, INSTANCE_NAME) | live_position_tickers
         for ticker in traded:
             market_id = f"kalshi:{ticker}"
             if market_id not in all_market_prices:
-                mkt = fetch_market_by_ticker(adapter, ticker)
-                if mkt and mkt.get("yes_ask") is not None and mkt.get("no_ask") is not None:
-                    all_market_prices[market_id] = (float(mkt["yes_ask"]), float(mkt["no_ask"]))
+                keep_for_display = ticker in live_position_tickers
+                mkt = fetch_market_by_ticker(
+                    adapter,
+                    ticker,
+                    allow_excluded=keep_for_display,
+                    allow_inactive=keep_for_display,
+                )
+                if not mkt:
+                    continue
+
+                yes_ask = mkt.get("yes_ask")
+                no_ask = mkt.get("no_ask")
+                if yes_ask is None or no_ask is None:
+                    last_price = mkt.get("last_price")
+                    if last_price is not None:
+                        yes_ask = float(last_price)
+                        no_ask = 1.0 - yes_ask
+
+                if yes_ask is not None and no_ask is not None:
+                    all_market_prices[market_id] = (float(yes_ask), float(no_ask))
 
         # Fall back to cached prices in trading_markets table
         if not all_market_prices:

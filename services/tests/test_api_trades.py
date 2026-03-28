@@ -16,7 +16,7 @@ from ai_prophet_core.betting.db_schema import (
     BettingPrediction,
     BettingSignal,
 )
-from db_models import ModelRun, TradingMarket
+from db_models import KalshiPositionSnapshot, ModelRun, TradingMarket
 
 if "fastapi" not in sys.modules:
     fastapi = types.ModuleType("fastapi")
@@ -323,3 +323,51 @@ def test_get_markets_prefers_latest_non_skip_probability():
     row = rows[0]
     assert row["latest_non_skip_p_yes"] == 0.15
     assert row["aggregated_p_yes"] == 0.15
+
+
+def test_get_markets_keeps_live_positions_visible_without_recent_trade_activity():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 3, 28, 12, 0, tzinfo=UTC)
+
+    with get_session(engine) as session:
+        session.add(
+            TradingMarket(
+                instance_name="Haifeng",
+                market_id="kalshi:LEGACY-MENTION",
+                ticker="KXNCAABMENTION-26MAR27SJUDUKE-ALLA",
+                event_ticker="KXNCAABMENTION-26MAR27SJUDUKE",
+                title="St. John's vs Duke mentions: Allan makes first free throw",
+                category="Sports",
+                yes_ask=0.07,
+                no_ask=0.94,
+                last_price=0.07,
+                updated_at=now,
+            )
+        )
+        session.add(
+            KalshiPositionSnapshot(
+                instance_name="Haifeng",
+                ticker="KXNCAABMENTION-26MAR27SJUDUKE-ALLA",
+                market_id="kalshi:LEGACY-MENTION",
+                side="yes",
+                signed_quantity=31.0,
+                quantity=31.0,
+                market_exposure=21.77,
+                realized_pnl=0.0,
+                fees_paid=0.52,
+                total_cost=21.25,
+                total_cost_shares=31.0,
+                total_traded=21.25,
+                resting_orders_count=0,
+                snapshot_ts=now,
+                raw_json="{}",
+            )
+        )
+
+    with patch("services.api.main.get_db", return_value=engine):
+        rows = get_markets(limit=10, instance_name="Haifeng")
+
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "KXNCAABMENTION-26MAR27SJUDUKE-ALLA"
+    assert rows[0]["market_id"] == "kalshi:LEGACY-MENTION"

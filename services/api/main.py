@@ -160,8 +160,29 @@ def _display_visible_market_activity(session, instance_name: str) -> tuple[set[s
                 ),
             )
             .all()
+            )
+            if ticker
         )
-        if ticker
+    live_position_views = build_position_views(session, instance_name)
+    visible_tickers.update(
+        view.ticker
+        for view in live_position_views
+        if view.ticker
+    )
+    visible_market_ids.update(
+        view.market_id
+        for view in live_position_views
+        if view.market_id
+    )
+    visible_market_ids.update(
+        market_id
+        for (market_id,) in (
+            _instance_query(session, TradingPosition, instance_name)
+            .filter(TradingPosition.quantity > 1e-9)
+            .with_entities(TradingPosition.market_id)
+            .all()
+        )
+        if market_id
     )
     if visible_market_ids:
         visible_tickers.update(
