@@ -112,6 +112,7 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
     """Persist append-only Kalshi balance/position/order snapshots for one sync cycle."""
     snapshot_ts = snapshot_ts or datetime.now(UTC)
     results = {"balances": 0, "positions": 0, "orders": 0}
+    previous_positions = get_latest_position_snapshots(session, instance_name)
 
     balance_data = adapter.get_balance_details()
     session.add(
@@ -127,10 +128,12 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
     results["balances"] += 1
 
     positions = adapter.get_positions()
+    current_tickers: set[str] = set()
     for raw_pos in positions:
         ticker = raw_pos.get("ticker")
         if not ticker:
             continue
+        current_tickers.add(ticker)
         signed_quantity = _to_float(raw_pos.get("position_fp"))
         session.add(
             KalshiPositionSnapshot(
@@ -149,6 +152,46 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
                 resting_orders_count=int(round(_to_float(raw_pos.get("resting_orders_count")))),
                 snapshot_ts=snapshot_ts,
                 raw_json=json.dumps(raw_pos),
+            )
+        )
+        results["positions"] += 1
+
+    # Reconcile tickers that disappeared from the latest Kalshi portfolio response.
+    # Without an explicit zero row, older non-zero snapshots can linger forever
+    # because the dashboard currently reads the latest snapshot per ticker.
+    for ticker in sorted(previous_positions.keys() - current_tickers):
+        previous = previous_positions[ticker]
+        if abs(float(previous.signed_quantity or 0.0)) <= 1e-9:
+            continue
+        reconciled_raw_pos = {
+            "ticker": ticker,
+            "position_fp": "0.00",
+            "market_exposure_dollars": "0.000000",
+            "realized_pnl_dollars": f"{float(previous.realized_pnl or 0.0):.6f}",
+            "fees_paid_dollars": f"{float(previous.fees_paid or 0.0):.6f}",
+            "total_cost_dollars": "0.000000",
+            "total_cost_shares_fp": "0.00",
+            "total_traded_dollars": f"{float(previous.total_traded or 0.0):.6f}",
+            "resting_orders_count": 0,
+            "reconciled_missing": True,
+        }
+        session.add(
+            KalshiPositionSnapshot(
+                instance_name=instance_name,
+                ticker=ticker,
+                market_id=previous.market_id,
+                side=previous.side,
+                signed_quantity=0.0,
+                quantity=0.0,
+                market_exposure=0.0,
+                realized_pnl=float(previous.realized_pnl or 0.0),
+                fees_paid=float(previous.fees_paid or 0.0),
+                total_cost=0.0,
+                total_cost_shares=0.0,
+                total_traded=float(previous.total_traded or 0.0),
+                resting_orders_count=0,
+                snapshot_ts=snapshot_ts,
+                raw_json=json.dumps(reconciled_raw_pos),
             )
         )
         results["positions"] += 1

@@ -900,6 +900,40 @@ def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
         logger.warning("  Failed to mark %s resolved: %s", ticker, e)
 
 
+def fetch_market_lifecycle_by_ticker(adapter, ticker: str) -> dict | None:
+    """Fetch raw market lifecycle state even when the market is no longer tradable."""
+    base_url = adapter._base_url
+    path = f"/trade-api/v2/markets/{ticker}"
+    headers = adapter._sign_request("GET", path)
+
+    try:
+        response = adapter._session.get(
+            base_url + path,
+            headers=headers,
+            timeout=adapter._timeout,
+        )
+        response.raise_for_status()
+        mkt = response.json().get("market", {})
+        if not mkt:
+            return None
+        return {
+            "ticker": ticker,
+            "status": str(mkt.get("status", "") or "").lower(),
+            "result": str(mkt.get("result", "") or "").lower(),
+            "yes_bid": mkt.get("yes_bid_dollars"),
+            "yes_ask": mkt.get("yes_ask_dollars"),
+            "no_bid": mkt.get("no_bid_dollars"),
+            "no_ask": mkt.get("no_ask_dollars"),
+            "last_price": mkt.get("last_price_dollars"),
+            "close_time": mkt.get("close_time"),
+            "open_time": mkt.get("open_time"),
+            "volume_24h": mkt.get("volume_24h_fp", 0),
+        }
+    except Exception as e:
+        logger.debug("Failed to fetch market lifecycle for %s: %s", ticker, e)
+        return None
+
+
 def fetch_market_by_ticker(
     adapter,
     ticker: str,
@@ -1666,7 +1700,20 @@ def run_cycle(args) -> None:
                     continue
                 sticky_markets.append(mkt)
             else:
-                logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
+                lifecycle_market = fetch_market_lifecycle_by_ticker(adapter, ticker)
+                if lifecycle_market and db_engine is not None:
+                    save_market_lifecycle_snapshot(
+                        db_engine,
+                        f"kalshi:{ticker}",
+                        ticker=ticker,
+                        status=str(lifecycle_market.get("status", "") or "").lower(),
+                        result=str(lifecycle_market.get("result", "") or "").lower(),
+                        instance_name=INSTANCE_NAME,
+                    )
+                    if lifecycle_market.get("result") in ("yes", "no") and lifecycle_market.get("status") not in ("open", "active"):
+                        logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
+                        _mark_market_resolved(db_engine, adapter, ticker)
+                logger.info("  Sticky market %s no longer has active market data", ticker)
                 if db_engine is not None:
                     log_cycle_skip_for_models(
                         db_engine,
@@ -1677,7 +1724,6 @@ def run_cycle(args) -> None:
                         reason="Skipped because live market data could not be fetched for this cycle.",
                         instance_name=INSTANCE_NAME,
                     )
-                    _mark_market_resolved(db_engine, adapter, ticker)
 
     # 2. Discover NEW markets — either from Kalshi (fetcher) or from peer instance (mirror)
     new_slots = max(0, max_active - len(sticky_markets))

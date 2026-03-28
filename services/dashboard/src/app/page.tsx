@@ -98,7 +98,7 @@ function isResolvedMarketResult(result: string | null | undefined): boolean {
 
 function isArchivedLifecycleStatus(status: string | null | undefined): boolean {
   const normalized = (status ?? "").trim().toLowerCase();
-  return normalized === "closed" || normalized === "inactive";
+  return normalized === "closed" || normalized === "inactive" || normalized === "finalized";
 }
 
 function filterDashboardSubset(markets: Market[], positions: Position[], trades: Trade[]) {

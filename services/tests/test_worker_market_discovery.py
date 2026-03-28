@@ -10,6 +10,7 @@ from db_models import TradingMarket, TradingMarketLifecycle, TradingPosition
 from services.worker.main import (
     _is_excluded_market,
     _mark_market_resolved,
+    fetch_market_lifecycle_by_ticker,
     fetch_market_by_ticker,
     fetch_kalshi_markets,
     get_peer_tickers,
@@ -334,6 +335,32 @@ def test_fetch_market_by_ticker_can_keep_excluded_inactive_market_for_display():
     assert market["result"] == ""
     assert market["last_price"] == "0.07"
     assert market["title"] == "St. John's vs Duke mentions: Allan makes first free throw"
+
+
+def test_fetch_market_lifecycle_by_ticker_reads_finalized_state_without_active_fetch():
+    adapter = _FakeAdapter(
+        [
+            {
+                "market": {
+                    **_market_payload("KXNCAABMENTION-26MAR28MSUCONN-ALLE"),
+                    "status": "finalized",
+                    "result": "",
+                    "yes_bid_dollars": "0.0000",
+                    "yes_ask_dollars": "1.0000",
+                    "no_bid_dollars": "0.0000",
+                    "no_ask_dollars": "1.0000",
+                    "last_price_dollars": "0.0100",
+                }
+            }
+        ]
+    )
+
+    market = fetch_market_lifecycle_by_ticker(adapter, "KXNCAABMENTION-26MAR28MSUCONN-ALLE")
+
+    assert market is not None
+    assert market["status"] == "finalized"
+    assert market["result"] == ""
+    assert market["last_price"] == "0.0100"
 
 
 def test_save_market_lifecycle_snapshot_upserts_latest_status():
