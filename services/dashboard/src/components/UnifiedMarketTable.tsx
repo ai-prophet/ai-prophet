@@ -155,6 +155,23 @@ function formatPendingDelta(delta: number): string {
   return "0 pending";
 }
 
+function pendingHoldDeltaForDisplay(row: UnifiedMarketRow): number | null {
+  if (row.pending_shares == null || row.pending_shares <= 0) return null;
+
+  if (row.position && row.target_shares != null) {
+    const holdDelta = row.target_shares - row.position.quantity;
+    if (Math.round(holdDelta) !== 0 || row.pending_delta_shares == null) {
+      return holdDelta;
+    }
+  }
+
+  if (!row.position && row.target_shares != null) {
+    return row.target_shares;
+  }
+
+  return row.pending_delta_shares;
+}
+
 function sameEdgeValue(a: number | null | undefined, b: number | null | undefined): boolean {
   return a != null && b != null && Math.abs(a - b) <= 0.0005;
 }
@@ -1016,9 +1033,9 @@ function MarketRow({
                   {pos.contract.toUpperCase()}
                 </span>
               </span>
-              {row.pending_delta_shares != null && row.pending_shares != null && row.pending_shares > 0 && (
+              {pendingHoldDeltaForDisplay(row) != null && (
                 <span className="text-[9px] font-mono text-yellow-400" title="Open Kalshi orders captured during the latest sync">
-                  {formatPendingDelta(row.pending_delta_shares)}
+                  {formatPendingDelta(pendingHoldDeltaForDisplay(row)!)}
                 </span>
               )}
               {row.target_shares != null && row.target_shares !== pos.quantity && (
@@ -1031,9 +1048,9 @@ function MarketRow({
           ) : row.edge && Math.abs(row.edge) > 0.01 ? (
             <span className="flex flex-col items-center gap-0.5">
               <span className="font-mono text-txt-muted">0</span>
-              {row.pending_delta_shares != null && row.pending_shares != null && row.pending_shares > 0 && (
+              {pendingHoldDeltaForDisplay(row) != null && (
                 <span className="text-[9px] font-mono text-yellow-400" title="Open Kalshi orders captured during the latest sync">
-                  {formatPendingDelta(row.pending_delta_shares)}
+                  {formatPendingDelta(pendingHoldDeltaForDisplay(row)!)}
                 </span>
               )}
               {row.target_shares != null && (
