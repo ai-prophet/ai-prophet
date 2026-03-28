@@ -43,7 +43,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_, text
 from instance_config import DEFAULT_INSTANCE_NAME, get_instance_env, normalize_instance_name
-from position_replay import InventoryPosition, normalize_order
+from position_replay import EPSILON, InventoryPosition, load_replayable_orders, normalize_order
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +444,169 @@ def _build_kalshi_adapter(instance_name: str):
         base_url=_instance_setting("KALSHI_BASE_URL", instance_name, "https://api.elections.kalshi.com"),
         dry_run=dry_run,
     )
+
+
+def _normalized_binary_outcome(value: float | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(numeric - 1.0) < 1e-9:
+        return 1.0
+    if abs(numeric - 0.0) < 1e-9:
+        return 0.0
+    return None
+
+
+def _fetch_raw_market(adapter: Any, ticker: str) -> dict[str, Any] | None:
+    try:
+        path = f"/trade-api/v2/markets/{ticker}"
+        headers = adapter._sign_request("GET", path)
+        response = adapter._session.get(
+            adapter._base_url + path,
+            headers=headers,
+            timeout=getattr(adapter, "_timeout", 10),
+        )
+        response.raise_for_status()
+        return response.json().get("market", {})
+    except Exception as e:
+        logger.warning("Failed to fetch raw market %s for resolution lookup: %s", ticker, e)
+        return None
+
+
+def _fetch_market_resolution_outcome(adapter: Any, ticker: str) -> float | None:
+    market = _fetch_raw_market(adapter, ticker)
+    if not market:
+        return None
+
+    result = str(market.get("result") or "").strip().lower()
+    if result == "yes":
+        return 1.0
+    if result == "no":
+        return 0.0
+
+    status = str(market.get("status") or "").strip().lower()
+    settled_price = _normalized_binary_outcome(
+        market.get("settlement_price_dollars", market.get("last_price_dollars"))
+    )
+    if status in {"settled", "resolved", "finalized"}:
+        return settled_price
+    return None
+
+
+def _visible_market_scope_filter(visible_tickers: set[str], visible_market_ids: set[str]):
+    filters = []
+    if visible_market_ids:
+        filters.append(TradingMarket.market_id.in_(visible_market_ids))
+    if visible_tickers:
+        filters.append(TradingMarket.ticker.in_(visible_tickers))
+    if not filters:
+        return False
+    if len(filters) == 1:
+        return filters[0]
+    return or_(*filters)
+
+
+def _load_resolved_visible_markets(
+    session: Any,
+    instance_name: str,
+) -> list[tuple[TradingMarket, float]]:
+    visible_tickers, visible_market_ids = _display_visible_market_activity(session, instance_name)
+    visible_filter = _visible_market_scope_filter(visible_tickers, visible_market_ids)
+    if visible_filter is False:
+        return []
+
+    markets = (
+        _instance_query(session, TradingMarket, instance_name)
+        .filter(
+            TradingMarket.expiration < datetime.now(UTC),
+            visible_filter,
+        )
+        .order_by(TradingMarket.expiration.desc())
+        .all()
+    )
+    if not markets:
+        return []
+
+    adapter: Any | None = None
+    looked_up_live = False
+    updated_rows = False
+    resolved: list[tuple[TradingMarket, float]] = []
+
+    for market in markets:
+        outcome = _normalized_binary_outcome(market.last_price)
+        if outcome is None and market.ticker:
+            if not looked_up_live:
+                looked_up_live = True
+                try:
+                    adapter = _build_kalshi_adapter(instance_name)
+                except Exception as e:
+                    logger.warning("Failed to build Kalshi adapter for %s resolution lookup: %s", instance_name, e)
+                    adapter = None
+            if adapter is not None:
+                outcome = _fetch_market_resolution_outcome(adapter, market.ticker)
+                if outcome is not None:
+                    market.last_price = outcome
+                    market.yes_bid = outcome
+                    market.yes_ask = outcome
+                    market.no_bid = 1.0 - outcome
+                    market.no_ask = 1.0 - outcome
+                    market.updated_at = datetime.now(UTC)
+                    updated_rows = True
+        if outcome is not None:
+            resolved.append((market, outcome))
+
+    if updated_rows:
+        session.flush()
+
+    return resolved
+
+
+def _build_resolved_market_trade_state(
+    session: Any,
+    instance_name: str,
+    tickers: list[str],
+) -> dict[str, dict[str, Any]]:
+    orders = load_replayable_orders(session, BettingOrder, instance_name, tickers=tickers)
+    positions: dict[str, InventoryPosition] = {}
+    settlement_state: dict[str, dict[str, Any]] = {}
+
+    for order in orders:
+        ticker = getattr(order, "ticker", "")
+        if not ticker:
+            continue
+
+        pos = positions.setdefault(ticker, InventoryPosition())
+        action, side, shares, _, _ = normalize_order(order)
+        if shares <= EPSILON:
+            continue
+
+        status = str(getattr(order, "status", "") or "").upper()
+        if action == "SELL" and status == "SETTLED":
+            held_qty, held_cost = pos._held_for(side)
+            avg_price = held_cost / held_qty if held_qty > EPSILON else 0.0
+            capital = held_qty * avg_price
+            pos.apply_order(order, ticker=ticker)
+            settlement_state[ticker] = {
+                "position_side": side.upper(),
+                "quantity": round(held_qty, 4),
+                "avg_price": round(avg_price, 4),
+                "capital": round(capital, 4),
+                "pnl": round(pos.realized_pnl, 4),
+            }
+            continue
+
+        pos.apply_order(order, ticker=ticker)
+
+    state: dict[str, dict[str, Any]] = {}
+    for ticker in tickers:
+        state[ticker] = {
+            "position": positions.get(ticker, InventoryPosition()),
+            "settlement": settlement_state.get(ticker),
+        }
+    return state
 
 
 def _build_pred_by_signal(
@@ -2003,19 +2166,9 @@ def get_model_calibration(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
-        # Get resolved markets: expired and last_price is 0 or 1
-        resolved_markets = (
-            _instance_query(session, TradingMarket, resolved_instance)
-            .filter(
-                TradingMarket.expiration < datetime.now(UTC),
-                TradingMarket.last_price.in_([0.0, 1.0]),
-                TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
-            )
-            .all()
-        )
+        resolved_markets = _load_resolved_visible_markets(session, resolved_instance)
         resolved_map: dict[str, float] = {
-            m.market_id: m.last_price for m in resolved_markets
+            market.market_id: outcome for market, outcome in resolved_markets
         }
 
         if not resolved_map:
@@ -2172,22 +2325,12 @@ def get_brier_scores(
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
-        # 1. Resolved markets: expired with last_price of 0 or 1
-        resolved_markets = (
-            _instance_query(session, TradingMarket, resolved_instance)
-            .filter(
-                TradingMarket.expiration < datetime.now(UTC),
-                TradingMarket.last_price.in_([0.0, 1.0]),
-                TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
-            )
-            .all()
-        )
+        resolved_markets = _load_resolved_visible_markets(session, resolved_instance)
         resolved_map: dict[str, float] = {
-            m.market_id: m.last_price for m in resolved_markets
+            market.market_id: outcome for market, outcome in resolved_markets
         }
         title_map: dict[str, str] = {
-            m.market_id: m.title for m in resolved_markets
+            market.market_id: market.title for market, _ in resolved_markets
         }
 
         empty_response: dict[str, Any] = {
@@ -2298,21 +2441,11 @@ def get_brier_scores(
 def get_resolved_markets(
     instance_name: str | None = Query(None),
 ) -> dict[str, Any]:
-    """Resolved markets P&L: all expired markets (last_price 0 or 1) with position results."""
+    """Resolved markets P&L for visible expired markets with a known final outcome."""
     resolved_instance = _instance_name(instance_name)
     engine = get_db()
     with get_session(engine) as session:
-        visible_tickers, visible_market_ids = _display_visible_market_activity(session, resolved_instance)
-        markets = (
-            _instance_query(session, TradingMarket, resolved_instance)
-            .filter(
-                TradingMarket.expiration < datetime.now(UTC),
-                TradingMarket.last_price.in_([0.0, 1.0]),
-                TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
-            )
-            .order_by(TradingMarket.expiration.desc())
-            .all()
-        )
+        markets = _load_resolved_visible_markets(session, resolved_instance)
 
         if not markets:
             return {
@@ -2328,60 +2461,62 @@ def get_resolved_markets(
                 },
             }
 
-        market_ids = [m.market_id for m in markets]
-        positions: dict[str, TradingPosition] = {}
-        for p in (
-            _instance_query(session, TradingPosition, resolved_instance)
-            .filter(TradingPosition.market_id.in_(market_ids))
-            .all()
-        ):
-            positions[p.market_id] = p
+        tickers = [market.ticker for market, _ in markets if market.ticker]
+        trade_state = _build_resolved_market_trade_state(session, resolved_instance, tickers)
 
         rows = []
-        for mkt in markets:
-            pos = positions.get(mkt.market_id)
-            outcome = mkt.last_price  # 0.0 = NO, 1.0 = YES
+        for mkt, outcome in markets:
+            replay = trade_state.get(mkt.ticker, {})
+            replay_pos = replay.get("position")
+            settlement = replay.get("settlement")
             resolved_at = mkt.expiration.isoformat() if mkt.expiration else None
+            position_side: str | None = None
+            quantity = 0.0
+            avg_price = 0.0
+            capital = 0.0
+            pnl = 0.0
 
-            if pos:
-                capital = round(pos.quantity * pos.avg_price, 4)
-                pnl = round(pos.realized_pnl, 4)
-                ret_pct = round(pnl / capital * 100, 2) if capital else 0.0
+            if settlement is not None:
+                position_side = settlement["position_side"]
+                quantity = settlement["quantity"]
+                avg_price = settlement["avg_price"]
+                capital = settlement["capital"]
+                pnl = settlement["pnl"]
+            elif isinstance(replay_pos, InventoryPosition):
+                side, qty, avg = replay_pos.current_position()
+                if side is not None and qty > EPSILON:
+                    settlement_price = outcome if side == "yes" else 1.0 - outcome
+                    position_side = side.upper()
+                    quantity = round(qty, 4)
+                    avg_price = round(avg, 4)
+                    capital = round(qty * avg, 4)
+                    pnl = round(replay_pos.realized_pnl + (settlement_price - avg) * qty, 4)
+                elif abs(replay_pos.realized_pnl) > EPSILON:
+                    pnl = round(replay_pos.realized_pnl, 4)
+
+            ret_pct = round(pnl / capital * 100, 2) if capital else 0.0
+            correct = None
+            if position_side is not None:
                 correct = (
-                    (pos.contract == "yes" and outcome == 1.0) or
-                    (pos.contract == "no" and outcome == 0.0)
+                    (position_side == "YES" and outcome == 1.0) or
+                    (position_side == "NO" and outcome == 0.0)
                 )
-                rows.append({
-                    "market_id": mkt.market_id,
-                    "title": mkt.title,
-                    "ticker": mkt.ticker,
-                    "category": mkt.category,
-                    "resolved_at": resolved_at,
-                    "outcome": "YES" if outcome == 1.0 else "NO",
-                    "position_side": pos.contract.upper(),
-                    "quantity": pos.quantity,
-                    "avg_price": round(pos.avg_price, 4),
-                    "capital": capital,
-                    "pnl": pnl,
-                    "return_pct": ret_pct,
-                    "correct": correct,
-                })
-            else:
-                rows.append({
-                    "market_id": mkt.market_id,
-                    "title": mkt.title,
-                    "ticker": mkt.ticker,
-                    "category": mkt.category,
-                    "resolved_at": resolved_at,
-                    "outcome": "YES" if outcome == 1.0 else "NO",
-                    "position_side": None,
-                    "quantity": 0,
-                    "avg_price": 0.0,
-                    "capital": 0.0,
-                    "pnl": 0.0,
-                    "return_pct": 0.0,
-                    "correct": None,
-                })
+
+            rows.append({
+                "market_id": mkt.market_id,
+                "title": mkt.title,
+                "ticker": mkt.ticker,
+                "category": mkt.category,
+                "resolved_at": resolved_at,
+                "outcome": "YES" if outcome == 1.0 else "NO",
+                "position_side": position_side,
+                "quantity": quantity,
+                "avg_price": avg_price,
+                "capital": capital,
+                "pnl": pnl,
+                "return_pct": ret_pct,
+                "correct": correct,
+            })
 
         with_pos = [r for r in rows if r["position_side"] is not None]
         total_pnl = round(sum(r["pnl"] for r in with_pos), 4)
@@ -2395,7 +2530,7 @@ def get_resolved_markets(
         market_baseline_brier: float | None = None
 
         if markets:
-            resolved_market_ids = {m.market_id: m.last_price for m in markets}
+            resolved_market_ids = {market.market_id: outcome for market, outcome in markets}
             predictions = (
                 _instance_query(session, BettingPrediction, resolved_instance)
                 .filter(

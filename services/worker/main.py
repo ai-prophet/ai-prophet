@@ -41,6 +41,7 @@ import time
 import traceback
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -693,7 +694,8 @@ def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
     """Fetch the resolution result from Kalshi and update the DB, then settle all open positions."""
     try:
         from ai_prophet_core.betting.db import get_session as _gs
-        from db_models import TradingMarket as _TM, TradingPosition as _TP, BettingOrder as _BO
+        from ai_prophet_core.betting.db_schema import BettingOrder as _BO
+        from db_models import TradingMarket as _TM, TradingPosition as _TP
 
         mkt = _fetch_raw_market(adapter, ticker)
         if mkt is None:
@@ -709,10 +711,7 @@ def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
         market_id = f"kalshi:{ticker}"
         with _gs(db_engine) as session:
             # 1. Update market prices to settlement value
-            row = session.query(_TM).filter_by(
-                instance_name=INSTANCE_NAME, market_id=market_id,
-            ).first()
-            if row:
+            for row in session.query(_TM).filter_by(market_id=market_id).all():
                 row.last_price = last_price
                 row.yes_ask = last_price
                 row.yes_bid = last_price
@@ -749,17 +748,24 @@ def _mark_market_resolved(db_engine, adapter, ticker: str) -> None:
                 total_realized_pnl += settlement_pnl
 
                 # 3. Log a settlement order in betting_orders for audit trail
+                dry_run = str(
+                    get_instance_env("LIVE_BETTING_DRY_RUN", pos.instance_name, default="true") or "true"
+                ).strip().lower() in ("1", "true", "yes", "on")
                 settlement_order = _BO(
                     instance_name=pos.instance_name,
-                    market_id=market_id,
+                    signal_id=None,
+                    order_id=f"settlement-{ticker}-{uuid4()}",
                     ticker=ticker,
-                    side="sell",  # Settlement is like selling at final price
-                    contract=pos.contract,
-                    price=settlement_price,
-                    quantity=original_qty,
+                    action="SELL",
+                    side=pos.contract.upper(),
+                    count=max(1, int(round(original_qty))),
+                    price_cents=int(round(settlement_price * 100)),
                     status="SETTLED",
-                    filled_quantity=original_qty,
+                    filled_shares=original_qty,
                     fill_price=settlement_price,
+                    fee_paid=0.0,
+                    exchange_order_id=None,
+                    dry_run=dry_run,
                     created_at=datetime.now(UTC),
                 )
                 session.add(settlement_order)
