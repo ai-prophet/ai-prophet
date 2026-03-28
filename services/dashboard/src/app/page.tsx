@@ -563,7 +563,7 @@ export default function Dashboard() {
   }, [trades]);
 
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
-  const [expandedMetric, setExpandedMetric] = useState<"equitypnl" | "unrealized" | "winrate" | "fees" | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<"equity" | "equitypnl" | "unrealized" | "winrate" | "fees" | null>(null);
 
   // Per-position P&L breakdowns
   const marketById = new Map(markets.map((m) => [m.market_id, m]));
@@ -831,6 +831,8 @@ export default function Dashboard() {
             label="Current Equity"
             value={displayedCurrentEquity != null ? fmtDollar(displayedCurrentEquity) : "--"}
             tooltip="Cash Balance + Open Value"
+            onClick={() => setExpandedMetric(expandedMetric === "equity" ? null : "equity")}
+            active={expandedMetric === "equity"}
           />
           <MetricCard
             label="Equity P&L"
@@ -879,6 +881,37 @@ export default function Dashboard() {
           />
         </div>
 
+        {/* Current equity breakdown */}
+        {expandedMetric === "equity" && (
+          <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
+            <div className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest mb-2">Current Equity Calculation</div>
+            <div className="text-[11px] font-mono space-y-1">
+              {displayedCurrentEquity != null ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-txt-muted">Cash Balance <span className="text-[9px]">(Kalshi cash)</span></span>
+                    <span className={cashBalance != null && cashBalance >= 0 ? "text-profit" : "text-loss"}>
+                      {formatSignedTerm(cashBalance ?? 0)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-txt-muted">Open Value <span className="text-[9px]">(synced Kalshi portfolio value)</span></span>
+                    <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedOpenValue)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-t-border pt-1 mt-1">
+                    <span className="text-txt-primary font-medium">= Current Equity</span>
+                    <span className={`font-medium ${displayedCurrentEquity >= 0 ? "text-profit" : "text-loss"}`}>{fmtDollar(displayedCurrentEquity)}</span>
+                  </div>
+                </>
+              ) : (
+                <p className="text-[10px] text-txt-muted font-mono">
+                  Waiting for the current cash balance so current equity can be computed from the displayed values.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Equity P&L calculation breakdown */}
         {expandedMetric === "equitypnl" && (
           <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
@@ -926,7 +959,7 @@ export default function Dashboard() {
         )}
 
         {/* Expandable supporting breakdowns */}
-        {expandedMetric && expandedMetric !== "equitypnl" && (
+        {expandedMetric && expandedMetric !== "equity" && expandedMetric !== "equitypnl" && (
           <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest">
