@@ -42,6 +42,26 @@ class TradingMarket(Base):
     )
 
 
+class TradingMarketLifecycle(Base):
+    """Latest fetched Kalshi lifecycle state for a tracked market."""
+
+    __tablename__ = "trading_market_lifecycles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    market_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("instance_name", "market_id", name="uq_trading_market_lifecycle_instance_market"),
+        Index("ix_trading_market_lifecycle_instance_ticker", "instance_name", "ticker"),
+        Index("ix_trading_market_lifecycle_instance_status", "instance_name", "status"),
+    )
+
+
 class TradingPosition(Base):
     """Aggregated position view per market."""
 

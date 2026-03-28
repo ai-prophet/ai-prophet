@@ -382,6 +382,47 @@ def save_market_snapshot(db_engine, market_id: str, title: str, category: str,
         logger.warning("Failed to save market snapshot: %s", e)
 
 
+def save_market_lifecycle_snapshot(
+    db_engine,
+    market_id: str,
+    *,
+    ticker: str = "",
+    status: str | None = None,
+    result: str | None = None,
+    instance_name: str = INSTANCE_NAME,
+) -> None:
+    """Upsert the latest fetched lifecycle status for a tracked market."""
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import TradingMarketLifecycle
+
+        normalized_status = (status or "unknown").strip().lower() or "unknown"
+        normalized_result = (result or "").strip().lower() or None
+        now = datetime.now(UTC)
+
+        with get_session(db_engine) as session:
+            existing = session.query(TradingMarketLifecycle).filter_by(
+                instance_name=instance_name,
+                market_id=market_id,
+            ).first()
+            if existing:
+                existing.ticker = ticker
+                existing.status = normalized_status
+                existing.result = normalized_result
+                existing.updated_at = now
+            else:
+                session.add(TradingMarketLifecycle(
+                    instance_name=instance_name,
+                    market_id=market_id,
+                    ticker=ticker,
+                    status=normalized_status,
+                    result=normalized_result,
+                    updated_at=now,
+                ))
+    except Exception as e:
+        logger.warning("Failed to save market lifecycle snapshot: %s", e)
+
+
 def save_model_run(db_engine, model_name: str, market_id: str,
                    decision: str, confidence: float | None,
                    metadata: dict | None = None,
@@ -1609,6 +1650,15 @@ def run_cycle(args) -> None:
             if mkt:
                 market_status = str(mkt.get("status", "") or "").lower()
                 market_result = str(mkt.get("result", "") or "").lower()
+                if db_engine is not None:
+                    save_market_lifecycle_snapshot(
+                        db_engine,
+                        f"kalshi:{ticker}",
+                        ticker=ticker,
+                        status=market_status,
+                        result=market_result,
+                        instance_name=INSTANCE_NAME,
+                    )
                 if market_result in ("yes", "no") and market_status not in ("open", "active"):
                     logger.info("  Sticky market %s resolved/closed, marking in DB", ticker)
                     if db_engine is not None:
@@ -1729,6 +1779,16 @@ def run_cycle(args) -> None:
         no_ask = float(no_ask)
 
         market_id = f"kalshi:{ticker}"
+
+        if db_engine:
+            save_market_lifecycle_snapshot(
+                db_engine,
+                market_id,
+                ticker=ticker,
+                status=str(market.get("status", "") or "").lower(),
+                result=str(market.get("result", "") or "").lower(),
+                instance_name=INSTANCE_NAME,
+            )
 
         # Save market snapshot for dashboard even when the market is skipped for this cycle.
         if db_engine:

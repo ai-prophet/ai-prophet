@@ -67,6 +67,7 @@ from db_models import (
     ModelRun,
     SystemLog,
     TradingMarket,
+    TradingMarketLifecycle,
     TradingPosition,
 )
 from kalshi_state import (
@@ -1340,6 +1341,11 @@ def get_markets(
             .order_by(TradingMarket.updated_at.desc())
             .all()
         )
+        lifecycle_rows = (
+            _instance_query(session, TradingMarketLifecycle, resolved_instance)
+            .all()
+        )
+        lifecycle_by_market_id = {row.market_id: row for row in lifecycle_rows}
         # Build set of market_ids that have an active position
         # (these are shown regardless of spread)
         kalshi_position_views = build_position_views(session, resolved_instance)
@@ -1438,6 +1444,8 @@ def get_markets(
                 "no_ask": row.no_ask,
                 "volume_24h": row.volume_24h,
                 "updated_at": row.updated_at.isoformat(),
+                "market_status": lifecycle_by_market_id.get(row.market_id).status if lifecycle_by_market_id.get(row.market_id) else None,
+                "market_result": lifecycle_by_market_id.get(row.market_id).result if lifecycle_by_market_id.get(row.market_id) else None,
                 "model_prediction": model_prediction,
                 "model_predictions": model_predictions,
                 "aggregated_p_yes": aggregated_p_yes,

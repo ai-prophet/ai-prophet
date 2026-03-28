@@ -16,7 +16,7 @@ from ai_prophet_core.betting.db_schema import (
     BettingPrediction,
     BettingSignal,
 )
-from db_models import KalshiPositionSnapshot, ModelRun, TradingMarket
+from db_models import KalshiPositionSnapshot, ModelRun, TradingMarket, TradingMarketLifecycle
 
 if "fastapi" not in sys.modules:
     fastapi = types.ModuleType("fastapi")
@@ -364,6 +364,16 @@ def test_get_markets_keeps_live_positions_visible_without_recent_trade_activity(
                 raw_json="{}",
             )
         )
+        session.add(
+            TradingMarketLifecycle(
+                instance_name="Haifeng",
+                market_id="kalshi:LEGACY-MENTION",
+                ticker="KXNCAABMENTION-26MAR27SJUDUKE-ALLA",
+                status="inactive",
+                result=None,
+                updated_at=now,
+            )
+        )
 
     with patch("services.api.main.get_db", return_value=engine):
         rows = get_markets(limit=10, instance_name="Haifeng")
@@ -371,3 +381,5 @@ def test_get_markets_keeps_live_positions_visible_without_recent_trade_activity(
     assert len(rows) == 1
     assert rows[0]["ticker"] == "KXNCAABMENTION-26MAR27SJUDUKE-ALLA"
     assert rows[0]["market_id"] == "kalshi:LEGACY-MENTION"
+    assert rows[0]["market_status"] == "inactive"
+    assert rows[0]["market_result"] is None

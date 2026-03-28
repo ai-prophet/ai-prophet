@@ -143,6 +143,8 @@ export interface Market {
   no_ask: number | null;
   volume_24h: number | null;
   updated_at: string;
+  market_status?: string | null;
+  market_result?: string | null;
   model_prediction: ModelPrediction | null;
   model_predictions?: ModelPrediction[];
   aggregated_p_yes?: number | null;
@@ -526,6 +528,8 @@ export interface UnifiedMarketRow {
   no_bid: number | null;
   no_ask: number | null;
   volume_24h: number | null;
+  market_status: string | null;
+  market_result: string | null;
 
   aggregated_p_yes: number | null;
   edge: number | null;
@@ -845,6 +849,8 @@ export function buildUnifiedMarketRows(
       no_bid: mkt.no_bid ?? (mkt.yes_ask != null ? 1.0 - mkt.yes_ask : null),
       no_ask: mkt.no_ask,
       volume_24h: mkt.volume_24h,
+      market_status: mkt.market_status ?? null,
+      market_result: mkt.market_result ?? null,
       aggregated_p_yes: predicted,
       edge,
       model_predictions: modelPreds,
@@ -908,6 +914,8 @@ export function buildUnifiedMarketRows(
       no_bid: null,
       no_ask: null,
       volume_24h: null,
+      market_status: null,
+      market_result: null,
       aggregated_p_yes: null,
       edge: null,
       model_predictions: [],

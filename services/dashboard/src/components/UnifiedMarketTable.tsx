@@ -65,6 +65,42 @@ function categoryChipClass(cat: string | null) {
   return CATEGORY_COLORS[cat.toUpperCase()] ?? "bg-t-panel-alt border-t-border/60 text-txt-muted";
 }
 
+function normalizedMarketStatus(status: string | null | undefined): string {
+  return (status ?? "").trim().toLowerCase();
+}
+
+function marketStatusChipClass(status: string | null | undefined, result: string | null | undefined): string {
+  const normalizedResult = (result ?? "").trim().toLowerCase();
+  if (normalizedResult === "yes" || normalizedResult === "no") {
+    return "bg-accent-dim border-accent/40 text-accent";
+  }
+
+  switch (normalizedMarketStatus(status)) {
+    case "closed":
+      return "bg-loss-dim border-loss/30 text-loss";
+    case "inactive":
+      return "bg-warn-dim border-warn/30 text-warn";
+    case "active":
+    case "open":
+      return "bg-profit-dim border-profit/30 text-profit";
+    default:
+      return "bg-t-panel-alt border-t-border/60 text-txt-muted";
+  }
+}
+
+function marketStatusLabel(status: string | null | undefined, result: string | null | undefined): string | null {
+  const normalizedResult = (result ?? "").trim().toLowerCase();
+  if (normalizedResult === "yes" || normalizedResult === "no") {
+    return `resolved ${normalizedResult}`;
+  }
+
+  const normalizedStatus = normalizedMarketStatus(status);
+  if (!normalizedStatus || normalizedStatus === "active" || normalizedStatus === "open") {
+    return null;
+  }
+  return normalizedStatus;
+}
+
 function sideToneClass(side: string | null | undefined, dim = false): string {
   const normalized = side?.toUpperCase();
   if (normalized === "YES") return dim ? "text-profit font-bold" : "text-profit font-bold";
@@ -912,6 +948,7 @@ function MarketRow({
 }) {
   const pos = row.position;
   const isYes = pos?.contract.toLowerCase() === "yes";
+  const lifecycleLabel = marketStatusLabel(row.market_status, row.market_result);
   const latestModelDecision = [...row.model_predictions]
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]?.decision?.toUpperCase() ?? null;
   const showHeldEdgeStyle = isHoldLikeDecision(latestModelDecision);
@@ -968,12 +1005,23 @@ function MarketRow({
               <span className={`px-1 py-px rounded border text-[8px] uppercase tracking-wider ${categoryChipClass(row.category)}`}>
                 {row.category}
               </span>
+              {lifecycleLabel && (
+                <span className={`px-1 py-px rounded border text-[8px] uppercase tracking-wider ${marketStatusChipClass(row.market_status, row.market_result)}`}>
+                  {lifecycleLabel}
+                </span>
+              )}
               {row.category.toUpperCase() === "MENTIONS" && (
                 <span className="text-[8px] text-red-400 italic">no betting</span>
               )}
             </div>
           ) : (
-            <span className="text-txt-muted text-[9px]">—</span>
+            lifecycleLabel ? (
+              <span className={`px-1 py-px rounded border text-[8px] uppercase tracking-wider ${marketStatusChipClass(row.market_status, row.market_result)}`}>
+                {lifecycleLabel}
+              </span>
+            ) : (
+              <span className="text-txt-muted text-[9px]">—</span>
+            )
           )}
         </td>
 

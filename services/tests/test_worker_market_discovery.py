@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 
 from ai_prophet_core.betting.db import get_session
 from ai_prophet_core.betting.db_schema import Base, BettingOrder
-from db_models import TradingMarket, TradingPosition
+from db_models import TradingMarket, TradingMarketLifecycle, TradingPosition
 from services.worker.main import (
     _is_excluded_market,
     _mark_market_resolved,
@@ -14,6 +14,7 @@ from services.worker.main import (
     fetch_kalshi_markets,
     get_peer_tickers,
     purge_excluded_tracked_markets,
+    save_market_lifecycle_snapshot,
 )
 
 
@@ -333,6 +334,36 @@ def test_fetch_market_by_ticker_can_keep_excluded_inactive_market_for_display():
     assert market["result"] == ""
     assert market["last_price"] == "0.07"
     assert market["title"] == "St. John's vs Duke mentions: Allan makes first free throw"
+
+
+def test_save_market_lifecycle_snapshot_upserts_latest_status():
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    save_market_lifecycle_snapshot(
+        engine,
+        "kalshi:STATUS-ONE",
+        ticker="STATUS-ONE",
+        status="active",
+        result="",
+        instance_name="Haifeng",
+    )
+    save_market_lifecycle_snapshot(
+        engine,
+        "kalshi:STATUS-ONE",
+        ticker="STATUS-ONE",
+        status="closed",
+        result="yes",
+        instance_name="Haifeng",
+    )
+
+    with get_session(engine) as session:
+        rows = session.query(TradingMarketLifecycle).all()
+
+    assert len(rows) == 1
+    assert rows[0].ticker == "STATUS-ONE"
+    assert rows[0].status == "closed"
+    assert rows[0].result == "yes"
 
 
 def test_get_peer_tickers_excludes_mentions_and_preserves_recent_order():

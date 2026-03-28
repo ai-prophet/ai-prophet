@@ -91,6 +91,30 @@ function parseFiniteNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function isResolvedMarketResult(result: string | null | undefined): boolean {
+  const normalized = (result ?? "").trim().toLowerCase();
+  return normalized === "yes" || normalized === "no";
+}
+
+function isArchivedLifecycleStatus(status: string | null | undefined): boolean {
+  const normalized = (status ?? "").trim().toLowerCase();
+  return normalized === "closed" || normalized === "inactive";
+}
+
+function filterDashboardSubset(markets: Market[], positions: Position[], trades: Trade[]) {
+  const marketIds = new Set(markets.map((market) => market.market_id));
+  const tickers = new Set(markets.map((market) => market.ticker).filter((ticker) => !!ticker));
+
+  return {
+    positions: positions.filter((position) =>
+      marketIds.has(position.market_id) || (position.ticker != null && tickers.has(position.ticker))
+    ),
+    trades: trades.filter((trade) =>
+      tickers.has(trade.ticker) || (trade.prediction?.market_id != null && marketIds.has(trade.prediction.market_id))
+    ),
+  };
+}
+
 function inferLivePositionFee(position: KalshiPositionsData["positions"][number]): number {
   const directFee = parseFiniteNumber((position as any).fees_paid_dollars);
   if (directFee > 0) return directFee;
@@ -561,6 +585,33 @@ export default function Dashboard() {
   const totalFeesPaid = useMemo(() => {
     return trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
   }, [trades]);
+
+  const archivedMarkets = useMemo(
+    () => markets.filter((market) =>
+      !isResolvedMarketResult(market.market_result) && isArchivedLifecycleStatus(market.market_status)
+    ),
+    [markets]
+  );
+  const resolvedTrackedMarkets = useMemo(
+    () => markets.filter((market) => isResolvedMarketResult(market.market_result)),
+    [markets]
+  );
+  const hiddenMarketIds = useMemo(
+    () => new Set([...archivedMarkets, ...resolvedTrackedMarkets].map((market) => market.market_id)),
+    [archivedMarkets, resolvedTrackedMarkets]
+  );
+  const activeMarkets = useMemo(
+    () => markets.filter((market) => !hiddenMarketIds.has(market.market_id)),
+    [markets, hiddenMarketIds]
+  );
+  const activeDashboardData = useMemo(
+    () => filterDashboardSubset(activeMarkets, positions, trades),
+    [activeMarkets, positions, trades]
+  );
+  const archivedDashboardData = useMemo(
+    () => filterDashboardSubset(archivedMarkets, positions, trades),
+    [archivedMarkets, positions, trades]
+  );
 
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
   const [expandedMetric, setExpandedMetric] = useState<"equity" | "equitypnl" | "unrealized" | "winrate" | "fees" | null>(null);
@@ -1195,7 +1246,7 @@ export default function Dashboard() {
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
             {[
-              { key: "activity" as const, label: "Market Activity", count: markets.length > 0 ? markets.length : undefined },
+              { key: "activity" as const, label: "Market Activity", count: activeMarkets.length > 0 ? activeMarkets.length : undefined },
               { key: "heatmap" as const, label: "Position Heatmap", count: positions.length > 0 ? positions.length : undefined },
             ].map((tab) => (
               <button
@@ -1221,19 +1272,18 @@ export default function Dashboard() {
             <div className="space-y-2">
               <UnifiedMarketTable
                 key={selectedInstance.key}
-                markets={markets}
-                positions={positions}
-                trades={trades}
+                markets={activeMarkets}
+                positions={activeDashboardData.positions}
+                trades={activeDashboardData.trades}
                 apiClient={instanceApi}
                 instanceCacheKey={selectedInstance.key}
                 scrollToMarketId={scrollToMarketId}
                 onScrollComplete={() => setScrollToMarketId(null)}
               />
               <div className="rounded border border-t-border bg-t-panel px-3 py-2 text-[10px] font-mono text-txt-muted">
-                <span className="text-txt-secondary">Note:</span> headline `Open Value` uses the synced Kalshi portfolio valuation.
-                The breakdown shows per-market marks and adds a `Kalshi Sync Adjustment` row if needed so it sums to the headline.
-                `Investment` shows open-position cost basis plus fees. So the summed row `Investment`
-                values should line up with top `Cash Spent` + `Total Fees`, not with top `Open Value`.
+                <span className="text-txt-secondary">Note:</span> this table focuses on active and still-tradable markets.
+                Closed or inactive holdings that do not yet have an official settlement outcome are listed below in `Closed / Inactive Holdings`.
+                Headline `Open Value` still includes both sections, using the synced Kalshi portfolio valuation.
               </div>
             </div>
           )}
@@ -1253,7 +1303,28 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Row 5: Resolved Markets */}
+        {/* Row 5: Closed / inactive holdings */}
+        {archivedMarkets.length > 0 && (
+          <div>
+            <SectionLabel text="Closed / Inactive Holdings" count={archivedMarkets.length} />
+            <div className="space-y-2">
+              <div className="rounded border border-t-border bg-t-panel px-3 py-2 text-[10px] font-mono text-txt-muted">
+                <span className="text-txt-secondary">Note:</span> these markets are no longer tradable on Kalshi, but they do not yet have an official settlement outcome.
+                They stay out of `Resolved Markets` until Kalshi posts the final result.
+              </div>
+              <UnifiedMarketTable
+                key={`${selectedInstance.key}-archived`}
+                markets={archivedMarkets}
+                positions={archivedDashboardData.positions}
+                trades={archivedDashboardData.trades}
+                apiClient={instanceApi}
+                instanceCacheKey={`${selectedInstance.key}:archived`}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Row 6: Resolved Markets */}
         <div>
           <SectionLabel text="Resolved Markets" />
           <ModelCalibration resolvedMarkets={resolvedMarkets} />
