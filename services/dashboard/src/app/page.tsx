@@ -563,7 +563,7 @@ export default function Dashboard() {
   }, [trades]);
 
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
-  const [expandedMetric, setExpandedMetric] = useState<"netpnl" | "realized" | "unrealized" | "winrate" | "fees" | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<"equitypnl" | "unrealized" | "winrate" | "fees" | null>(null);
 
   // Per-position P&L breakdowns
   const marketById = new Map(markets.map((m) => [m.market_id, m]));
@@ -607,23 +607,17 @@ export default function Dashboard() {
 
   // Single pass — prefer Kalshi-backed position values when available, and only
   // fall back to local replay/quote math when the API does not yet provide them.
-  let totalCashPnl = 0;
   let totalOpenValue = 0;
-  let totalCashSpent = 0;
   const seenMarketIds = new Set<string>();
 
   type PerMarketResult = {
     title: string;
     contract: string;
-    sells: { qty: number; sellPrice: number; avgAtSell: number; contribution: number; feePaid: number }[];
     totalRealized: number;
-    replayRealized: number;
     avgEntry: number;
     currentUnitValue: number | null;
     dbQty: number;
     openValue: number;
-    cashSpent: number;
-    hasMoreTrades: boolean;
     feeTotal: number;
   };
   const perMarket: PerMarketResult[] = [];
@@ -632,12 +626,11 @@ export default function Dashboard() {
     if (seenMarketIds.has(row.market_id)) continue;
     seenMarketIds.add(row.market_id);
 
-    const { sells, totalRealized, remainingAvgPrice } = replayTrades(row.trades);
+    const { totalRealized, remainingAvgPrice } = replayTrades(row.trades);
     const dbQty = row.position?.quantity ?? 0;
     const contract = row.position?.contract ?? (row.trades[0]?.side ?? "yes");
     const avgEntry = row.position?.avg_price ?? (row.trades.length > 0 ? remainingAvgPrice : 0);
     const realizedValue = row.position?.realized_pnl ?? (row.trades.length > 0 ? totalRealized : 0);
-    totalCashPnl += realizedValue;
 
     const mkt = marketById.get(row.market_id);
     let currentUnitValue: number | null = null;
@@ -646,7 +639,6 @@ export default function Dashboard() {
         ? mkt.last_price
         : 1.0 - mkt.last_price;
     }
-    const cashSpent = row.position?.total_cost ?? (avgEntry * dbQty);
     const openValue = currentUnitValue != null
       ? currentUnitValue * dbQty
       : (row.position?.market_exposure ?? 0);
@@ -654,54 +646,39 @@ export default function Dashboard() {
       currentUnitValue = openValue / dbQty;
     }
     totalOpenValue += openValue;
-    totalCashSpent += cashSpent;
     const feeTotal = row.position?.fees_paid ?? row.fees_paid_total ?? 0;
-
-    const dbPos = positions.find((p) => p.market_id === row.market_id);
-    const hasMoreTrades = dbPos != null && Math.abs(totalRealized - dbPos.realized_pnl) > 0.005;
 
     perMarket.push({
       title: row.title,
       contract,
-      sells,
       totalRealized: realizedValue,
-      replayRealized: totalRealized,
       avgEntry,
       currentUnitValue,
       dbQty,
       openValue,
-      cashSpent,
-      hasMoreTrades,
       feeTotal,
     });
   }
 
-  const totalLiveNetPnl = totalOpenValue - totalCashSpent + totalCashPnl;
-  const displayedCashPnl = analytics?.cash_pnl ?? totalCashPnl;
   const displayedOpenValue = analytics?.open_value ?? totalOpenValue;
-  const displayedCashSpent = analytics?.cash_spent ?? totalCashSpent;
-  const displayedNetPnl = displayedOpenValue - displayedCashSpent + displayedCashPnl;
+  const cashBalance =
+    analytics?.cash_balance
+    ?? (balance == null ? null : balance.balance);
+  const displayedStartingTotal = analytics?.starting_total ?? displayBaseline?.starting_total ?? null;
+  const displayedCurrentEquity = cashBalance != null ? cashBalance + displayedOpenValue : null;
+  const hasEquityPnl = displayedStartingTotal != null && displayedCurrentEquity != null;
+  const displayedEquityPnl = hasEquityPnl
+    ? displayedCurrentEquity - displayedStartingTotal
+    : (analytics?.net_pnl ?? metrics.totalPnl);
   const displayedFeesPaid = analytics?.total_fees ?? totalFeesPaid;
   const displayedActiveMarkets = analytics?.active_markets ?? liveActiveMarketCount;
   const displayedOpenPositions = analytics?.open_positions ?? liveActiveMarketCount;
   const displayedWinRate = analytics?.win_rate ?? metrics.winRate;
-  const displayedReturnPct = analytics ? analytics.return_pct * 100 : metrics.avgReturn;
+  const displayedReturnPct =
+    hasEquityPnl && displayedStartingTotal > 1e-9
+      ? (displayedEquityPnl / displayedStartingTotal) * 100
+      : (analytics ? analytics.return_pct * 100 : metrics.avgReturn);
   const formatSignedTerm = (value: number) => `${value >= 0 ? "+" : "-"}${fmtDollar(Math.abs(value))}`;
-
-  const realizedBreakdown = perMarket
-    .filter((r) => r.sells.length > 0)
-    .map((r) => {
-      const adjustment = r.totalRealized - r.replayRealized;
-      return {
-        title: r.title,
-        contract: r.contract,
-        sells: r.sells,
-        value: r.totalRealized,
-        adjustment,
-        hasMoreTrades: r.hasMoreTrades,
-      };
-    })
-    .sort((a, b) => b.value - a.value);
 
   const unrealizedBreakdown = perMarket
     .filter((r) => r.dbQty > 0.001 && r.currentUnitValue != null)
@@ -742,10 +719,6 @@ export default function Dashboard() {
       value: r.feeTotal,
     }))
     .sort((a, b) => b.value - a.value);
-
-  const cashBalance =
-    analytics?.cash_balance
-    ?? (balance == null ? null : balance.balance);
 
   const alertErrors = alerts.filter((a) => a.severity === "error").length;
   const alertWarnings = alerts.filter((a) => a.severity === "warning").length;
@@ -836,7 +809,7 @@ export default function Dashboard() {
         )}
 
         {/* Row 1: Portfolio Summary Metrics */}
-        <div className="grid grid-cols-3 md:grid-cols-5 xl:grid-cols-11 gap-2">
+        <div className="grid grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2">
           <MetricCard
             label="Cash Balance"
             value={
@@ -847,22 +820,6 @@ export default function Dashboard() {
             sub={balance?.dry_run ? "simulated" : "kalshi"}
           />
           <MetricCard
-            label="Net P&L"
-            value={fmtDollar(displayedNetPnl)}
-            pnl={displayedNetPnl}
-            tooltip="Open Value − Cash Spent + Cash P&L"
-            onClick={() => setExpandedMetric(expandedMetric === "netpnl" ? null : "netpnl")}
-            active={expandedMetric === "netpnl"}
-          />
-          <MetricCard
-            label="Cash P&L"
-            value={fmtDollar(displayedCashPnl)}
-            pnl={displayedCashPnl}
-            tooltip="Gains/losses locked in through completed sells: (sell_price − avg_entry) × qty_sold"
-            onClick={() => setExpandedMetric(expandedMetric === "realized" ? null : "realized")}
-            active={expandedMetric === "realized"}
-          />
-          <MetricCard
             label="Open Value"
             value={fmtDollar(displayedOpenValue)}
             pnl={displayedOpenValue}
@@ -871,9 +828,17 @@ export default function Dashboard() {
             active={expandedMetric === "unrealized"}
           />
           <MetricCard
-            label="Cash Spent"
-            value={fmtDollar(displayedCashSpent)}
-            tooltip="Total cost of your open shares: avg entry price × quantity held."
+            label="Current Equity"
+            value={displayedCurrentEquity != null ? fmtDollar(displayedCurrentEquity) : "--"}
+            tooltip="Cash Balance + Open Value"
+          />
+          <MetricCard
+            label="Equity P&L"
+            value={fmtDollar(displayedEquityPnl)}
+            pnl={displayedEquityPnl}
+            tooltip="Current Equity − Starting Balance"
+            onClick={() => setExpandedMetric(expandedMetric === "equitypnl" ? null : "equitypnl")}
+            active={expandedMetric === "equitypnl"}
           />
           <MetricCard
             label="Markets"
@@ -908,107 +873,77 @@ export default function Dashboard() {
           />
           <MetricCard
             label="Starting Balance"
-            value={displayBaseline ? fmtDollar(displayBaseline.starting_total) : "--"}
+            value={displayedStartingTotal != null ? fmtDollar(displayedStartingTotal) : "--"}
             sub={displayBaseline ? `${displayBaseline.instance_name} baseline` : undefined}
             tooltip={displayBaseline ? `Hardcoded baseline for ${displayBaseline.instance_name}. Loaded amount was ${fmtDollar(displayBaseline.initial_loaded)}.` : "Per-run starting balance baseline used for return calculations."}
           />
         </div>
 
-        {/* Net P&L calculation breakdown */}
-        {expandedMetric === "netpnl" && (
+        {/* Equity P&L calculation breakdown */}
+        {expandedMetric === "equitypnl" && (
           <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
-            <div className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest mb-2">Net P&L Calculation</div>
+            <div className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest mb-2">Equity P&L Calculation</div>
             <div className="text-[11px] font-mono space-y-1">
-              <div className="flex justify-between">
-                <span className="text-txt-muted">Open Value <span className="text-[9px]">(synced Kalshi portfolio value)</span></span>
-                <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedOpenValue)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-txt-muted">Cash Spent <span className="text-[9px]">(avg × qty)</span></span>
-                <span className="text-loss">{formatSignedTerm(-displayedCashSpent)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-txt-muted">Cash P&L <span className="text-[9px]">(realized)</span></span>
-                <span className={displayedCashPnl >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedCashPnl)}</span>
-              </div>
-              <div className="flex justify-between border-t border-t-border pt-1 mt-1">
-                <span className="text-txt-primary font-medium">= Net P&L</span>
-                <span className={`font-medium ${displayedNetPnl >= 0 ? "text-profit" : "text-loss"}`}>{fmtDollar(displayedNetPnl)}</span>
-              </div>
+              {hasEquityPnl ? (
+                <>
+                  {(() => {
+                    const baselineCashBalance = cashBalance ?? 0;
+                    const baselineEquity = displayedCurrentEquity ?? 0;
+                    const baselineStartingTotal = displayedStartingTotal ?? 0;
+                    return (
+                      <>
+                  <div className="flex justify-between">
+                    <span className="text-txt-muted">Cash Balance <span className="text-[9px]">(Kalshi cash)</span></span>
+                    <span className={baselineCashBalance >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(baselineCashBalance)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-txt-muted">Open Value <span className="text-[9px]">(synced Kalshi portfolio value)</span></span>
+                    <span className={displayedOpenValue >= 0 ? "text-profit" : "text-loss"}>{formatSignedTerm(displayedOpenValue)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-t-border/50 pt-1 mt-1">
+                    <span className="text-txt-muted">Current Equity</span>
+                    <span className={baselineEquity >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(baselineEquity)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-txt-muted">Starting Balance</span>
+                    <span className="text-loss">{formatSignedTerm(-baselineStartingTotal)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-t-border pt-1 mt-1">
+                    <span className="text-txt-primary font-medium">= Equity P&L</span>
+                    <span className={`font-medium ${displayedEquityPnl >= 0 ? "text-profit" : "text-loss"}`}>{fmtDollar(displayedEquityPnl)}</span>
+                  </div>
+                      </>
+                    );
+                  })()}
+                </>
+              ) : (
+                <p className="text-[10px] text-txt-muted font-mono">
+                  Waiting for cash balance and starting balance so equity P&amp;L can be computed from the displayed values.
+                </p>
+              )}
             </div>
           </div>
         )}
 
-        {/* Expandable P&L breakdown */}
-        {expandedMetric && expandedMetric !== "netpnl" && (
+        {/* Expandable supporting breakdowns */}
+        {expandedMetric && expandedMetric !== "equitypnl" && (
           <div className="bg-t-panel border border-accent/30 rounded px-3 py-2">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] font-medium text-txt-secondary uppercase tracking-widest">
-                {expandedMetric === "realized"
-                  ? "Realized P&L Breakdown"
-                  : expandedMetric === "unrealized"
+                {expandedMetric === "unrealized"
                     ? "Open Value Breakdown"
                     : expandedMetric === "fees"
                       ? "Fee Breakdown"
                       : "Win Rate Breakdown"}
               </span>
               <span className="text-[9px] text-txt-muted font-mono">
-                {expandedMetric === "realized"
-                  ? "(sell_price − avg_entry) × qty_sold"
-                  : expandedMetric === "unrealized"
+                {expandedMetric === "unrealized"
                     ? (hasOpenValueAdjustment ? "Per-market marks + Kalshi sync adjustment" : "Per-market marks")
                     : expandedMetric === "fees"
                       ? "Recorded by market, plus live Kalshi fee reconciliation if needed"
                       : "Markets with realized wins/losses"}
               </span>
             </div>
-            {expandedMetric === "realized" && (
-              realizedBreakdown.length === 0
-                ? <p className="text-[10px] text-txt-muted font-mono">No realized trades yet.</p>
-                : <table className="w-full text-[10px] font-mono">
-                    <thead>
-                      <tr className="text-txt-muted border-b border-t-border">
-                        <th className="text-left pb-1 font-medium">Market</th>
-                        <th className="text-center pb-1 font-medium w-12">Side</th>
-                        <th className="text-left pb-1 font-medium pl-4">Calculation</th>
-                        <th className="text-right pb-1 font-medium w-20">Realized</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {realizedBreakdown.map((row, i) => (
-                        <tr key={i} className="border-b border-t-border/40 last:border-0">
-                          <td className="py-1.5 pr-3 text-txt-primary truncate max-w-[300px]">{row.title}</td>
-                          <td className="py-1.5 text-center">
-                            <span className={`px-1 rounded text-[8px] font-bold ${row.contract.toLowerCase() === "yes" ? "bg-profit-dim text-profit" : "bg-loss-dim text-loss"}`}>
-                              {row.contract.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="py-1.5 pl-4 text-txt-muted space-y-0.5">
-                            {row.sells.length > 0
-                              ? <>
-                                  {row.sells.map((s, j) => (
-                                    <div key={j}>
-                                      ({Math.round(s.sellPrice * 100)}¢ − {Math.round(s.avgAtSell * 100)}¢) × {s.qty}{s.feePaid > 0 ? ` − fee ${fmtDollar(s.feePaid)}` : ""} = <span className={s.contribution >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(s.contribution)}</span>
-                                    </div>
-                                  ))}
-                                  {Math.abs(row.adjustment) > 0.005 && (
-                                    <div>
-                                      Kalshi historical adjustment = <span className={row.adjustment >= 0 ? "text-profit" : "text-loss"}>{fmtDollar(row.adjustment)}</span>
-                                    </div>
-                                  )}
-                                  {row.hasMoreTrades && <div className="text-txt-muted/50 text-[9px]">* local visible trades do not fully explain the Kalshi realized P&L</div>}
-                                </>
-                              : <span className="text-txt-muted/50">no sell trades in current view</span>
-                            }
-                          </td>
-                          <td className={`py-1.5 text-right ${row.value >= 0 ? "text-profit" : "text-loss"}`}>
-                            {fmtDollar(row.value)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-            )}
             {expandedMetric === "unrealized" && (
               openValueBreakdown.length === 0
                 ? <p className="text-[10px] text-txt-muted font-mono">No open positions.</p>
