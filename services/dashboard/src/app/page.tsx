@@ -96,11 +96,6 @@ function isResolvedMarketResult(result: string | null | undefined): boolean {
   return normalized === "yes" || normalized === "no";
 }
 
-function isArchivedLifecycleStatus(status: string | null | undefined): boolean {
-  const normalized = (status ?? "").trim().toLowerCase();
-  return normalized === "closed" || normalized === "inactive" || normalized === "finalized";
-}
-
 function filterDashboardSubset(markets: Market[], positions: Position[], trades: Trade[]) {
   const marketIds = new Set(markets.map((market) => market.market_id));
   const tickers = new Set(markets.map((market) => market.ticker).filter((ticker) => !!ticker));
@@ -586,19 +581,13 @@ export default function Dashboard() {
     return trades.reduce((sum, trade) => sum + (trade.fee_paid || 0), 0);
   }, [trades]);
 
-  const archivedMarkets = useMemo(
-    () => markets.filter((market) =>
-      !isResolvedMarketResult(market.market_result) && isArchivedLifecycleStatus(market.market_status)
-    ),
-    [markets]
-  );
   const resolvedTrackedMarkets = useMemo(
     () => markets.filter((market) => isResolvedMarketResult(market.market_result)),
     [markets]
   );
   const hiddenMarketIds = useMemo(
-    () => new Set([...archivedMarkets, ...resolvedTrackedMarkets].map((market) => market.market_id)),
-    [archivedMarkets, resolvedTrackedMarkets]
+    () => new Set(resolvedTrackedMarkets.map((market) => market.market_id)),
+    [resolvedTrackedMarkets]
   );
   const activeMarkets = useMemo(
     () => markets.filter((market) => !hiddenMarketIds.has(market.market_id)),
@@ -607,10 +596,6 @@ export default function Dashboard() {
   const activeDashboardData = useMemo(
     () => filterDashboardSubset(activeMarkets, positions, trades),
     [activeMarkets, positions, trades]
-  );
-  const archivedDashboardData = useMemo(
-    () => filterDashboardSubset(archivedMarkets, positions, trades),
-    [archivedMarkets, positions, trades]
   );
 
   const unifiedRows = buildUnifiedMarketRows(markets, positions, trades);
@@ -1280,11 +1265,6 @@ export default function Dashboard() {
                 scrollToMarketId={scrollToMarketId}
                 onScrollComplete={() => setScrollToMarketId(null)}
               />
-              <div className="rounded border border-t-border bg-t-panel px-3 py-2 text-[10px] font-mono text-txt-muted">
-                <span className="text-txt-secondary">Note:</span> this table focuses on active and still-tradable markets.
-                Closed or inactive holdings that do not yet have an official settlement outcome are listed below in `Closed / Inactive Holdings`.
-                Headline `Open Value` still includes both sections, using the synced Kalshi portfolio valuation.
-              </div>
             </div>
           )}
           {marketViewTab === "heatmap" && (
@@ -1303,28 +1283,7 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Row 5: Closed / inactive holdings */}
-        {archivedMarkets.length > 0 && (
-          <div>
-            <SectionLabel text="Closed / Inactive Holdings" count={archivedMarkets.length} />
-            <div className="space-y-2">
-              <div className="rounded border border-t-border bg-t-panel px-3 py-2 text-[10px] font-mono text-txt-muted">
-                <span className="text-txt-secondary">Note:</span> these markets are no longer tradable on Kalshi, but they do not yet have an official settlement outcome.
-                They stay out of `Resolved Markets` until Kalshi posts the final result.
-              </div>
-              <UnifiedMarketTable
-                key={`${selectedInstance.key}-archived`}
-                markets={archivedMarkets}
-                positions={archivedDashboardData.positions}
-                trades={archivedDashboardData.trades}
-                apiClient={instanceApi}
-                instanceCacheKey={`${selectedInstance.key}:archived`}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Row 6: Resolved Markets */}
+        {/* Row 5: Resolved Markets */}
         <div>
           <SectionLabel text="Resolved Markets" />
           <ModelCalibration resolvedMarkets={resolvedMarkets} />
