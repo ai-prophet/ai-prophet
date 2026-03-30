@@ -197,49 +197,61 @@ class BettingEngine:
                     market_position_side=live_side,
                 )
 
-            # 3. Check for re-trading constraint: market must move 10 cents since last forecast
-            # (No time-based constraint needed - cycles already enforce 2-hour minimum)
+            # 3. Check trading constraints:
+            # - 2-hour minimum between trades on the same market (cycle-based enforcement)
+            # - Market must move 10 cents since last TRADE (not just forecast)
             skip_due_to_constraints = False
             constraint_reason = None
+            MIN_HOURS_BETWEEN_TRADES = 2.0  # 2-hour minimum (cycles run every ~2 hours)
+            MIN_PRICE_MOVEMENT = 0.10  # 10 cents
 
             if self._engine is not None:
                 ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
                 try:
                     from .db import get_session
-                    from .db_schema import BettingPrediction
+                    from .db_schema import BettingOrder
+                    from datetime import timedelta
 
                     with get_session(self._engine) as session:
-                        # Get the last prediction/forecast for this market
-                        last_prediction = (
-                            session.query(BettingPrediction)
+                        # Get the last TRADE (executed order) for this market
+                        last_trade = (
+                            session.query(BettingOrder)
                             .filter(
-                                BettingPrediction.instance_name == self.instance_name,
-                                BettingPrediction.market_id == market_id,
+                                BettingOrder.instance_name == self.instance_name,
+                                BettingOrder.ticker == ticker,
+                                BettingOrder.status.in_(["EXECUTED", "PENDING"])  # Include pending to avoid conflicts
                             )
-                            .order_by(BettingPrediction.created_at.desc())
+                            .order_by(BettingOrder.created_at.desc())
                             .first()
                         )
 
-                        # Check 10-cent price deviation (from last FORECAST/PREDICTION)
-                        if last_prediction:
-                            # Compare current market prices to market prices at last forecast
-                            last_yes_ask = float(last_prediction.yes_ask)
-                            last_no_ask = float(last_prediction.no_ask)
-
-                            # Check if market prices have moved significantly since last forecast
-                            yes_deviation = abs(yes_ask - last_yes_ask)
-                            no_deviation = abs(no_ask - last_no_ask)
-                            max_deviation = max(yes_deviation, no_deviation)
-
-                            # Skip if market hasn't moved by at least 10 cents since last forecast
-                            if max_deviation < 0.10:
+                        if last_trade:
+                            # Check 4-hour cooldown
+                            hours_since_trade = (tick_ts - last_trade.created_at).total_seconds() / 3600
+                            if hours_since_trade < MIN_HOURS_BETWEEN_TRADES:
                                 skip_due_to_constraints = True
-                                constraint_reason = f"Market unchanged: {max_deviation*100:.1f}¢ movement (need 10¢)"
+                                constraint_reason = f"Cooldown: {hours_since_trade:.1f}h since last trade (need {MIN_HOURS_BETWEEN_TRADES}h)"
                                 logger.info(
-                                    "[BETTING] Skipping %s: %s. "
-                                    "Last forecast: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
-                                    market_id, constraint_reason, last_yes_ask, last_no_ask, yes_ask, no_ask
+                                    "[BETTING] Skipping %s: %s. Last trade at %s",
+                                    market_id, constraint_reason, last_trade.created_at
                                 )
+                            else:
+                                # Check 10-cent price movement since last trade
+                                last_yes_ask = float(last_trade.yes_ask) if last_trade.yes_ask else yes_ask
+                                last_no_ask = float(last_trade.no_ask) if last_trade.no_ask else no_ask
+
+                                yes_deviation = abs(yes_ask - last_yes_ask)
+                                no_deviation = abs(no_ask - last_no_ask)
+                                max_deviation = max(yes_deviation, no_deviation)
+
+                                if max_deviation < MIN_PRICE_MOVEMENT:
+                                    skip_due_to_constraints = True
+                                    constraint_reason = f"Market unchanged: {max_deviation*100:.1f}¢ since last trade (need {MIN_PRICE_MOVEMENT*100:.0f}¢)"
+                                    logger.info(
+                                        "[BETTING] Skipping %s: %s. "
+                                        "Last trade: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
+                                        market_id, constraint_reason, last_yes_ask, last_no_ask, yes_ask, no_ask
+                                    )
                 except Exception as e:
                     logger.warning("[BETTING] Failed to check re-trading constraints for %s: %s", market_id, e)
 
