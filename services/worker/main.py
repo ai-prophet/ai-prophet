@@ -17,7 +17,7 @@ Environment variables:
     KALSHI_BASE_URL           — Kalshi API base URL
     LIVE_BETTING_ENABLED      — Master kill switch (default: false)
     LIVE_BETTING_DRY_RUN      — Dry-run mode (default: true)
-    WORKER_POLL_INTERVAL_SEC  — Poll interval in seconds (default: 14400 = every 4 hours)
+    WORKER_POLL_INTERVAL_SEC  — Poll interval in seconds (default: 7200 = every 2 hours)
     WORKER_POLL_OFFSET_SEC    — Optional phase offset in seconds for cycle boundaries (default: 0)
     WORKER_MODELS             — Comma-separated model specs (default: gemini:gemini-3.1-pro-preview)
                                  Providers: openai, anthropic, gemini
@@ -220,7 +220,7 @@ def _validate_instance_profile_or_raise() -> None:
 # ── Shutdown handling ──────────────────────────────────────────────
 
 _shutdown_requested = False
-DEFAULT_WORKER_POLL_INTERVAL_SEC = 4 * 60 * 60
+DEFAULT_WORKER_POLL_INTERVAL_SEC = 2 * 60 * 60  # 2 hours
 
 
 def _handle_signal(signum, frame):
@@ -1031,14 +1031,14 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
     """Fetch active binary markets from Kalshi via the events endpoint.
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
-    pages, collects candidates closing within 15 days, then returns the first
+    pages, collects candidates closing within 3 days, then returns the first
     ``max_markets`` that pass the discovery filters.
 
     Markets with prices outside the 90/10 band are excluded from discovery.
     """
     base_url = adapter._base_url
     path = "/trade-api/v2/events"
-    cutoff = datetime.now(UTC) + timedelta(days=15)
+    cutoff = datetime.now(UTC) + timedelta(days=3)
 
     candidates: list[dict] = []
     seen_tickers: set[str] = set()

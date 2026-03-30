@@ -24,11 +24,11 @@ envVarGroups:
       - key: LIVE_BETTING_DRY_RUN
         value: "false"
       - key: WORKER_POLL_INTERVAL_SEC
-        value: "14400"
+        value: "7200"
       - key: WORKER_POLL_OFFSET_SEC
         value: "0"
       - key: COMPARISON_POLL_INTERVAL_SEC
-        value: "3600"
+        value: "7200"
       - key: COMPARISON_POLL_OFFSET_SEC
         value: "1800"
       - key: COMPARISON_SOURCE_INSTANCE
@@ -37,6 +37,12 @@ envVarGroups:
         value: "500"
       - key: SYNC_INTERVAL_SEC
         value: "600"
+      - key: PREDICTOR_SERVICE_URL
+        value: "https://predictor-494415302759.us-west1.run.app"
+      - key: DB_POOL_SIZE
+        value: "1"
+      - key: DB_MAX_OVERFLOW
+        value: "0"
       - key: GEMINI_API_KEY_HAIFENG
         sync: false
       - key: GEMINI_API_KEY_JIBANG
@@ -190,14 +196,8 @@ services:
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
-      - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Grok 4 (dry-run) ────────────────────────
@@ -218,14 +218,8 @@ services:
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
-      - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — Claude Opus 4.6 (dry-run) ───────────────
@@ -246,14 +240,8 @@ services:
         sync: false
       - key: KALSHI_PRIVATE_KEY_B64
         sync: false
-      - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-494415302759.us-west1.run.app
       - key: PREDICTOR_API_KEY
         sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "0"
       - fromGroup: kalshi-trading-shared
 
   # ── API Backend ──────────────────────────────────────────────

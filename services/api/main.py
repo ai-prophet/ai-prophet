@@ -2918,6 +2918,7 @@ def get_cycle_evaluations(
                 bp.p_yes as pred_p_yes,
                 bp.yes_ask as pred_yes_ask,
                 bp.no_ask as pred_no_ask,
+                bp.skip_reason as skip_reason,
                 bo.id as order_id,
                 bo.order_id as local_order_id,
                 bo.exchange_order_id as exchange_order_id,
@@ -3062,7 +3063,10 @@ def get_cycle_evaluations(
                 )
 
             # Determine reason for action/inaction
-            if action_type == "hold":
+            # First check database skip_reason field
+            if row.skip_reason:
+                reason = row.skip_reason
+            elif action_type == "hold":
                 reason = hold_reason
             elif action_type == "skip" and model_skip_reason:
                 reason = model_skip_reason
@@ -3120,8 +3124,70 @@ def get_cycle_evaluations(
             {"instance": resolved_instance, "ticker": ticker, "cutoff": DISPLAY_CUTOFF_UTC}
         ).scalar() or 0
 
+        # Post-process to collapse consecutive skips with same reason
+        collapsed_evaluations = []
+        consecutive_skips = []
+
+        for eval in evaluations:
+            # Check if this is a skip with a reason
+            is_skip = (eval["action"]["type"] == "skip" or eval["action"]["type"] == "hold") and eval["action"]["reason"]
+
+            if is_skip and consecutive_skips and consecutive_skips[-1]["action"]["reason"] == eval["action"]["reason"] and consecutive_skips[-1]["ticker"] == eval["ticker"]:
+                # Same skip reason and same market, accumulate
+                consecutive_skips.append(eval)
+            else:
+                # Different action or reason - flush any accumulated skips
+                if len(consecutive_skips) > 2:  # Collapse if 3+ consecutive skips
+                    first_skip = consecutive_skips[0]
+                    last_skip = consecutive_skips[-1]
+                    collapsed_evaluations.append({
+                        **first_skip,
+                        "collapsed": True,
+                        "skip_count": len(consecutive_skips),
+                        "time_range": {
+                            "start": first_skip["timestamp"],
+                            "end": last_skip["timestamp"],
+                        },
+                        "action": {
+                            **first_skip["action"],
+                            "description": f"Skipped {len(consecutive_skips)} cycles",
+                            "reason": f"{first_skip['action']['reason']} ({len(consecutive_skips)} cycles)",
+                        }
+                    })
+                else:
+                    # Add individual skips if less than 3
+                    collapsed_evaluations.extend(consecutive_skips)
+
+                # Reset accumulator
+                consecutive_skips = [eval] if is_skip else []
+
+                # Add current eval if not a skip
+                if not is_skip:
+                    collapsed_evaluations.append(eval)
+
+        # Handle any remaining consecutive skips
+        if len(consecutive_skips) > 2:
+            first_skip = consecutive_skips[0]
+            last_skip = consecutive_skips[-1]
+            collapsed_evaluations.append({
+                **first_skip,
+                "collapsed": True,
+                "skip_count": len(consecutive_skips),
+                "time_range": {
+                    "start": first_skip["timestamp"],
+                    "end": last_skip["timestamp"],
+                },
+                "action": {
+                    **first_skip["action"],
+                    "description": f"Skipped {len(consecutive_skips)} cycles",
+                    "reason": f"{first_skip['action']['reason']} ({len(consecutive_skips)} cycles)",
+                }
+            })
+        else:
+            collapsed_evaluations.extend(consecutive_skips)
+
         return {
-            "evaluations": evaluations,
+            "evaluations": collapsed_evaluations,
             "total": total,
             "has_more": offset + limit < total,
             "ticker": ticker,
@@ -3744,3 +3810,93 @@ def get_system_alerts(instance_name: str | None = Query(None), hours: int = Quer
         "has_critical_alerts": len(alert_list) > 0,
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+
+@app.get("/strategy-marker")
+def get_strategy_marker(instance_name: str | None = Query(None)) -> dict[str, Any]:
+    """Get current strategy marker and transition information."""
+    resolved_instance = _instance_name(instance_name)
+
+    engine = get_db()
+    with get_session(engine) as session:
+        # Import here to avoid circular dependency
+        try:
+            from services.strategy_marker import get_current_strategy, get_strategy_pnl
+        except ImportError:
+            # If strategy marker module doesn't exist yet, return placeholder
+            return {
+                "instance_name": resolved_instance,
+                "strategy": {
+                    "version": "v1.0-legacy",
+                    "name": "Legacy Strategy",
+                    "start_timestamp": DISPLAY_CUTOFF_UTC.isoformat(),
+                    "constraints": {
+                        "pre_resolution_block_hours": 24,
+                        "min_hours_between_trades": None,
+                        "min_price_deviation_cents": None,
+                        "spread_filter": 1.03,
+                    }
+                },
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+
+        current = get_current_strategy(session, resolved_instance)
+        if current:
+            pnl_data = get_strategy_pnl(session, resolved_instance)
+            return {
+                "instance_name": resolved_instance,
+                "strategy": {
+                    "id": current["id"],
+                    "version": current["version"],
+                    "start_timestamp": current["start_timestamp"].isoformat() if current["start_timestamp"] else None,
+                    "config": current["config"],
+                    "starting_balance": current["starting_balance"],
+                    "notes": current["notes"],
+                },
+                "pnl": pnl_data if "error" not in pnl_data else {},
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+
+        # No active strategy
+        return {
+            "instance_name": resolved_instance,
+            "strategy": None,
+            "pnl": {},
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+
+
+@app.post("/strategy-marker/transition")
+def create_strategy_transition(
+    instance_name: str | None = Query(None),
+    notes: str | None = Query(None)
+) -> dict[str, Any]:
+    """Mark a strategy transition point."""
+    resolved_instance = _instance_name(instance_name)
+
+    engine = get_db()
+    with get_session(engine) as session:
+        try:
+            from services.strategy_marker import mark_strategy_transition, CURRENT_STRATEGY_VERSION
+
+            marker_id = mark_strategy_transition(
+                session,
+                resolved_instance,
+                new_version=CURRENT_STRATEGY_VERSION,
+                notes=notes
+            )
+
+            return {
+                "success": True,
+                "marker_id": marker_id,
+                "instance_name": resolved_instance,
+                "version": CURRENT_STRATEGY_VERSION,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "instance_name": resolved_instance,
+                "timestamp": datetime.now(UTC).isoformat(),
+            }

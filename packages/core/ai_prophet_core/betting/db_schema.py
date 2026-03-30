@@ -38,6 +38,7 @@ class BettingPrediction(Base):
     p_yes: Mapped[float] = mapped_column(Float, nullable=False)
     yes_ask: Mapped[float] = mapped_column(Float, nullable=False)
     no_ask: Mapped[float] = mapped_column(Float, nullable=False)
+    skip_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Reason for skipping trade
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (

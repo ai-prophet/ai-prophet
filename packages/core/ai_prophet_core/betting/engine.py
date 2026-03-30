@@ -173,7 +173,7 @@ class BettingEngine:
 
             yes_ask, no_ask = prices
 
-            # 1. Persist the prediction
+            # 1. Persist the prediction (we'll update skip_reason later if needed)
             prediction_id = self._save_prediction(
                 tick_ts=tick_ts,
                 market_id=market_id,
@@ -181,6 +181,7 @@ class BettingEngine:
                 p_yes=p_yes,
                 yes_ask=yes_ask,
                 no_ask=no_ask,
+                skip_reason=None,  # Will update if we skip
             )
 
             # 2. Refresh portfolio from live DB state (not the stale snapshot
@@ -196,71 +197,58 @@ class BettingEngine:
                     market_position_side=live_side,
                 )
 
-            # 3. Check for re-trading constraints: 10-cent deviation AND 4-hour minimum time
-            # Skip re-evaluation if EITHER condition is not met
+            # 3. Check for re-trading constraint: market must move 10 cents since last forecast
+            # (No time-based constraint needed - cycles already enforce 2-hour minimum)
             skip_due_to_constraints = False
             constraint_reason = None
 
             if self._engine is not None:
                 ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
                 try:
-                    from datetime import timedelta
                     from .db import get_session
-                    from .db_schema import BettingOrder
+                    from .db_schema import BettingPrediction
 
                     with get_session(self._engine) as session:
-                        # Get the last filled order for this market
-                        last_order = (
-                            session.query(BettingOrder)
+                        # Get the last prediction/forecast for this market
+                        last_prediction = (
+                            session.query(BettingPrediction)
                             .filter(
-                                BettingOrder.instance_name == self.instance_name,
-                                BettingOrder.ticker == ticker,
-                                BettingOrder.status.in_(["FILLED", "PARTIALLY_FILLED"]),
+                                BettingPrediction.instance_name == self.instance_name,
+                                BettingPrediction.market_id == market_id,
                             )
-                            .order_by(BettingOrder.created_at.desc())
+                            .order_by(BettingPrediction.created_at.desc())
                             .first()
                         )
 
-                        if last_order:
-                            # Check 4-hour minimum time constraint FIRST
-                            now = datetime.now(UTC)
-                            time_since_last_trade = now - last_order.created_at
+                        # Check 10-cent price deviation (from last FORECAST/PREDICTION)
+                        if last_prediction:
+                            # Compare current market prices to market prices at last forecast
+                            last_yes_ask = float(last_prediction.yes_ask)
+                            last_no_ask = float(last_prediction.no_ask)
 
-                            if time_since_last_trade < timedelta(hours=4):
-                                hours_passed = time_since_last_trade.total_seconds() / 3600
+                            # Check if market prices have moved significantly since last forecast
+                            yes_deviation = abs(yes_ask - last_yes_ask)
+                            no_deviation = abs(no_ask - last_no_ask)
+                            max_deviation = max(yes_deviation, no_deviation)
+
+                            # Skip if market hasn't moved by at least 10 cents since last forecast
+                            if max_deviation < 0.10:
                                 skip_due_to_constraints = True
-                                constraint_reason = f"Only {hours_passed:.1f} hours since last trade (< 4 hours required)"
+                                constraint_reason = f"Market unchanged: {max_deviation*100:.1f}¢ movement (need 10¢)"
                                 logger.info(
-                                    "[BETTING] Skipping %s: %s. Last trade at %s",
-                                    market_id, constraint_reason, last_order.created_at.strftime("%H:%M UTC")
+                                    "[BETTING] Skipping %s: %s. "
+                                    "Last forecast: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
+                                    market_id, constraint_reason, last_yes_ask, last_no_ask, yes_ask, no_ask
                                 )
-
-                            # Only check price deviation if enough time has passed
-                            elif last_order.fill_price:
-                                last_traded_price = float(last_order.fill_price)
-                                last_side = last_order.side.upper()
-
-                                # Check price deviation on both sides
-                                # We care if either side has moved significantly
-                                yes_deviation = abs(yes_ask - last_traded_price)
-                                no_deviation = abs(no_ask - last_traded_price)
-                                max_deviation = max(yes_deviation, no_deviation)
-
-                                # Skip if neither price has moved by at least 10 cents (0.10)
-                                if max_deviation < 0.10:
-                                    skip_due_to_constraints = True
-                                    constraint_reason = f"Price deviation only {max_deviation:.3f} (< 0.10 required)"
-                                    logger.info(
-                                        "[BETTING] Skipping %s: %s. "
-                                        "Last %s @ %.3f, Current YES: %.3f, NO: %.3f",
-                                        market_id, constraint_reason, last_side, last_traded_price, yes_ask, no_ask
-                                    )
                 except Exception as e:
                     logger.warning("[BETTING] Failed to check re-trading constraints for %s: %s", market_id, e)
 
             # 4. Evaluate strategy (unless skipping due to constraints)
             if skip_due_to_constraints:
                 signal = None
+                # Update the prediction with the skip reason
+                if prediction_id and constraint_reason:
+                    self._update_prediction_skip_reason(prediction_id, constraint_reason)
             else:
                 signal = self.strategy.evaluate(
                     market_id=market_id,
@@ -275,6 +263,9 @@ class BettingEngine:
                         "[BETTING] %s on %s: p_yes=%.3f → SKIP",
                         source, market_id, p_yes,
                     )
+                    # Strategy returned None - mark as "No edge"
+                    if prediction_id:
+                        self._update_prediction_skip_reason(prediction_id, "No edge - within spread")
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
                 continue
 
@@ -1185,6 +1176,7 @@ class BettingEngine:
         p_yes: float,
         yes_ask: float,
         no_ask: float,
+        skip_reason: str | None = None,
     ) -> int | None:
         if self._engine is None:
             return None
@@ -1201,6 +1193,7 @@ class BettingEngine:
             p_yes=p_yes,
             yes_ask=yes_ask,
             no_ask=no_ask,
+            skip_reason=skip_reason,
             created_at=now,
         )
         try:
@@ -1211,6 +1204,27 @@ class BettingEngine:
         except Exception as e:
             logger.warning("Failed to persist prediction: %s", e, exc_info=True)
             return None
+
+    def _update_prediction_skip_reason(
+        self,
+        prediction_id: int,
+        skip_reason: str,
+    ) -> None:
+        """Update the skip_reason for an existing prediction."""
+        if self._engine is None or prediction_id is None:
+            return
+
+        from .db import get_session
+        from .db_schema import BettingPrediction
+
+        try:
+            with get_session(self._engine) as session:
+                session.query(BettingPrediction).filter(
+                    BettingPrediction.id == prediction_id
+                ).update({"skip_reason": skip_reason})
+                session.commit()
+        except Exception as e:
+            logger.warning("Failed to update prediction skip_reason: %s", e)
 
     def _save_signal(
         self,

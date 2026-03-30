@@ -19,7 +19,7 @@ Environment variables:
     COMPARISON_MODEL             — Model spec (e.g. openai:gpt-5.4:market)
     COMPARISON_SOURCE_INSTANCE   — Instance to mirror markets from (default: Haifeng)
     COMPARISON_STARTING_CASH     — Starting virtual balance (default: WORKER_STARTING_CASH or 10000)
-    COMPARISON_POLL_INTERVAL_SEC — Poll interval in seconds (default: 3600)
+    COMPARISON_POLL_INTERVAL_SEC — Poll interval in seconds (default: 7200 = every 2 hours)
     COMPARISON_POLL_OFFSET_SEC   — Optional phase offset in seconds for comparison cycle boundaries
     PREDICTOR_SERVICE_URL        — Cloud Run predictor URL (required)
     PREDICTOR_API_KEY            — Predictor service API key
@@ -67,7 +67,7 @@ STARTING_CASH = float(
     os.getenv("COMPARISON_STARTING_CASH", os.getenv("WORKER_STARTING_CASH", "500"))
 )
 POLL_INTERVAL = int(
-    os.getenv("COMPARISON_POLL_INTERVAL_SEC", os.getenv("WORKER_POLL_INTERVAL_SEC", "3600"))
+    os.getenv("COMPARISON_POLL_INTERVAL_SEC", os.getenv("WORKER_POLL_INTERVAL_SEC", "7200"))  # 2 hours default
 )
 POLL_OFFSET_SEC = int(
     os.getenv("COMPARISON_POLL_OFFSET_SEC", os.getenv("WORKER_POLL_OFFSET_SEC", "0"))
