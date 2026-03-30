@@ -2624,8 +2624,17 @@ def get_resolved_markets(
                 for order in market_orders:
                     action = str(getattr(order, "action", "")).upper()
                     side = str(getattr(order, "side", "")).lower()
-                    shares = float(getattr(order, "client_order_shares", 0) or getattr(order, "shares", 0) or 0)
-                    price = float(getattr(order, "client_order_price", 0) or getattr(order, "price", 0) or 0)
+                    # BettingOrder uses 'count' for shares and 'price_cents' for price
+                    shares = float(getattr(order, "count", 0) or getattr(order, "filled_shares", 0) or 0)
+                    price_cents = float(getattr(order, "price_cents", 0))
+                    price = price_cents / 100.0 if price_cents > 0 else float(getattr(order, "fill_price", 0))
+
+                    # Debug first order of each market
+                    if market_orders.index(order) == 0:
+                        logger.debug("First order for %s: count=%s, price_cents=%s, filled_shares=%s",
+                                   mkt.ticker, getattr(order, "count", None),
+                                   getattr(order, "price_cents", None),
+                                   getattr(order, "filled_shares", None))
                     status = str(getattr(order, "status", "")).upper()
                     created_at = getattr(order, "created_at", None)
 
