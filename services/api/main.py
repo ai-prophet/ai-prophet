@@ -2629,7 +2629,8 @@ def get_resolved_markets(
                     status = str(getattr(order, "status", "")).upper()
                     created_at = getattr(order, "created_at", None)
 
-                    if shares > 0 and status in ["EXECUTED", "SETTLED"]:
+                    # Include all orders with shares > 0
+                    if shares > 0:
                         trade_value = shares * price
                         trade_history.append({
                             "date": created_at.isoformat() if created_at else None,
@@ -2640,6 +2641,12 @@ def get_resolved_markets(
                             "value": round(trade_value, 2),
                             "status": status,
                         })
+                        if "Duke" in mkt.title or "Basketball" in mkt.title:
+                            logger.info("Added trade: %s %s %s @ %s (status: %s)", action, shares, side, price, status)
+
+            # Add debug logging for rows with trades
+            if trade_history:
+                logger.info("Market %s has %d trades", mkt.ticker, len(trade_history))
 
             rows.append({
                 "market_id": mkt.market_id,
