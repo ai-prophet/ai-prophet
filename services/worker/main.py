@@ -1790,12 +1790,10 @@ def run_cycle(args) -> None:
     all_edges: list[tuple[str, str, float]] = []
 
     # ── Phase A: Pre-filter markets (sequential) ────────────────────
-    # Validate prices, apply spread filter, save snapshots, skip unchanged.
+    # Validate prices, save snapshots, skip unchanged.
     # Build a list of markets that need LLM analysis.
     tick_ts = datetime.now(UTC)
     total_results = []
-
-    from ai_prophet_core.betting.config import MAX_SPREAD
 
     markets_to_analyze: list[dict] = []  # enriched market dicts
 
@@ -1874,19 +1872,7 @@ def run_cycle(args) -> None:
             all_market_prices[market_id] = (yes_ask, no_ask)
             continue
 
-        if yes_ask + no_ask > MAX_SPREAD:
-            logger.debug("Skipping %s: spread %.3f > %.3f", ticker, yes_ask + no_ask, MAX_SPREAD)
-            log_cycle_skip_for_models(
-                db_engine,
-                model_specs,
-                market_id,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-                reason=f"Skipped because the spread ({yes_ask + no_ask:.1%}) exceeded the max allowed spread ({MAX_SPREAD:.1%}).",
-                instance_name=INSTANCE_NAME,
-            )
-            all_market_prices[market_id] = (yes_ask, no_ask)
-            continue
+        # Spread filter removed - no longer checking MAX_SPREAD
 
         if db_engine:
             save_price_snapshot(
