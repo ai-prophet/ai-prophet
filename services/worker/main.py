@@ -2159,6 +2159,18 @@ def run_cycle(args) -> None:
                         no_ask=no_ask,
                     )
                     strategy_metadata = strategy_signal.metadata if strategy_signal is not None else None
+
+                    # Log detailed strategy evaluation results for debugging
+                    edge = pred["p_yes"] - yes_ask
+                    current_pos_info = ""
+                    if portfolio and portfolio.market_position_shares > 0:
+                        current_pos_info = f", pos={portfolio.market_position_side}/{float(portfolio.market_position_shares):.2f}"
+                    logger.debug(
+                        "%s: p_yes=%.2f, yes_ask=%.2f, no_ask=%.2f, edge=%.2f%s, signal=%s",
+                        ticker, pred["p_yes"], yes_ask, no_ask, edge, current_pos_info,
+                        f"{strategy_signal.side}/{strategy_signal.shares:.3f}/${strategy_signal.cost:.2f}" if strategy_signal else "None"
+                    )
+
                     if strategy_signal is None:
                         decision = "HOLD"
                     elif strategy_metadata and strategy_metadata.get("flatten_reason") == "WITHIN_SPREAD":
@@ -2170,7 +2182,8 @@ def run_cycle(args) -> None:
                         decision = f"BUY_{strategy_signal.side.upper()}"
                     else:
                         decision = "HOLD"
-                except Exception:
+                except Exception as e:
+                    logger.warning("Strategy evaluation failed for %s model %s: %s", ticker, ms, e)
                     decision = "HOLD"
                     strategy_metadata = None
                     skip_reason = None
