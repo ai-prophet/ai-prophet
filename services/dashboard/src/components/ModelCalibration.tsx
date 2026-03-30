@@ -501,6 +501,17 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
                                       (holdingSide === "NO" && row.outcome === "NO") ? 1 : 0)
                   : 0;
 
+                // Debug logging
+                if (settlementValue > 100) {
+                  console.error("Settlement calculation error:", {
+                    remainingShares,
+                    holdingSide,
+                    outcome: row.outcome,
+                    settlementValue,
+                    trades: row.trades
+                  });
+                }
+
                 const netPnl = totalSold + settlementValue - totalBought;
 
                 return (
