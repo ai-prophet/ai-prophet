@@ -2556,6 +2556,7 @@ def get_resolved_markets(
 
         # Load all orders for trade history
         all_orders = load_replayable_orders(session, BettingOrder, resolved_instance, tickers=tickers)
+        logger.info("Loaded %d orders for %d tickers for instance %s", len(all_orders), len(tickers), resolved_instance)
 
         rows = []
         for mkt, outcome in markets:
@@ -2618,6 +2619,8 @@ def get_resolved_markets(
             trade_history = []
             if mkt.ticker:
                 market_orders = [o for o in all_orders if getattr(o, "ticker", "") == mkt.ticker]
+                if market_orders and "Duke" in mkt.title:
+                    logger.info("Duke market %s: found %d orders", mkt.ticker, len(market_orders))
                 for order in market_orders:
                     action = str(getattr(order, "action", "")).upper()
                     side = str(getattr(order, "side", "")).lower()
