@@ -575,30 +575,11 @@ def _load_resolved_visible_markets(
     session: Any,
     instance_name: str,
 ) -> list[tuple[TradingMarket, float]]:
-    # Get ALL tickers where we've EVER placed trades, not just recent ones
-    all_traded_tickers = {
-        ticker
-        for (ticker,) in (
-            _instance_query(session, BettingOrder, instance_name)
-            .with_entities(BettingOrder.ticker)
-            .distinct()
-            .all()
-        )
-        if ticker
-    }
-
-    # Also include recently visible markets (for markets with only predictions, no trades)
+    # Get markets with activity after the cutoff date
     visible_tickers, visible_market_ids = _display_visible_market_activity(session, instance_name)
-    all_traded_tickers.update(visible_tickers)
-
-    # Create filter that includes all traded markets
-    if not all_traded_tickers and not visible_market_ids:
+    visible_filter = _visible_market_scope_filter(visible_tickers, visible_market_ids)
+    if visible_filter is False:
         return []
-
-    visible_filter = or_(
-        TradingMarket.ticker.in_(all_traded_tickers) if all_traded_tickers else False,
-        TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
-    )
 
     markets = (
         _instance_query(session, TradingMarket, instance_name)
@@ -637,8 +618,12 @@ def _load_resolved_visible_markets(
                     market.no_ask = 1.0 - outcome
                     market.updated_at = datetime.now(UTC)
                     updated_rows = True
-        if outcome is not None:
-            resolved.append((market, outcome))
+
+        # Include the market even if we can't determine the outcome
+        # Use -1 as a sentinel value for "unknown outcome"
+        if outcome is None:
+            outcome = -1.0  # Indicates resolution unknown
+        resolved.append((market, outcome))
 
     if updated_rows:
         session.flush()
@@ -2584,22 +2569,35 @@ def get_resolved_markets(
             elif isinstance(replay_pos, InventoryPosition):
                 side, qty, avg = replay_pos.current_position()
                 if side is not None and qty > EPSILON:
-                    settlement_price = outcome if side == "yes" else 1.0 - outcome
+                    # If outcome is unknown (-1), can't calculate final P&L
+                    if outcome >= 0:
+                        settlement_price = outcome if side == "yes" else 1.0 - outcome
+                        pnl = round(replay_pos.realized_pnl + (settlement_price - avg) * qty, 4)
+                    else:
+                        # Only show realized P&L for unknown outcomes
+                        pnl = round(replay_pos.realized_pnl, 4)
                     position_side = side.upper()
                     quantity = round(qty, 4)
                     avg_price = round(avg, 4)
                     capital = round(qty * avg, 4)
-                    pnl = round(replay_pos.realized_pnl + (settlement_price - avg) * qty, 4)
                 elif abs(replay_pos.realized_pnl) > EPSILON:
                     pnl = round(replay_pos.realized_pnl, 4)
 
             ret_pct = round(pnl / capital * 100, 2) if capital else 0.0
             correct = None
-            if position_side is not None:
+            if position_side is not None and outcome >= 0:
                 correct = (
                     (position_side == "YES" and outcome == 1.0) or
                     (position_side == "NO" and outcome == 0.0)
                 )
+
+            # Determine outcome display string
+            if outcome == 1.0:
+                outcome_str = "YES"
+            elif outcome == 0.0:
+                outcome_str = "NO"
+            else:
+                outcome_str = "PENDING"  # Market expired but outcome unknown
 
             rows.append({
                 "market_id": mkt.market_id,
@@ -2607,7 +2605,7 @@ def get_resolved_markets(
                 "ticker": mkt.ticker,
                 "category": mkt.category,
                 "resolved_at": resolved_at,
-                "outcome": "YES" if outcome == 1.0 else "NO",
+                "outcome": outcome_str,
                 "position_side": position_side,
                 "quantity": quantity,
                 "avg_price": avg_price,
