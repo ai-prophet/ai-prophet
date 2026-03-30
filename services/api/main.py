@@ -2548,6 +2548,9 @@ def get_resolved_markets(
         tickers = [market.ticker for market, _ in markets if market.ticker]
         trade_state = _build_resolved_market_trade_state(session, resolved_instance, tickers)
 
+        # Load all orders for trade history
+        all_orders = load_replayable_orders(session, BettingOrder, resolved_instance, tickers=tickers)
+
         rows = []
         for mkt, outcome in markets:
             replay = trade_state.get(mkt.ticker, {})
@@ -2605,6 +2608,30 @@ def get_resolved_markets(
             else:
                 outcome_str = "PENDING"  # Market expired but outcome unknown
 
+            # Get trade history for this market
+            trade_history = []
+            if mkt.ticker:
+                market_orders = [o for o in all_orders if getattr(o, "ticker", "") == mkt.ticker]
+                for order in market_orders:
+                    action = str(getattr(order, "action", "")).upper()
+                    side = str(getattr(order, "side", "")).lower()
+                    shares = float(getattr(order, "client_order_shares", 0) or getattr(order, "shares", 0) or 0)
+                    price = float(getattr(order, "client_order_price", 0) or getattr(order, "price", 0) or 0)
+                    status = str(getattr(order, "status", "")).upper()
+                    created_at = getattr(order, "created_at", None)
+
+                    if shares > 0 and status in ["EXECUTED", "SETTLED"]:
+                        trade_value = shares * price
+                        trade_history.append({
+                            "date": created_at.isoformat() if created_at else None,
+                            "action": action,
+                            "side": side.upper(),
+                            "shares": round(shares, 2),
+                            "price": round(price, 4),
+                            "value": round(trade_value, 2),
+                            "status": status,
+                        })
+
             rows.append({
                 "market_id": mkt.market_id,
                 "title": mkt.title,
@@ -2619,6 +2646,7 @@ def get_resolved_markets(
                 "pnl": pnl,
                 "return_pct": ret_pct,
                 "correct": correct,
+                "trades": trade_history,
             })
 
         with_pos = [r for r in rows if r["position_side"] is not None]

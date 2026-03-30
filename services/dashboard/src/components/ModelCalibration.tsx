@@ -12,7 +12,7 @@ import {
   ReferenceLine,
   CartesianGrid,
 } from "recharts";
-import type { ResolvedMarketsData, ResolvedMarketRow } from "@/lib/api";
+import type { ResolvedMarketsData, ResolvedMarketRow, MarketTrade } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE } from "@/lib/utils";
 
 function StatCard({
@@ -282,11 +282,14 @@ export function ModelCalibration({
 }
 
 function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
+  const [expanded, setExpanded] = useState(false);
   const hasPos = row.position_side !== null;
   const correct = row.correct;
+  const hasTrades = row.trades && row.trades.length > 0;
 
   return (
-    <tr className="hover:bg-t-panel-hover transition-colors">
+    <>
+      <tr className="hover:bg-t-panel-hover transition-colors cursor-pointer" onClick={() => hasTrades && setExpanded(!expanded)}>
       <td className="px-3 py-2 max-w-[260px]">
         <div className="truncate text-txt-primary text-[11px]">{row.title}</div>
         <div className="text-[9px] font-mono text-txt-muted mt-0.5">
@@ -356,8 +359,152 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
         {hasPos ? `${row.return_pct >= 0 ? "+" : ""}${row.return_pct.toFixed(1)}%` : "—"}
       </td>
       <td className="px-3 py-2 text-right font-mono text-txt-muted text-[10px]">
-        {row.resolved_at ? fmtTime(row.resolved_at) : "—"}
+        <div className="flex items-center justify-end gap-1">
+          {row.resolved_at ? fmtTime(row.resolved_at) : "—"}
+          {hasTrades && (
+            <span className={`text-[8px] transition-transform ${expanded ? "rotate-180" : ""}`}>
+              ▼
+            </span>
+          )}
+        </div>
       </td>
     </tr>
+    {expanded && hasTrades && (
+      <tr>
+        <td colSpan={9} className="px-3 py-2 bg-t-bg/50">
+          <div className="space-y-2">
+            <div className="text-[10px] font-mono text-txt-secondary font-medium">
+              Trade History & P&L Calculation:
+            </div>
+            <table className="w-full text-[9px] font-mono">
+              <thead>
+                <tr className="border-b border-t-border/30 text-txt-muted">
+                  <th className="text-left py-1">Date</th>
+                  <th className="text-left py-1">Action</th>
+                  <th className="text-right py-1">Contracts</th>
+                  <th className="text-right py-1">Price</th>
+                  <th className="text-right py-1">Value</th>
+                  <th className="text-right py-1">Running P&L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {row.trades?.map((trade, idx) => {
+                  // Calculate running P&L
+                  let runningPnl = 0;
+                  let position = 0;
+                  let costBasis = 0;
+
+                  for (let i = 0; i <= idx; i++) {
+                    const t = row.trades![i];
+                    if (t.action === "BUY") {
+                      // Adding to position
+                      const prevPosition = position;
+                      const prevCostBasis = costBasis;
+                      position += t.shares;
+                      costBasis = ((prevPosition * prevCostBasis) + (t.shares * t.price)) / position;
+                    } else {
+                      // Selling position
+                      const sellPnl = t.shares * (t.price - costBasis);
+                      runningPnl += sellPnl;
+                      position -= t.shares;
+                    }
+                  }
+
+                  // Add unrealized P&L if position remains
+                  if (position > 0 && idx === row.trades!.length - 1) {
+                    const settlementPrice = row.outcome === "YES" ? 1.0 : 0.0;
+                    const unrealizedPnl = position * (settlementPrice - costBasis);
+                    runningPnl += unrealizedPnl;
+                  }
+
+                  return (
+                    <tr key={idx} className="border-b border-t-border/20">
+                      <td className="py-1 text-txt-muted">
+                        {trade.date ? new Date(trade.date).toLocaleDateString() : "—"}
+                      </td>
+                      <td className="py-1">
+                        <span className={`px-1 py-0.5 rounded text-[8px] ${
+                          trade.action === "BUY"
+                            ? "bg-accent/15 text-accent"
+                            : "bg-orange-500/15 text-orange-400"
+                        }`}>
+                          {trade.action} {trade.side}
+                        </span>
+                      </td>
+                      <td className="py-1 text-right text-txt-secondary">
+                        {trade.shares}
+                      </td>
+                      <td className="py-1 text-right text-txt-secondary">
+                        {(trade.price * 100).toFixed(0)}¢
+                      </td>
+                      <td className="py-1 text-right text-txt-secondary">
+                        ${trade.value.toFixed(2)}
+                      </td>
+                      <td className={`py-1 text-right font-medium ${
+                        runningPnl > 0 ? "text-profit" : runningPnl < 0 ? "text-loss" : "text-txt-muted"
+                      }`}>
+                        {runningPnl !== 0 ? `${runningPnl > 0 ? "+" : ""}$${runningPnl.toFixed(2)}` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {/* P&L Breakdown */}
+            <div className="mt-2 p-2 rounded bg-t-panel/50 border border-t-border/30 text-[9px] space-y-1">
+              <div className="text-txt-secondary font-medium">P&L Breakdown:</div>
+              {(() => {
+                let totalBought = 0;
+                let totalSold = 0;
+                let remainingShares = 0;
+
+                row.trades?.forEach(t => {
+                  if (t.action === "BUY") {
+                    totalBought += t.value;
+                    remainingShares += t.shares;
+                  } else {
+                    totalSold += t.value;
+                    remainingShares -= t.shares;
+                  }
+                });
+
+                const settlementValue = remainingShares > 0
+                  ? remainingShares * (row.outcome === "YES" ? 100 : 0)
+                  : 0;
+
+                const netPnl = totalSold + settlementValue - totalBought;
+
+                return (
+                  <>
+                    <div className="flex justify-between text-txt-muted">
+                      <span>Total Invested:</span>
+                      <span className="font-mono">-${totalBought.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-txt-muted">
+                      <span>Total Sold:</span>
+                      <span className="font-mono">+${totalSold.toFixed(2)}</span>
+                    </div>
+                    {remainingShares > 0 && (
+                      <div className="flex justify-between text-txt-muted">
+                        <span>Settlement ({remainingShares} @ {row.outcome === "YES" ? "$1" : "$0"}):</span>
+                        <span className="font-mono">+${settlementValue.toFixed(2)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between font-medium pt-1 border-t border-t-border/30">
+                      <span>Net P&L:</span>
+                      <span className={`font-mono ${netPnl > 0 ? "text-profit" : netPnl < 0 ? "text-loss" : "text-txt-muted"}`}>
+                        {netPnl > 0 ? "+" : ""}${netPnl.toFixed(2)}
+                      </span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </td>
+      </tr>
+    )}
+    </>
   );
 }

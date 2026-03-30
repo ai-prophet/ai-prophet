@@ -387,13 +387,23 @@ export interface BrierScoresData {
   }>;
 }
 
+export interface MarketTrade {
+  date: string | null;
+  action: "BUY" | "SELL";
+  side: "YES" | "NO";
+  shares: number;
+  price: number;
+  value: number;
+  status: string;
+}
+
 export interface ResolvedMarketRow {
   market_id: string;
   title: string;
   ticker: string;
   category: string | null;
   resolved_at: string | null;
-  outcome: "YES" | "NO";
+  outcome: "YES" | "NO" | "PENDING";
   position_side: "YES" | "NO" | null;
   quantity: number;
   avg_price: number;
@@ -401,6 +411,7 @@ export interface ResolvedMarketRow {
   pnl: number;
   return_pct: number;
   correct: boolean | null;
+  trades?: MarketTrade[];
 }
 
 export interface ResolvedMarketsSummary {
