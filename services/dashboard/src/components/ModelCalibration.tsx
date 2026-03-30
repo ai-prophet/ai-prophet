@@ -173,6 +173,13 @@ export function ModelCalibration({
         <span className="ml-auto text-[9px] font-mono text-txt-muted">{rows.length} markets</span>
       </div>
 
+      {/* Explanation note */}
+      <div className="mx-3 mt-2 p-2 rounded bg-t-bg/50 border border-t-border/30 text-[9px] text-txt-muted">
+        <span className="text-txt-secondary">Note:</span> P&L can be positive even with incorrect predictions if you sold early at a profit,
+        or negative despite correct predictions if you bought at unfavorable prices. The ✓/✗ shows whether your final position
+        matched the market outcome, not whether you made money.
+      </div>
+
       {view === "table" ? (
         <div className="overflow-x-auto">
           {rows.length === 0 ? (
@@ -307,11 +314,15 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
               className={`px-1.5 py-0.5 rounded text-[9px] font-medium font-mono ${
                 row.position_side === "YES" ? "bg-blue-500/15 text-blue-400" : "bg-amber-500/15 text-amber-400"
               }`}
+              title={`We held ${row.position_side}, market resolved to ${row.outcome}`}
             >
               {row.position_side}
             </span>
             {correct !== null && (
-              <span className={`text-[9px] ${correct ? "text-profit" : "text-loss"}`}>
+              <span
+                className={`text-[9px] ${correct ? "text-profit" : "text-loss"}`}
+                title={correct ? "Correct prediction" : "Incorrect prediction"}
+              >
                 {correct ? "✓" : "✗"}
               </span>
             )}
@@ -329,7 +340,16 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
       <td className="px-3 py-2 text-right font-mono text-txt-secondary text-[11px]">
         {hasPos ? fmtDollar(row.capital) : "—"}
       </td>
-      <td className={`px-3 py-2 text-right font-mono font-medium text-[11px] ${hasPos ? pnlCls(row.pnl) : "text-txt-muted"}`}>
+      <td
+        className={`px-3 py-2 text-right font-mono font-medium text-[11px] ${hasPos ? pnlCls(row.pnl) : "text-txt-muted"}`}
+        title={
+          hasPos && row.pnl > 0 && correct === false
+            ? `Profitable despite wrong outcome - likely sold position early at a profit`
+            : hasPos && row.pnl < 0 && correct === true
+            ? `Loss despite correct outcome - likely bought at unfavorable price or sold early at a loss`
+            : ""
+        }
+      >
         {hasPos ? fmtDollar(row.pnl) : "—"}
       </td>
       <td className={`px-3 py-2 text-right font-mono text-[11px] ${hasPos ? pnlCls(row.return_pct) : "text-txt-muted"}`}>

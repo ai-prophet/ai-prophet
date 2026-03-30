@@ -2590,6 +2590,12 @@ def get_resolved_markets(
                     (position_side == "YES" and outcome == 1.0) or
                     (position_side == "NO" and outcome == 0.0)
                 )
+                # Debug logging for Duke game issue
+                if "Duke" in mkt.title or "XNCAAMBMTEN" in (mkt.ticker or ""):
+                    logger.info(
+                        "Duke game correctness: position_side=%s, outcome=%s, correct=%s",
+                        position_side, outcome, correct
+                    )
 
             # Determine outcome display string
             if outcome == 1.0:
