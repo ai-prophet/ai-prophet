@@ -590,6 +590,12 @@ def _load_resolved_visible_markets(
         .order_by(TradingMarket.expiration.desc())
         .all()
     )
+
+    # Debug logging
+    logger.info(
+        "Resolved markets query: found %d markets for %s (filter resulted in %d tickers, %d market_ids)",
+        len(markets), instance_name, len(visible_tickers), len(visible_market_ids)
+    )
     if not markets:
         return []
 

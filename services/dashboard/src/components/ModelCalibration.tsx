@@ -289,7 +289,11 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
 
   return (
     <>
-      <tr className="hover:bg-t-panel-hover transition-colors cursor-pointer" onClick={() => hasTrades && setExpanded(!expanded)}>
+      <tr
+        className={`hover:bg-t-panel-hover transition-colors ${hasTrades ? "cursor-pointer" : ""}`}
+        onClick={() => hasTrades && setExpanded(!expanded)}
+        title={hasTrades ? "Click to view trade history" : ""}
+      >
       <td className="px-3 py-2 max-w-[260px]">
         <div className="truncate text-txt-primary text-[11px]">{row.title}</div>
         <div className="text-[9px] font-mono text-txt-muted mt-0.5">
@@ -359,10 +363,10 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
         {hasPos ? `${row.return_pct >= 0 ? "+" : ""}${row.return_pct.toFixed(1)}%` : "—"}
       </td>
       <td className="px-3 py-2 text-right font-mono text-txt-muted text-[10px]">
-        <div className="flex items-center justify-end gap-1">
+        <div className="flex items-center justify-end gap-2">
           {row.resolved_at ? fmtTime(row.resolved_at) : "—"}
           {hasTrades && (
-            <span className={`text-[8px] transition-transform ${expanded ? "rotate-180" : ""}`}>
+            <span className={`text-[10px] text-accent transition-transform inline-block ${expanded ? "rotate-180" : ""}`}>
               ▼
             </span>
           )}
