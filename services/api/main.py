@@ -575,10 +575,30 @@ def _load_resolved_visible_markets(
     session: Any,
     instance_name: str,
 ) -> list[tuple[TradingMarket, float]]:
+    # Get ALL tickers where we've EVER placed trades, not just recent ones
+    all_traded_tickers = {
+        ticker
+        for (ticker,) in (
+            _instance_query(session, BettingOrder, instance_name)
+            .with_entities(BettingOrder.ticker)
+            .distinct()
+            .all()
+        )
+        if ticker
+    }
+
+    # Also include recently visible markets (for markets with only predictions, no trades)
     visible_tickers, visible_market_ids = _display_visible_market_activity(session, instance_name)
-    visible_filter = _visible_market_scope_filter(visible_tickers, visible_market_ids)
-    if visible_filter is False:
+    all_traded_tickers.update(visible_tickers)
+
+    # Create filter that includes all traded markets
+    if not all_traded_tickers and not visible_market_ids:
         return []
+
+    visible_filter = or_(
+        TradingMarket.ticker.in_(all_traded_tickers) if all_traded_tickers else False,
+        TradingMarket.market_id.in_(visible_market_ids) if visible_market_ids else False,
+    )
 
     markets = (
         _instance_query(session, TradingMarket, instance_name)
