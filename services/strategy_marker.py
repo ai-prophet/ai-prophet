@@ -1,6 +1,7 @@
 """Strategy version tracking and transition markers for clear PnL segmentation."""
 
-from datetime import datetime, UTC
+from datetime import datetime, timezone
+UTC = timezone.utc
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -49,7 +50,7 @@ def create_strategy_marker_table(session: Session) -> None:
         is_active BOOLEAN DEFAULT TRUE,
         notes TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT unique_active_strategy UNIQUE (instance_name, is_active) WHERE is_active = TRUE
+        CONSTRAINT unique_active_strategy UNIQUE (instance_name, is_active)
     );
 
     CREATE INDEX IF NOT EXISTS idx_strategy_markers_instance ON strategy_markers(instance_name);

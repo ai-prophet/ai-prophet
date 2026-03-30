@@ -6,7 +6,8 @@ Run this to create a clear demarcation between the old and new strategy.
 
 import os
 import sys
-from datetime import datetime, UTC
+from datetime import datetime, timezone
+UTC = timezone.utc
 from pathlib import Path
 
 # Add parent directory to path

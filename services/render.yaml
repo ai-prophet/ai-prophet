@@ -36,7 +36,7 @@ envVarGroups:
       - key: COMPARISON_STARTING_CASH
         value: "500"
       - key: SYNC_INTERVAL_SEC
-        value: "600"
+        value: "30"
       - key: PREDICTOR_SERVICE_URL
         value: "https://predictor-494415302759.us-west1.run.app"
       - key: DB_POOL_SIZE
