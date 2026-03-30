@@ -582,7 +582,18 @@ export default function Dashboard() {
   }, [trades]);
 
   const resolvedTrackedMarkets = useMemo(
-    () => markets.filter((market) => isResolvedMarketResult(market.market_result)),
+    () => markets.filter((market) => {
+      // Include markets that have a YES/NO result OR are expired
+      if (isResolvedMarketResult(market.market_result)) return true;
+
+      // Check if market is expired (expiration date has passed)
+      if (market.expiration_date) {
+        const expirationTime = new Date(market.expiration_date).getTime();
+        return expirationTime < Date.now();
+      }
+
+      return false;
+    }),
     [markets]
   );
   const hiddenMarketIds = useMemo(
