@@ -2585,11 +2585,11 @@ def get_resolved_markets(
                         unrealized = (settlement_price - avg) * qty
                         pnl = round(replay_pos.realized_pnl + unrealized, 4)
 
-                        # Debug logging for huge P&L values
-                        if abs(pnl) > 1000:
+                        # Debug logging for suspicious P&L values
+                        if abs(pnl) > 100 or (side == "no" and outcome == 1.0 and pnl > 0):
                             logger.warning(
-                                "Large P&L detected for %s: qty=%s, avg=%s, settlement=%s, realized=%s, unrealized=%s, total=%s",
-                                mkt.ticker, qty, avg, settlement_price, replay_pos.realized_pnl, unrealized, pnl
+                                "Suspicious P&L for %s: side=%s, qty=%s, avg=%s, outcome=%s, settlement=%s, realized=%s, unrealized=%s, total=%s",
+                                mkt.ticker, side, qty, avg, outcome, settlement_price, replay_pos.realized_pnl, unrealized, pnl
                             )
                     else:
                         # Only show realized P&L for unknown outcomes
