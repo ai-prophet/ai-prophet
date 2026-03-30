@@ -469,16 +469,31 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
                 let remainingShares = 0;
                 let holdingSide = ""; // Track which side we're holding
 
+                // Track by side to handle YES/NO correctly
+                let yesPosition = 0;
+                let noPosition = 0;
+
                 row.trades?.forEach(t => {
                   if (t.action === "BUY") {
                     totalBought += t.value;
-                    remainingShares += t.shares;
-                    holdingSide = t.side; // Remember what side we bought
-                  } else {
+                    if (t.side === "YES") {
+                      yesPosition += t.shares;
+                    } else if (t.side === "NO") {
+                      noPosition += t.shares;
+                    }
+                  } else { // SELL
                     totalSold += t.value;
-                    remainingShares -= t.shares;
+                    if (t.side === "YES") {
+                      yesPosition -= t.shares;
+                    } else if (t.side === "NO") {
+                      noPosition -= t.shares;
+                    }
                   }
                 });
+
+                // Determine remaining position and side
+                remainingShares = Math.max(yesPosition, noPosition);
+                holdingSide = yesPosition > 0 ? "YES" : noPosition > 0 ? "NO" : "";
 
                 // Settlement value depends on if our position matches the outcome
                 const settlementValue = remainingShares > 0
