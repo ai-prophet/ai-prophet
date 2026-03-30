@@ -158,9 +158,10 @@ class DefaultBettingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        spread = yes_ask + no_ask
-        if not _is_tradeable_spread(spread, self.max_spread):
-            return None
+        # REMOVED: Spread filter check - we now trade on all markets
+        # spread = yes_ask + no_ask
+        # if not _is_tradeable_spread(spread, self.max_spread):
+        #     return None
 
         within_spread, _lower_bound, _upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
         if within_spread:
@@ -253,9 +254,10 @@ class RebalancingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        spread = yes_ask + no_ask
-        if not _is_tradeable_spread(spread, self.max_spread):
-            return None
+        # REMOVED: Spread filter check - we now trade on all markets
+        # spread = yes_ask + no_ask
+        # if not _is_tradeable_spread(spread, self.max_spread):
+        #     return None
 
         # If the model sits inside the widened market band, there is no
         # directional edge. Stay flat if we have no position; otherwise

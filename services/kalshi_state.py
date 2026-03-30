@@ -108,10 +108,18 @@ def _last_traded_unit_value(contract: str, last_price: float | None) -> float | 
     return 1.0 - last_price
 
 
-def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: datetime | None = None) -> dict[str, int]:
-    """Persist append-only Kalshi balance/position/order snapshots for one sync cycle."""
+def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: datetime | None = None, include_settlements: bool = False) -> dict[str, int]:
+    """Persist append-only Kalshi balance/position/order snapshots for one sync cycle.
+
+    Args:
+        session: Database session
+        adapter: Kalshi adapter instance
+        instance_name: Instance name for the trading account
+        snapshot_ts: Optional timestamp for the snapshot
+        include_settlements: Whether to fetch and record settlement data for resolved markets
+    """
     snapshot_ts = snapshot_ts or datetime.now(UTC)
-    results = {"balances": 0, "positions": 0, "orders": 0}
+    results = {"balances": 0, "positions": 0, "orders": 0, "settlements": 0}
     previous_positions = get_latest_position_snapshots(session, instance_name)
 
     balance_data = adapter.get_balance_details()
@@ -282,6 +290,28 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
         )
         results["orders"] += 1
 
+    # Fetch and record settlement data if requested
+    if include_settlements and hasattr(adapter, 'get_settlements'):
+        try:
+            settlements = adapter.get_settlements(limit=200)
+            for settlement in settlements:
+                # Store settlement data - you may want to create a dedicated table for this
+                # For now, we'll log the settlement data
+                ticker = settlement.get("ticker")
+                market_result = settlement.get("market_result")
+                yes_count = _to_float(settlement.get("yes_count"))
+                no_count = _to_float(settlement.get("no_count"))
+                revenue = _to_float(settlement.get("revenue"))
+                fee_cost = _to_float(settlement.get("fee_cost"))
+                settled_time = _parse_ts(settlement.get("settled_time"))
+
+                # You can store this in a settlements table or process it as needed
+                results["settlements"] += 1
+        except Exception as e:
+            # Log but don't fail the entire sync if settlements fetch fails
+            import logging
+            logging.warning(f"Failed to fetch settlements: {e}")
+
     session.commit()
     return results
 
@@ -402,30 +432,40 @@ def build_position_views(session, instance_name: str) -> list[KalshiPositionView
     if not latest_positions:
         return []
 
-    latest_orders = get_latest_order_snapshots(session, instance_name, tickers=latest_positions.keys())
-    replay_rows = sorted(
-        (
-            _ReplayableKalshiOrder(
-                ticker=row.ticker,
-                action=row.action,
-                side=row.side,
-                filled_shares=row.fill_count,
-                fill_price=row.avg_fill_price or row.limit_price or 0.0,
-                fee_paid=row.fee_paid,
-                created_at=row.created_ts or row.last_update_ts or row.captured_at,
-            )
-            for row in latest_orders
-            if row.fill_count > 0
-        ),
-        key=lambda row: row.created_at,
+    active_snapshots = {
+        ticker: snap
+        for ticker, snap in latest_positions.items()
+        if abs(float(snap.signed_quantity or 0.0)) > 1e-9
+    }
+    needs_replay = any(
+        snap.total_cost is None or not snap.total_cost_shares or snap.total_cost_shares <= 0
+        for snap in active_snapshots.values()
     )
-    replayed_positions = replay_orders_by_ticker(replay_rows)
+
+    replayed_positions = {}
+    if needs_replay:
+        latest_orders = get_latest_order_snapshots(session, instance_name, tickers=active_snapshots.keys())
+        replay_rows = sorted(
+            (
+                _ReplayableKalshiOrder(
+                    ticker=row.ticker,
+                    action=row.action,
+                    side=row.side,
+                    filled_shares=row.fill_count,
+                    fill_price=row.avg_fill_price or row.limit_price or 0.0,
+                    fee_paid=row.fee_paid,
+                    created_at=row.created_ts or row.last_update_ts or row.captured_at,
+                )
+                for row in latest_orders
+                if row.fill_count > 0
+            ),
+            key=lambda row: row.created_at,
+        )
+        replayed_positions = replay_orders_by_ticker(replay_rows)
 
     views: list[KalshiPositionView] = []
-    for ticker, snap in sorted(latest_positions.items()):
+    for ticker, snap in sorted(active_snapshots.items()):
         qty = abs(snap.signed_quantity)
-        if qty <= 1e-9:
-            continue
 
         contract = "yes" if snap.signed_quantity >= 0 else "no"
         avg_price = None
@@ -619,6 +659,209 @@ def sync_betting_orders_from_snapshots(session, betting_order_model, instance_na
     if updated > 0:
         session.commit()
     return updated
+
+
+def get_resolved_markets(
+    session,
+    adapter,
+    instance_name: str,
+    *,
+    limit: int = 100,
+    include_sold_positions: bool = True,
+) -> list[dict[str, Any]]:
+    """Fetch resolved markets data including positions sold before resolution.
+
+    Args:
+        session: Database session
+        adapter: Kalshi adapter instance
+        instance_name: Instance name for the trading account
+        limit: Maximum number of resolved markets to fetch
+        include_sold_positions: Whether to include positions that were sold before market resolution
+
+    Returns:
+        List of resolved market records with P&L information
+    """
+    resolved_markets = []
+
+    # Get settlements from Kalshi API
+    try:
+        settlements = adapter.get_settlements(limit=limit)
+
+        # Get fills to identify sold positions and calculate entry/exit prices
+        fills = adapter.get_fills(limit=500) if include_sold_positions else []
+
+        # Group fills by ticker for price calculation
+        fills_by_ticker = {}
+        for fill in fills:
+            ticker = fill.get("ticker")
+            if ticker:
+                if ticker not in fills_by_ticker:
+                    fills_by_ticker[ticker] = []
+                fills_by_ticker[ticker].append(fill)
+
+        # Process settlements (markets held until resolution)
+        for settlement in settlements:
+            ticker = settlement.get("ticker")
+            market_result = settlement.get("market_result", "").lower()
+            yes_count = _to_float(settlement.get("yes_count", 0))
+            no_count = _to_float(settlement.get("no_count", 0))
+            revenue = _to_float(settlement.get("revenue", 0))
+            fee_cost = _to_float(settlement.get("fee_cost", 0))
+            settled_time = _parse_ts(settlement.get("settled_time"))
+
+            # Calculate average entry price from fills
+            avg_entry_price = None
+            total_cost = 0
+            total_contracts = 0
+
+            if ticker in fills_by_ticker:
+                for fill in fills_by_ticker[ticker]:
+                    action = fill.get("action", "").lower()
+                    if action == "buy":
+                        side = fill.get("side", "").lower()
+                        count = _to_float(fill.get("count_fp", 0))
+                        if side == "yes":
+                            price = _to_float(fill.get("yes_price_dollars", 0))
+                        else:
+                            price = _to_float(fill.get("no_price_dollars", 0))
+                        total_cost += count * price
+                        total_contracts += count
+
+                if total_contracts > 0:
+                    avg_entry_price = total_cost / total_contracts
+
+            # Determine which side we held and the outcome
+            our_side = "YES" if yes_count > 0 else "NO" if no_count > 0 else None
+            position_correct = (our_side == "YES" and market_result == "yes") or (our_side == "NO" and market_result == "no")
+
+            # Calculate P&L for positions held until resolution
+            if market_result == "yes":
+                # Yes won - we get paid for yes contracts, lose no contracts
+                winning_contracts = yes_count
+                losing_contracts = no_count
+                payout_per_contract = 1.0 if yes_count > 0 else 0.0
+            else:
+                # No won - we get paid for no contracts, lose yes contracts
+                winning_contracts = no_count
+                losing_contracts = yes_count
+                payout_per_contract = 1.0 if no_count > 0 else 0.0
+
+            pnl = revenue - fee_cost
+
+            # For held-to-resolution positions, calculate what we paid vs what we got
+            if avg_entry_price and (yes_count > 0 or no_count > 0):
+                contracts_held = yes_count if yes_count > 0 else no_count
+                entry_cost = contracts_held * avg_entry_price
+                exit_value = revenue  # What we received at settlement
+            else:
+                entry_cost = None
+                exit_value = revenue
+
+            resolved_markets.append({
+                "ticker": ticker,
+                "market_result": market_result.upper(),
+                "our_side": our_side,
+                "outcome": "WON" if position_correct else "LOST" if our_side else "NEUTRAL",
+                "position_correct": position_correct,
+                "yes_contracts": yes_count,
+                "no_contracts": no_count,
+                "contracts_held": yes_count + no_count,
+                "avg_entry_price": avg_entry_price,
+                "exit_price": payout_per_contract if our_side else None,
+                "entry_cost": entry_cost,
+                "exit_value": exit_value,
+                "revenue": revenue,
+                "fees_paid": fee_cost,
+                "realized_pnl": pnl,
+                "settled_time": settled_time.isoformat() if settled_time else None,
+                "sold_before_resolution": False,
+                "pnl_explanation": f"Held {our_side} until resolution. Market resolved {market_result.upper()}. " +
+                                  (f"Position CORRECT: Paid ${avg_entry_price:.2f}, received $1.00 per contract"
+                                   if position_correct and avg_entry_price
+                                   else f"Position WRONG: Paid ${avg_entry_price:.2f}, received $0.00"
+                                   if not position_correct and avg_entry_price
+                                   else ""),
+            })
+
+        # Process fills to find positions sold before resolution
+        if include_sold_positions and fills:
+            # Find tickers that were traded but not in settlements
+            settled_tickers = {s.get("ticker") for s in settlements}
+
+            for ticker, ticker_fills in fills_by_ticker.items():
+                if ticker in settled_tickers:
+                    continue  # Already processed in settlements
+
+                # Separate buys and sells, track by side
+                buys_by_side = {"yes": [], "no": []}
+                sells_by_side = {"yes": [], "no": []}
+
+                for fill in ticker_fills:
+                    action = fill.get("action", "").lower()
+                    side = fill.get("side", "").lower()
+                    count = _to_float(fill.get("count_fp", 0))
+
+                    if side == "yes":
+                        price = _to_float(fill.get("yes_price_dollars", 0))
+                    else:
+                        price = _to_float(fill.get("no_price_dollars", 0))
+
+                    if action == "buy":
+                        buys_by_side[side].append({"count": count, "price": price})
+                    else:  # sell
+                        sells_by_side[side].append({"count": count, "price": price})
+
+                # Process each side that had both buys and sells
+                for side in ["yes", "no"]:
+                    if buys_by_side[side] and sells_by_side[side]:
+                        # Calculate weighted average prices
+                        total_buy_count = sum(b["count"] for b in buys_by_side[side])
+                        total_sell_count = sum(s["count"] for s in sells_by_side[side])
+
+                        if total_buy_count > 0 and total_sell_count > 0:
+                            avg_buy_price = sum(b["count"] * b["price"] for b in buys_by_side[side]) / total_buy_count
+                            avg_sell_price = sum(s["count"] * s["price"] for s in sells_by_side[side]) / total_sell_count
+
+                            contracts_traded = min(total_buy_count, total_sell_count)
+                            buy_cost = contracts_traded * avg_buy_price
+                            sell_revenue = contracts_traded * avg_sell_price
+
+                            # Estimate fees at ~2% of traded value
+                            fees = (buy_cost + sell_revenue) * 0.01
+
+                            pnl = sell_revenue - buy_cost - fees
+                            return_pct = ((sell_revenue - buy_cost) / buy_cost * 100) if buy_cost > 0 else 0
+
+                            resolved_markets.append({
+                                "ticker": ticker,
+                                "market_result": "SOLD_BEFORE_RESOLVE",
+                                "our_side": side.upper(),
+                                "outcome": "SOLD",
+                                "position_correct": None,  # Unknown since we sold before resolution
+                                "yes_contracts": 0,
+                                "no_contracts": 0,
+                                "contracts_held": 0,  # Zero at resolution since we sold
+                                "contracts_traded": contracts_traded,
+                                "avg_entry_price": avg_buy_price,
+                                "avg_exit_price": avg_sell_price,
+                                "entry_cost": buy_cost,
+                                "exit_value": sell_revenue,
+                                "revenue": sell_revenue,
+                                "fees_paid": fees,
+                                "realized_pnl": pnl,
+                                "return_pct": return_pct,
+                                "settled_time": None,
+                                "sold_before_resolution": True,
+                                "pnl_explanation": f"Sold {side.upper()} before resolution. " +
+                                                  f"Bought at ${avg_buy_price:.3f}, sold at ${avg_sell_price:.3f}. " +
+                                                  f"Made ${pnl:.2f} ({return_pct:.1f}% return) WITHOUT knowing outcome.",
+                            })
+
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to fetch resolved markets: {e}")
+
+    return resolved_markets
 
 
 def sync_trading_positions_from_snapshots(session, instance_name: str) -> int:

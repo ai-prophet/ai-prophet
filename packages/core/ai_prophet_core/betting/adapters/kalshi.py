@@ -112,6 +112,42 @@ class KalshiAdapter(ExchangeAdapter):
             "Content-Type": "application/json",
         }
 
+    def validate_order(self, request: OrderRequest) -> str | None:
+        """Validate order before submission, including 36-hour pre-resolution check."""
+        # Call parent validation first
+        base_validation = super().validate_order(request)
+        if base_validation:
+            return base_validation
+
+        # Check 36-hour pre-resolution constraint
+        from datetime import timedelta
+
+        # Get market expiration from metadata if available
+        market_expiration = request.metadata.get("market_expiration")
+        if market_expiration:
+            if isinstance(market_expiration, str):
+                try:
+                    market_expiration = datetime.fromisoformat(market_expiration.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    market_expiration = None
+
+            if market_expiration and isinstance(market_expiration, datetime):
+                now = datetime.now(UTC)
+                time_to_expiration = market_expiration - now
+
+                # Block trading within 36 hours of expiration (even if price deviates)
+                if time_to_expiration <= timedelta(hours=36):
+                    hours_remaining = time_to_expiration.total_seconds() / 3600
+                    if hours_remaining > 0:
+                        return (
+                            f"Trading blocked: Market expires in {hours_remaining:.1f} hours. "
+                            f"Trading is not allowed within 36 hours of market resolution."
+                        )
+                    else:
+                        return "Trading blocked: Market has already expired or resolved."
+
+        return None
+
     def submit_order(self, request: OrderRequest) -> OrderResult:
         """Submit a limit order to Kalshi."""
         validation_error = self.validate_order(request)
@@ -259,6 +295,77 @@ class KalshiAdapter(ExchangeAdapter):
         return self._get_paginated_items(
             "/trade-api/v2/historical/orders",
             items_key="orders",
+            params=params,
+        )
+
+    def get_settlements(
+        self,
+        *,
+        ticker: str | None = None,
+        event_ticker: str | None = None,
+        min_ts: datetime | None = None,
+        max_ts: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch settlement history from Kalshi for resolved markets.
+
+        Args:
+            ticker: Optional ticker to filter by specific market
+            event_ticker: Optional event ticker to filter by
+            min_ts: Optional minimum timestamp to filter settlements
+            max_ts: Optional maximum timestamp to filter settlements
+            limit: Maximum number of settlements to fetch (default: 200)
+
+        Returns:
+            List of settlement records containing:
+                - ticker: Market ticker
+                - market_result: Market result ("yes" or "no")
+                - yes_count: Number of yes contracts held
+                - no_count: Number of no contracts held
+                - revenue: Revenue from the settlement
+                - fee_cost: Fees paid
+                - settled_time: When the market was settled
+        """
+        params: dict[str, Any] = {}
+        if ticker:
+            params["ticker"] = ticker
+        if event_ticker:
+            params["event_ticker"] = event_ticker
+        if min_ts:
+            params["min_ts"] = int(min_ts.timestamp() * 1000)
+        if max_ts:
+            params["max_ts"] = int(max_ts.timestamp() * 1000)
+        if limit:
+            params["limit"] = min(limit, 200)  # API max is 200
+
+        return self._get_paginated_items(
+            "/trade-api/v2/portfolio/settlements",
+            items_key="settlements",
+            params=params,
+        )
+
+    def get_fills(
+        self,
+        *,
+        ticker: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Fetch fill history from Kalshi.
+
+        Args:
+            ticker: Optional ticker to filter by specific market
+            limit: Maximum number of fills to fetch (default: 200)
+
+        Returns:
+            List of fill records containing trade execution details
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+
+        return self._get_paginated_items(
+            "/trade-api/v2/portfolio/fills",
+            items_key="fills",
             params=params,
         )
 

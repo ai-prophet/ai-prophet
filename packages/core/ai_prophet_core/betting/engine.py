@@ -196,23 +196,89 @@ class BettingEngine:
                     market_position_side=live_side,
                 )
 
-            # 3. Evaluate strategy
-            signal = self.strategy.evaluate(
-                market_id=market_id,
-                p_yes=p_yes,
-                yes_ask=yes_ask,
-                no_ask=no_ask,
-            )
+            # 3. Check for re-trading constraints: 10-cent deviation AND 4-hour minimum time
+            # Skip re-evaluation if EITHER condition is not met
+            skip_due_to_constraints = False
+            constraint_reason = None
+
+            if self._engine is not None:
+                ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
+                try:
+                    from datetime import timedelta
+                    from .db import get_session
+                    from .db_schema import BettingOrder
+
+                    with get_session(self._engine) as session:
+                        # Get the last filled order for this market
+                        last_order = (
+                            session.query(BettingOrder)
+                            .filter(
+                                BettingOrder.instance_name == self.instance_name,
+                                BettingOrder.ticker == ticker,
+                                BettingOrder.status.in_(["FILLED", "PARTIALLY_FILLED"]),
+                            )
+                            .order_by(BettingOrder.created_at.desc())
+                            .first()
+                        )
+
+                        if last_order:
+                            # Check 4-hour minimum time constraint FIRST
+                            now = datetime.now(UTC)
+                            time_since_last_trade = now - last_order.created_at
+
+                            if time_since_last_trade < timedelta(hours=4):
+                                hours_passed = time_since_last_trade.total_seconds() / 3600
+                                skip_due_to_constraints = True
+                                constraint_reason = f"Only {hours_passed:.1f} hours since last trade (< 4 hours required)"
+                                logger.info(
+                                    "[BETTING] Skipping %s: %s. Last trade at %s",
+                                    market_id, constraint_reason, last_order.created_at.strftime("%H:%M UTC")
+                                )
+
+                            # Only check price deviation if enough time has passed
+                            elif last_order.fill_price:
+                                last_traded_price = float(last_order.fill_price)
+                                last_side = last_order.side.upper()
+
+                                # Check price deviation on both sides
+                                # We care if either side has moved significantly
+                                yes_deviation = abs(yes_ask - last_traded_price)
+                                no_deviation = abs(no_ask - last_traded_price)
+                                max_deviation = max(yes_deviation, no_deviation)
+
+                                # Skip if neither price has moved by at least 10 cents (0.10)
+                                if max_deviation < 0.10:
+                                    skip_due_to_constraints = True
+                                    constraint_reason = f"Price deviation only {max_deviation:.3f} (< 0.10 required)"
+                                    logger.info(
+                                        "[BETTING] Skipping %s: %s. "
+                                        "Last %s @ %.3f, Current YES: %.3f, NO: %.3f",
+                                        market_id, constraint_reason, last_side, last_traded_price, yes_ask, no_ask
+                                    )
+                except Exception as e:
+                    logger.warning("[BETTING] Failed to check re-trading constraints for %s: %s", market_id, e)
+
+            # 4. Evaluate strategy (unless skipping due to constraints)
+            if skip_due_to_constraints:
+                signal = None
+            else:
+                signal = self.strategy.evaluate(
+                    market_id=market_id,
+                    p_yes=p_yes,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                )
 
             if signal is None:
-                logger.info(
-                    "[BETTING] %s on %s: p_yes=%.3f → SKIP",
-                    source, market_id, p_yes,
-                )
+                if not skip_due_to_constraints:
+                    logger.info(
+                        "[BETTING] %s on %s: p_yes=%.3f → SKIP",
+                        source, market_id, p_yes,
+                    )
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
                 continue
 
-            # 4. Persist signal
+            # 5. Persist signal
             signal_id = self._save_signal(prediction_id, signal)
 
             logger.info(
@@ -495,6 +561,27 @@ class BettingEngine:
 
         adapter = self._get_adapter()
 
+        # Fetch market expiration for 24-hour constraint (done early so it's available for all orders)
+        market_expiration = None
+        if self._engine is not None:
+            try:
+                import sys, os
+                _services = os.path.join(os.path.dirname(__file__), "../../../../services")
+                if _services not in sys.path:
+                    sys.path.insert(0, _services)
+                from db_models import TradingMarket
+                from ai_prophet_core.betting.db import get_session
+
+                with get_session(self._engine) as session:
+                    market = session.query(TradingMarket).filter(
+                        TradingMarket.instance_name == self.instance_name,
+                        TradingMarket.market_id == market_id
+                    ).first()
+                    if market and market.expiration:
+                        market_expiration = market.expiration
+            except Exception as e:
+                logger.warning("[BETTING] Failed to fetch market expiration for %s: %s", ticker, e)
+
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
         signal_metadata = signal.metadata or {}
@@ -590,6 +677,7 @@ class BettingEngine:
                         side=held_side.upper(),
                         shares=Decimal(str(intended_sell_count)),
                         limit_price=Decimal(str(sell_price)),
+                        metadata={"market_expiration": market_expiration} if market_expiration else {},
                     )
                     sell_status = "FILLED"
                     sell_filled_shares = 0.0
@@ -755,6 +843,7 @@ class BettingEngine:
             side=effective_side,
             shares=Decimal(str(count)),
             limit_price=Decimal(str(sell_price if action == "SELL" else signal.price)),
+            metadata={"market_expiration": market_expiration} if market_expiration else {},
         )
 
         try:
