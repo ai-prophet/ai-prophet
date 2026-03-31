@@ -90,7 +90,13 @@ def _order_avg_fill_price(order: dict[str, Any]) -> float | None:
 
     total_fill_cost = _to_float(order.get("taker_fill_cost_dollars")) + _to_float(order.get("maker_fill_cost_dollars"))
     if total_fill_cost > 0:
-        return total_fill_cost / fill_count
+        avg = total_fill_cost / fill_count
+        # For SELL orders, Kalshi reports the exposure cost (1 - fill_price)
+        # rather than the revenue per contract.  Invert to get the actual price.
+        action = (order.get("action") or "").strip().lower()
+        if action == "sell" and 0 < avg < 1:
+            avg = 1.0 - avg
+        return avg
 
     limit_price = _order_limit_price(order)
     return limit_price if limit_price is not None and limit_price > 0 else None
@@ -647,6 +653,12 @@ def sync_betting_orders_from_snapshots(session, betting_order_model, instance_na
             row.filled_shares = float(snap.fill_count or 0)
             changed = True
         new_fill_price = float(snap.avg_fill_price or 0.0)
+        # Correct inverted SELL fill prices from existing snapshots
+        action = (getattr(snap, "action", "") or "").strip().lower()
+        if action == "sell" and 0 < new_fill_price < 1:
+            limit_price = float(getattr(snap, "limit_price", 0) or 0)
+            if limit_price > 0 and abs(new_fill_price - limit_price) > abs((1 - new_fill_price) - limit_price):
+                new_fill_price = 1.0 - new_fill_price
         if abs(float(row.fill_price or 0) - new_fill_price) > 1e-6:
             row.fill_price = new_fill_price
             changed = True

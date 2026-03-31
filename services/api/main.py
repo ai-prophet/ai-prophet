@@ -1095,6 +1095,25 @@ def get_trades(
             merged_results: list[dict[str, Any]] = []
             seen_keys: set[str] = set()
 
+            def _correct_sell_fill_price(action: str, fill_price: float | None, limit_price: float | None) -> float | None:
+                """Correct inverted fill prices for SELL orders.
+
+                Kalshi reports fill_cost as the exposure cost for SELLs,
+                which is (1 - actual_price).  Detect and fix the inversion
+                by comparing against the limit price when available.
+                """
+                if fill_price is None or fill_price <= 0:
+                    return fill_price
+                if action.upper() != "SELL":
+                    return fill_price
+                # If limit is available and fill_price is suspiciously far from it,
+                # the stored value is the complement.  Also handle the general case
+                # where no limit is available — assume inversion if price < 0.5.
+                if limit_price is not None and limit_price > 0:
+                    if abs(fill_price - limit_price) > abs((1 - fill_price) - limit_price):
+                        return 1.0 - fill_price
+                return fill_price
+
             for idx, snap in enumerate(latest_snapshots, start=1):
                 local_row = local_by_exchange_order_id.get(snap.order_id) or local_by_internal_order_id.get(snap.order_id)
                 ticker = local_row.ticker if local_row else snap.ticker
@@ -1102,7 +1121,10 @@ def get_trades(
                     continue
                 prediction = build_prediction(local_row)
                 count = int(round(snap.initial_count)) if snap.initial_count > 0 else (local_row.count if local_row else 0)
-                display_price = snap.avg_fill_price if snap.avg_fill_price is not None and snap.fill_count > 0 else snap.limit_price
+                action = (snap.action or (local_row.action if local_row else "BUY")).upper()
+                raw_fill_price = snap.avg_fill_price if snap.fill_count > 0 else None
+                corrected_fill_price = _correct_sell_fill_price(action, raw_fill_price, snap.limit_price)
+                display_price = corrected_fill_price if corrected_fill_price is not None else snap.limit_price
                 if display_price is None and local_row is not None:
                     display_price = local_row.fill_price if (local_row.fill_price or 0) > 0 else (local_row.price_cents / 100)
                 created_at = snap.created_ts or snap.last_update_ts or snap.captured_at or (local_row.created_at if local_row else None)
@@ -1114,13 +1136,13 @@ def get_trades(
                     "id": local_row.id if local_row else -idx,
                     "order_id": local_row.order_id if local_row else snap.order_id,
                     "ticker": ticker,
-                    "action": (snap.action or (local_row.action if local_row else "BUY")).upper(),
+                    "action": action,
                     "side": (snap.side or (local_row.side if local_row else "YES")).upper(),
                     "count": count,
                     "price_cents": int(round((display_price or 0.0) * 100)),
                     "status": snap.status,
                     "filled_shares": snap.fill_count,
-                    "fill_price": snap.avg_fill_price if snap.fill_count > 0 else None,
+                    "fill_price": corrected_fill_price,
                     "fee_paid": snap.fee_paid,
                     "exchange_order_id": snap.order_id,
                     "dry_run": local_row.dry_run if local_row else False,
@@ -1140,17 +1162,24 @@ def get_trades(
                     if source.startswith("kalshi:"):
                         continue
                 market_title = market_titles.get(f"kalshi:{row.ticker}")
+                local_action = (row.action or "BUY").upper()
+                local_fill = _correct_sell_fill_price(
+                    local_action,
+                    row.fill_price,
+                    row.price_cents / 100.0 if row.price_cents else None,
+                )
+                local_price_cents = int(round((local_fill or row.price_cents / 100.0 if row.price_cents else 0) * 100))
                 merged_results.append({
                     "id": row.id,
                     "order_id": row.order_id,
                     "ticker": row.ticker,
-                    "action": row.action,
+                    "action": local_action,
                     "side": row.side,
                     "count": row.count,
-                    "price_cents": row.price_cents,
+                    "price_cents": local_price_cents,
                     "status": row.status,
                     "filled_shares": row.filled_shares,
-                    "fill_price": row.fill_price,
+                    "fill_price": local_fill,
                     "fee_paid": row.fee_paid,
                     "exchange_order_id": row.exchange_order_id,
                     "dry_run": row.dry_run,
