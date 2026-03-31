@@ -606,6 +606,55 @@ def _load_resolved_visible_markets(
         .all()
     )
 
+    # Backfill: find traded tickers (from order snapshots) that are missing from
+    # trading_markets entirely.  Create minimal rows so they show up.
+    found_tickers = {m.ticker for m in markets}
+    traded_but_missing = visible_tickers - found_tickers - {""}
+    if traded_but_missing:
+        existing_all = {
+            t for (t,) in (
+                _instance_query(session, TradingMarket, instance_name)
+                .with_entities(TradingMarket.ticker)
+                .filter(TradingMarket.ticker.in_(traded_but_missing))
+                .all()
+            )
+        }
+        truly_missing = traded_but_missing - existing_all
+        if truly_missing:
+            logger.info("Backfilling %d traded tickers missing from trading_markets: %s",
+                        len(truly_missing), truly_missing)
+            for ticker in truly_missing:
+                snap = (
+                    session.query(KalshiOrderSnapshot)
+                    .filter(
+                        KalshiOrderSnapshot.instance_name == instance_name,
+                        KalshiOrderSnapshot.ticker == ticker,
+                    )
+                    .order_by(KalshiOrderSnapshot.last_update_ts.desc())
+                    .first()
+                )
+                if not snap:
+                    continue
+                row = TradingMarket(
+                    instance_name=instance_name,
+                    market_id=f"kalshi:{ticker}",
+                    ticker=ticker,
+                    event_ticker="-".join(ticker.split("-")[:2]) if "-" in ticker else ticker,
+                    title=ticker,  # placeholder — will be enriched later
+                    category=None,
+                    expiration=snap.created_ts,  # best guess
+                    last_price=None,
+                    yes_bid=None,
+                    yes_ask=None,
+                    no_bid=None,
+                    no_ask=None,
+                    volume_24h=None,
+                    updated_at=datetime.now(UTC),
+                )
+                session.add(row)
+                markets.append(row)
+            session.flush()
+
     logger.info(
         "Resolved markets query: found %d markets for %s (filter: %d tickers, %d market_ids, %d closed lifecycle)",
         len(markets), instance_name, len(visible_tickers), len(visible_market_ids), len(closed_tickers)
@@ -1468,16 +1517,9 @@ def get_markets(
         for run in all_recent_runs:
             runs_by_market[run.market_id].append(run)
 
-        MAX_SPREAD = 1.03
         results = []
         for row in rows:
             if row.ticker not in visible_tickers and row.market_id not in visible_market_ids:
-                continue
-            # Skip high-spread markets that have no position — they were
-            # filtered from trading; showing them only causes confusion
-            yes_ask = row.yes_ask or 0.0
-            no_ask = row.no_ask or 0.0
-            if yes_ask + no_ask > MAX_SPREAD and row.market_id not in active_positions:
                 continue
 
             market_runs = runs_by_market.get(row.market_id, [])
@@ -3430,6 +3472,27 @@ def get_model_runs(
         if market_id:
             query = query.filter(ModelRun.market_id == market_id)
         rows = query.limit(limit).all()
+
+        # Bulk-load prediction skip reasons so constraint-based skips
+        # (e.g. "Market unchanged: 5¢ since last forecast") are surfaced.
+        run_market_ids = list({r.market_id for r in rows})
+        pred_skip_by_market_ts: dict[tuple[str, str], str] = {}
+        if run_market_ids:
+            preds_with_skip = (
+                _instance_query(session, BettingPrediction, resolved_instance)
+                .filter(
+                    BettingPrediction.market_id.in_(run_market_ids),
+                    BettingPrediction.skip_reason.isnot(None),
+                    BettingPrediction.created_at >= DISPLAY_CUTOFF_UTC,
+                )
+                .all()
+            )
+            for p in preds_with_skip:
+                # Key by (market_id, source) with latest timestamp winning
+                key = (p.market_id, p.source)
+                ts_key = p.created_at.isoformat()
+                pred_skip_by_market_ts[(p.market_id, ts_key)] = p.skip_reason
+
         results = []
         for row in rows:
             p_yes = None
@@ -3447,6 +3510,19 @@ def get_model_runs(
                     models_breakdown = meta.get("models")
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+            # Check for constraint skip reason from BettingPrediction
+            # Match by market_id and close timestamp (within 60s)
+            if not skip_reason:
+                run_ts = row.timestamp
+                for (mid, ts_str), reason in pred_skip_by_market_ts.items():
+                    if mid != row.market_id:
+                        continue
+                    pred_ts = datetime.fromisoformat(ts_str)
+                    if abs((run_ts - pred_ts).total_seconds()) < 60:
+                        skip_reason = reason
+                        break
+
             effective_reasoning = reasoning or skip_reason
             entry = {
                 "id": row.id,

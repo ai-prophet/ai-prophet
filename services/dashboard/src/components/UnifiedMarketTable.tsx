@@ -1711,9 +1711,31 @@ function SubmittedTradesTimelineTab({
             const sharedEdge = sameEdgeValue(sellContext.edge, buyContext.edge) ? buyContext.edge : null;
             const resultingPosition = event.buy.resultingPosition;
             const buyPendingNote = tradePendingNote(event.buy.trade);
+            // Surface reasoning from the matched model run on either leg
+            const switchRun = event.buy.matchedRun ?? event.sell.matchedRun;
+            const switchRationale =
+              event.buy.trade.prediction?.reasoning ??
+              event.sell.trade.prediction?.reasoning ??
+              switchRun?.reasoning ?? null;
+            const switchSources =
+              event.buy.trade.prediction?.sources ??
+              event.sell.trade.prediction?.sources ??
+              switchRun?.sources ?? [];
+            const switchHasDetail = !!(switchRationale || switchSources.length > 0);
+            // Use a negative offset of the sell trade id to avoid collisions with regular trade ids
+            const switchExpandKey = -(event.sell.trade.id + 1000000);
+            const switchIsExpanded = expandedTradeId === switchExpandKey;
             return (
               <div key={event.key} className="relative py-1.5">
                 <div className="absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full bg-purple-500 border-2 border-t-bg z-10" />
+                <button
+                  type="button"
+                  className={`w-full text-left rounded px-1 -mx-1 transition-colors ${switchHasDetail ? "cursor-pointer hover:bg-t-panel-hover/40" : ""}`}
+                  onClick={() => {
+                    if (!switchHasDetail) return;
+                    setExpandedTradeId(switchIsExpanded ? null : switchExpandKey);
+                  }}
+                >
                 <div className="flex items-start gap-3">
                   <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
                     <div className="flex flex-col gap-1">
@@ -1726,6 +1748,7 @@ function SubmittedTradesTimelineTab({
                       <span className="text-txt-muted">
                         {event.sell.trade.side.toUpperCase()} {"->"} {event.buy.trade.side.toUpperCase()}
                       </span>
+                      {switchHasDetail && <span className="text-[8px] text-txt-muted ml-auto">{switchIsExpanded ? "▲" : "▼"}</span>}
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono rounded border border-t-border/40 bg-t-panel-hover/20 px-2 py-1.5">
                       <span className="text-[9px] px-1 py-px rounded font-bold bg-warn-dim text-warn">SELL</span>
@@ -1760,8 +1783,14 @@ function SubmittedTradesTimelineTab({
                         <span className="text-txt-muted">hold: flat</span>
                       )}
                     </div>
+                    {switchIsExpanded && switchHasDetail && (
+                      <div className="pt-2 pb-1">
+                        <RationalePanel reasoning={switchRationale} sources={switchSources} />
+                      </div>
+                    )}
                   </div>
                 </div>
+                </button>
               </div>
             );
           }

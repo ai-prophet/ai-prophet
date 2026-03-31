@@ -1130,11 +1130,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
                 ):
                     continue
 
-                # Apply spread filter early — skip illiquid markets
                 _ya = float(yes_ask) if yes_ask is not None else price
                 _na = float(no_ask) if no_ask is not None else (1.0 - price)
-                if _ya + _na > 1.03:
-                    continue
                 # Require both sides to stay inside the 10c-90c range.
                 # Example: 95c/8c gets excluded because it is more extreme than 90-10.
                 if _ya < 0.10 or _ya > 0.90 or _na < 0.10 or _na > 0.90:
