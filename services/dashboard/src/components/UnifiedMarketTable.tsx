@@ -20,7 +20,7 @@ import type {
   ModelRun,
   PendingOrder,
 } from "@/lib/api";
-import { buildUnifiedMarketRows, liveNetPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
+import { buildUnifiedMarketRows, liveNetPnl, totalPnl, kalshiMarketUrl, kalshiEventUrl, api } from "@/lib/api";
 import { pnlCls, fmtDollar, fmtTime, TOOLTIP_STYLE, TOOLTIP_LABEL_STYLE, CHART_COLORS } from "@/lib/utils";
 
 // ── Shared helpers ──────────────────────────────────────────
@@ -257,6 +257,7 @@ type SortKey =
   | "position"
   | "avg_price"
   | "unrealized"
+  | "total_pnl"
   | "capital"
   | "last_trade"
   | "return"
@@ -379,7 +380,15 @@ export function UnifiedMarketTable({
         const pa = liveNetPnl(a);
         const pb = liveNetPnl(b);
         if (pa == null && pb == null) return 0;
-        if (pa == null) return null; // nulls to bottom
+        if (pa == null) return null;
+        if (pb == null) return null;
+        return pa - pb;
+      }
+      case "total_pnl": {
+        const pa = totalPnl(a);
+        const pb = totalPnl(b);
+        if (pa == null && pb == null) return 0;
+        if (pa == null) return null;
         if (pb == null) return null;
         return pa - pb;
       }
@@ -415,8 +424,8 @@ export function UnifiedMarketTable({
         const diff = computeMarketDiff(key, a, b);
         // null means "sort to bottom regardless of direction"
         if (diff === null) {
-          const pa = key === "unrealized" ? liveNetPnl(a) : key === "expiration" ? a.expiration : null;
-          const pb = key === "unrealized" ? liveNetPnl(b) : key === "expiration" ? b.expiration : null;
+          const pa = key === "unrealized" ? liveNetPnl(a) : key === "total_pnl" ? totalPnl(a) : key === "expiration" ? a.expiration : null;
+          const pb = key === "unrealized" ? liveNetPnl(b) : key === "total_pnl" ? totalPnl(b) : key === "expiration" ? b.expiration : null;
           if (pa == null && pb != null) return 1;
           if (pa != null && pb == null) return -1;
           continue;
@@ -690,7 +699,8 @@ export function UnifiedMarketTable({
                 <Th k="edge" sortKeys={sortKeys} onClick={handleSort} align="right" info="Model edge at the last prediction step. Computed from the model probability and market ask at prediction time, not from the current live market price.">Edge</Th>
                 <Th k="position" sortKeys={sortKeys} onClick={handleSort} align="center" info="Current open position: side (YES/NO) and number of contracts">Position</Th>
                 <Th k="avg_price" sortKeys={sortKeys} onClick={handleSort} align="right" info="Weighted average price paid per contract">Avg Entry</Th>
-                <Th k="unrealized" sortKeys={sortKeys} onClick={handleSort} align="right" info="Net P&L = cash flow + open value. Cash flow = Σ(SELL proceeds) − Σ(BUY costs) from fill prices. Open value = quantity × current bid (1 − no_ask for YES, 1 − yes_ask for NO). Fully live — recalculated on every refresh.">P&L</Th>
+                <Th k="unrealized" sortKeys={sortKeys} onClick={handleSort} align="right" info="Unrealized P&L on current open position only. Open value = quantity × current bid minus cost basis.">P&L</Th>
+                <Th k="total_pnl" sortKeys={sortKeys} onClick={handleSort} align="right" info="Total P&L across all trades: realized (from completed sells) + unrealized (from current open position).">Total P&L</Th>
                 <Th k="capital" sortKeys={sortKeys} onClick={handleSort} align="right" info="Kalshi-backed cost basis plus fees paid for the open position.">Investment</Th>
                 <Th k="last_trade" sortKeys={sortKeys} onClick={handleSort} align="right" info="Timestamp of the most recent trade in this market">Last Trade</Th>
                 <Th k="expiration" sortKeys={sortKeys} onClick={handleSort} align="right" info="Market close/expiration date">Closes</Th>
@@ -711,7 +721,7 @@ export function UnifiedMarketTable({
                     {/* Add divider row between active and inactive markets */}
                     {isFirstInactive && (
                       <tr key={`divider-${row.market_id}`} className="bg-t-bg-secondary/30">
-                        <td colSpan={11} className="px-3 py-2 text-center">
+                        <td colSpan={12} className="px-3 py-2 text-center">
                           <div className="flex items-center justify-center gap-2">
                             <div className="h-px bg-t-border flex-1" />
                             <span className="text-[10px] text-txt-muted font-medium uppercase tracking-wider">
@@ -1118,10 +1128,17 @@ function MarketRow({
           {pos ? `${(pos.avg_price * 100).toFixed(0)}c` : "--"}
         </td>
 
-        {/* Live Net P&L */}
+        {/* Live Net P&L (unrealized) */}
         {(() => { const net = liveNetPnl(row); return (
           <td className={`px-3 py-2 text-right font-mono font-medium ${net != null ? pnlCls(net) : "text-txt-muted"}`}>
             {net != null ? fmtDollar(net) : "--"}
+          </td>
+        ); })()}
+
+        {/* Total P&L (realized + unrealized) */}
+        {(() => { const tp = totalPnl(row); return (
+          <td className={`px-3 py-2 text-right font-mono font-medium ${tp != null ? pnlCls(tp) : "text-txt-muted"}`}>
+            {tp != null ? fmtDollar(tp) : "--"}
           </td>
         ); })()}
 
@@ -1149,7 +1166,7 @@ function MarketRow({
       {/* Expanded detail panel */}
       {isExpanded && (
         <tr>
-          <td colSpan={11} className="p-0">
+          <td colSpan={12} className="p-0">
             <ExpandedPanel
               row={row}
               apiClient={apiClient}

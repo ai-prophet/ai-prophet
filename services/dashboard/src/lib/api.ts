@@ -622,6 +622,25 @@ export function liveNetPnl(row: UnifiedMarketRow): number | null {
   return openValue - costBasis;
 }
 
+/** Total P&L = realized (from all completed sells) + unrealized (current open position value - cost basis). */
+export function totalPnl(row: UnifiedMarketRow): number | null {
+  const pos = row.position;
+  const realized = pos?.realized_pnl ?? 0;
+  const unrealized = liveNetPnl(row);
+
+  // If we have no position and no realized P&L, nothing to show
+  if (!pos && row.trades.length === 0) return null;
+
+  // If we had trades but no current position, show realized only
+  if (!pos || pos.quantity <= 0) {
+    return realized !== 0 ? realized : null;
+  }
+
+  // Combine realized + unrealized
+  if (unrealized == null) return realized !== 0 ? realized : null;
+  return realized + unrealized;
+}
+
 function latestResolvedTradeTimestampMs(trades: Trade[]): number | null {
   return trades.reduce<number | null>((latest, trade) => {
     if (trade.status?.toUpperCase() === "PENDING") return latest;

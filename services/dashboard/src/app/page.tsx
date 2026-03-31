@@ -587,8 +587,8 @@ export default function Dashboard() {
       if (isResolvedMarketResult(market.market_result)) return true;
 
       // Check if market is expired (expiration date has passed)
-      if (market.expiration_date) {
-        const expirationTime = new Date(market.expiration_date).getTime();
+      if (market.expiration) {
+        const expirationTime = new Date(market.expiration).getTime();
         return expirationTime < Date.now();
       }
 
