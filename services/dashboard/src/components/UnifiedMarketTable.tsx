@@ -1901,6 +1901,24 @@ function matchTradesToRuns(
       }
     }
 
+    // Fallback: if no prediction link (e.g. rebalance orders with missing
+    // signal_id), match the nearest model run by timestamp alone so that
+    // reasoning is still surfaced.
+    if (!matchedRun) {
+      const nearbyRuns = chronRuns.filter((run) => {
+        if (run.p_yes == null) return false;
+        const runTs = new Date(run.timestamp).getTime();
+        return !isNaN(runTs) && Math.abs(runTs - tradeTs) <= matchWindowMs;
+      });
+      if (nearbyRuns.length > 0) {
+        matchedRun = nearbyRuns.reduce((best, run) => {
+          const bestDiff = Math.abs(new Date(best.timestamp).getTime() - tradeTs);
+          const runDiff = Math.abs(new Date(run.timestamp).getTime() - tradeTs);
+          return runDiff < bestDiff ? run : best;
+        });
+      }
+    }
+
     const qty = getExecutedTradeQuantity(trade);
     const side = trade.side?.toUpperCase() ?? null;
     const isSell = trade.action?.toUpperCase() === "SELL";
