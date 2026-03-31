@@ -1879,6 +1879,48 @@ def run_cycle(args) -> None:
                 instance_name=INSTANCE_NAME,
             )
 
+        # Skip markets where the price hasn't moved 10+ cents since last forecast
+        MIN_PRICE_MOVEMENT = 0.10
+        if db_engine is not None:
+            try:
+                from ai_prophet_core.betting.db_schema import BettingPrediction
+                from ai_prophet_core.betting.db import get_session as core_session
+                with core_session(db_engine) as session:
+                    last_pred = (
+                        session.query(BettingPrediction)
+                        .filter(
+                            BettingPrediction.instance_name == INSTANCE_NAME,
+                            BettingPrediction.market_id == market_id,
+                        )
+                        .order_by(BettingPrediction.created_at.desc())
+                        .first()
+                    )
+                    if last_pred:
+                        max_dev = max(
+                            abs(yes_ask - float(last_pred.yes_ask)),
+                            abs(no_ask - float(last_pred.no_ask)),
+                        )
+                        if max_dev < MIN_PRICE_MOVEMENT:
+                            logger.info(
+                                "Skipping LLM for %s: price unchanged (%.1f¢ < %.0f¢ threshold). "
+                                "Last forecast: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
+                                ticker, max_dev * 100, MIN_PRICE_MOVEMENT * 100,
+                                float(last_pred.yes_ask), float(last_pred.no_ask), yes_ask, no_ask,
+                            )
+                            log_cycle_skip_for_models(
+                                db_engine,
+                                model_specs,
+                                market_id,
+                                yes_ask=yes_ask,
+                                no_ask=no_ask,
+                                reason=f"Skipped because the market price moved only {max_dev*100:.1f}c since last forecast (need {MIN_PRICE_MOVEMENT*100:.0f}c).",
+                                instance_name=INSTANCE_NAME,
+                            )
+                            all_market_prices[market_id] = (yes_ask, no_ask)
+                            continue
+            except Exception as e:
+                logger.warning("Failed to check price movement for %s: %s", ticker, e)
+
         # Market passed all filters — queue for LLM analysis
         markets_to_analyze.append({
             **market,

@@ -622,21 +622,42 @@ export function liveNetPnl(row: UnifiedMarketRow): number | null {
   return openValue - costBasis;
 }
 
+/** Compute realized P&L from trade history (sum of all cash flows from filled trades). */
+function realizedPnlFromTrades(trades: Trade[]): number {
+  let total = 0;
+  for (const t of trades) {
+    const status = (t.status ?? "").toUpperCase();
+    if (status !== "FILLED" && status !== "DRY_RUN") continue;
+    const qty = t.filled_shares > 0 ? t.filled_shares : t.count;
+    if (qty <= 0) continue;
+    const price = t.price_cents / 100;
+    const fee = t.fee_paid || 0;
+    const isSell = (t.action ?? "").toUpperCase() === "SELL";
+    total += isSell ? (qty * price) - fee : -((qty * price) + fee);
+  }
+  return total;
+}
+
 /** Total P&L = realized (from all completed sells) + unrealized (current open position value - cost basis). */
 export function totalPnl(row: UnifiedMarketRow): number | null {
+  if (row.trades.length === 0 && !row.position) return null;
+
   const pos = row.position;
-  const realized = pos?.realized_pnl ?? 0;
   const unrealized = liveNetPnl(row);
 
-  // If we have no position and no realized P&L, nothing to show
-  if (!pos && row.trades.length === 0) return null;
+  // Use position's realized_pnl if available, otherwise compute from trade history
+  let realized = pos?.realized_pnl ?? 0;
+  if (!pos || realized === 0) {
+    const fromTrades = realizedPnlFromTrades(row.trades);
+    if (fromTrades !== 0) realized = fromTrades;
+  }
 
-  // If we had trades but no current position, show realized only
+  // No position: show trade-derived P&L (cash flow from all buys/sells)
   if (!pos || pos.quantity <= 0) {
     return realized !== 0 ? realized : null;
   }
 
-  // Combine realized + unrealized
+  // Has position: combine realized + unrealized
   if (unrealized == null) return realized !== 0 ? realized : null;
   return realized + unrealized;
 }

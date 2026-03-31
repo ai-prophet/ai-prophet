@@ -575,8 +575,25 @@ def _load_resolved_visible_markets(
     session: Any,
     instance_name: str,
 ) -> list[tuple[TradingMarket, float]]:
-    # Get markets with activity after the cutoff date
+    # For resolved markets, include ALL tickers that ever had fills (no cutoff)
+    # so pre-cutoff traded markets like KXDHSFUND-26MAR26 still appear.
     visible_tickers, visible_market_ids = _display_visible_market_activity(session, instance_name)
+
+    # Add ALL tickers with filled order snapshots (regardless of cutoff)
+    all_traded_tickers = {
+        ticker for (ticker,) in (
+            session.query(KalshiOrderSnapshot.ticker)
+            .filter(
+                KalshiOrderSnapshot.instance_name == instance_name,
+                KalshiOrderSnapshot.fill_count > 0,
+            )
+            .distinct()
+            .all()
+        )
+        if ticker
+    }
+    visible_tickers = visible_tickers | all_traded_tickers
+
     visible_filter = _visible_market_scope_filter(visible_tickers, visible_market_ids)
     if visible_filter is False:
         return []

@@ -1464,6 +1464,8 @@ function SubmittedTradesTimelineTab({
 }) {
   const [expandedTradeId, setExpandedTradeId] = useState<number | null>(null);
   const [showPnLChart, setShowPnLChart] = useState(false);
+  const [showAllTimeline, setShowAllTimeline] = useState(false);
+  const TIMELINE_INITIAL_VISIBLE = 10;
 
   const chronTrades = useMemo(
     () => [...row.trades]
@@ -1697,7 +1699,40 @@ function SubmittedTradesTimelineTab({
         {loadingRuns && (
           <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
         )}
-        {collapsedEvents.map((event) => {
+        {(() => {
+          const hasOlderTimeline = !showAllTimeline && collapsedEvents.length > TIMELINE_INITIAL_VISIBLE;
+          const visibleEvents = showAllTimeline ? collapsedEvents : collapsedEvents.slice(0, TIMELINE_INITIAL_VISIBLE);
+          const hiddenEvents = hasOlderTimeline ? collapsedEvents.slice(TIMELINE_INITIAL_VISIBLE) : [];
+
+          // Compute net position from hidden older events
+          let hiddenSignedQty = 0;
+          let hiddenCash = 0;
+          let hiddenTradeCount = 0;
+          let oldestTs: string | null = null;
+          hiddenEvents.forEach((ev) => {
+            if (ev.type === "trade" || ev.type === "switch") {
+              const items = ev.type === "switch" ? [ev.sell, ev.buy] : [ev.item];
+              items.forEach((item) => {
+                const trade = item.trade;
+                const entry = submittedTradeTimelineItem(trade);
+                hiddenCash += entry.cashFlow ?? 0;
+                hiddenTradeCount++;
+                const qty = getExecutedTradeQuantity(trade);
+                const side = trade.side?.toUpperCase() ?? null;
+                const isSell = trade.action?.toUpperCase() === "SELL";
+                if (qty > 0 && side) {
+                  const d = side === "YES" ? qty : -qty;
+                  hiddenSignedQty += isSell ? -d : d;
+                }
+                const ts = trade.created_at;
+                if (!oldestTs || ts < oldestTs) oldestTs = ts;
+              });
+            }
+          });
+          const hiddenPos = signedQtyToPosition(hiddenSignedQty);
+
+          return (<>
+          {visibleEvents.map((event) => {
           if (event.type === "run_group") {
             const { runs, decision } = event;
             const isHold = decision === "HOLD";
@@ -2042,6 +2077,38 @@ function SubmittedTradesTimelineTab({
             </div>
           );
         })}
+          {hasOlderTimeline && (
+            <div className="relative py-2">
+              <div className="absolute left-[-12px] top-[10px] w-[7px] h-[7px] rounded-full bg-t-border border-2 border-t-bg z-10" />
+              <div className="flex flex-wrap items-center gap-3 text-[9px] font-mono rounded border border-t-border/40 bg-t-bg-secondary/40 px-3 py-2">
+                <button
+                  onClick={() => setShowAllTimeline(true)}
+                  className="px-2 py-0.5 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition-colors font-medium"
+                >
+                  Show {hiddenEvents.length} older event{hiddenEvents.length !== 1 ? "s" : ""}
+                </button>
+                {hiddenTradeCount > 0 && (
+                  <>
+                    <span className="text-txt-muted">
+                      {hiddenTradeCount} trade{hiddenTradeCount !== 1 ? "s" : ""} since {oldestTs ? fmtTime(oldestTs) : "—"}
+                    </span>
+                    <span className="text-txt-muted">→</span>
+                    <span className="text-txt-secondary">
+                      net position: {hiddenPos
+                        ? <span className={sideToneClass(hiddenPos.side, true)}>{hiddenPos.quantity} {hiddenPos.side}</span>
+                        : <span className="text-txt-muted">flat</span>
+                      }
+                    </span>
+                    <span className={pnlCls(hiddenCash)}>
+                      cash: {hiddenCash >= 0 ? "+" : ""}{fmtDollar(hiddenCash)}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          </>);
+        })()}
       </div>
     </div>
   );
