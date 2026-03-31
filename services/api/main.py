@@ -640,6 +640,13 @@ def _load_resolved_visible_markets(
         if truly_missing:
             logger.info("Backfilling %d traded tickers missing from trading_markets: %s",
                         len(truly_missing), truly_missing)
+            # Try to fetch real market data from Kalshi for better titles/metadata
+            backfill_adapter: Any | None = None
+            try:
+                backfill_adapter = _build_kalshi_adapter(instance_name)
+            except Exception as e:
+                logger.warning("Could not build adapter for backfill enrichment: %s", e)
+
             for ticker in truly_missing:
                 snap = (
                     session.query(KalshiOrderSnapshot)
@@ -652,15 +659,43 @@ def _load_resolved_visible_markets(
                 )
                 if not snap:
                     continue
+
+                # Try to enrich from Kalshi API
+                title = ticker
+                category = None
+                event_ticker = "-".join(ticker.split("-")[:2]) if "-" in ticker else ticker
+                expiration = snap.created_ts
+                last_price = None
+                if backfill_adapter is not None:
+                    try:
+                        mkt_data = backfill_adapter.get_market(ticker)
+                        if mkt_data:
+                            title = mkt_data.get("title", ticker)
+                            category = mkt_data.get("category")
+                            event_ticker = mkt_data.get("event_ticker", event_ticker)
+                            exp_str = mkt_data.get("close_time") or mkt_data.get("expiration_time")
+                            if exp_str:
+                                try:
+                                    expiration = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                                except (ValueError, AttributeError):
+                                    pass
+                            last_price = mkt_data.get("last_price")
+                            if mkt_data.get("result") == "yes":
+                                last_price = 1.0
+                            elif mkt_data.get("result") == "no":
+                                last_price = 0.0
+                    except Exception as e:
+                        logger.debug("Could not fetch Kalshi data for %s: %s", ticker, e)
+
                 row = TradingMarket(
                     instance_name=instance_name,
                     market_id=f"kalshi:{ticker}",
                     ticker=ticker,
-                    event_ticker="-".join(ticker.split("-")[:2]) if "-" in ticker else ticker,
-                    title=ticker,  # placeholder — will be enriched later
-                    category=None,
-                    expiration=snap.created_ts,  # best guess
-                    last_price=None,
+                    event_ticker=event_ticker,
+                    title=title,
+                    category=category,
+                    expiration=expiration,
+                    last_price=last_price,
                     yes_bid=None,
                     yes_ask=None,
                     no_bid=None,
@@ -725,24 +760,55 @@ def _build_resolved_market_trade_state(
     orders = load_replayable_orders(session, BettingOrder, instance_name, tickers=tickers)
     positions: dict[str, InventoryPosition] = {}
 
+    # Track which tickers have BettingOrder data
+    tickers_with_orders: set[str] = set()
+
     for order in orders:
         ticker = getattr(order, "ticker", "")
         if not ticker:
             continue
 
+        tickers_with_orders.add(ticker)
         pos = positions.setdefault(ticker, InventoryPosition())
         action, side, shares, _, _ = normalize_order(order)
         if shares <= EPSILON:
             continue
 
-        # Skip settlement orders — their fill_price can be wrong
-        # (e.g. NO positions getting $1 fill when market resolves YES).
-        # P&L will be recalculated from the known market outcome instead.
         status = str(getattr(order, "status", "") or "").upper()
         if status == "SETTLED":
             continue
 
         pos.apply_order(order, ticker=ticker)
+
+    # For tickers with NO BettingOrder records, fall back to KalshiOrderSnapshot
+    missing_tickers = [t for t in tickers if t and t not in tickers_with_orders]
+    if missing_tickers:
+        from kalshi_state import get_latest_order_snapshots
+        snapshots = get_latest_order_snapshots(session, instance_name, tickers=missing_tickers)
+        # Sort chronologically for correct replay
+        snapshots.sort(key=lambda s: s.created_ts or s.last_update_ts or s.captured_at)
+        for snap in snapshots:
+            if not snap.ticker or snap.fill_count <= 0:
+                continue
+            if (snap.status or "").upper() == "SETTLED":
+                continue
+            pos = positions.setdefault(snap.ticker, InventoryPosition())
+            action = (snap.action or "BUY").upper()
+            side = (snap.side or "yes").lower()
+            shares = float(snap.fill_count)
+            price = float(snap.avg_fill_price or 0)
+            # Correct inverted SELL fill prices
+            if action == "SELL" and 0 < price < 1 and snap.limit_price is not None:
+                limit = float(snap.limit_price)
+                if limit > 0 and abs(price - limit) > abs((1 - price) - limit):
+                    price = 1.0 - price
+            fee = float(snap.fee_paid or 0)
+            order_proxy = SimpleNamespace(
+                action=action, side=side,
+                filled_shares=shares, fill_price=price,
+                fee_paid=fee, status=snap.status,
+            )
+            pos.apply_order(order_proxy, ticker=snap.ticker)
 
     state: dict[str, dict[str, Any]] = {}
     for ticker in tickers:
@@ -2644,8 +2710,34 @@ def get_resolved_markets(
         tickers = [market.ticker for market, _ in markets if market.ticker]
         trade_state = _build_resolved_market_trade_state(session, resolved_instance, tickers)
 
-        # Load all orders for trade history
+        # Load all orders for trade history (BettingOrder + KalshiOrderSnapshot fallback)
         all_orders = load_replayable_orders(session, BettingOrder, resolved_instance, tickers=tickers)
+        bo_tickers = {getattr(o, "ticker", "") for o in all_orders}
+        snapshot_only_tickers = [t for t in tickers if t and t not in bo_tickers]
+        if snapshot_only_tickers:
+            from kalshi_state import get_latest_order_snapshots
+            extra_snaps = get_latest_order_snapshots(session, resolved_instance, tickers=snapshot_only_tickers)
+            for snap in extra_snaps:
+                if snap.fill_count <= 0:
+                    continue
+                price = float(snap.avg_fill_price or 0)
+                action = (snap.action or "BUY").upper()
+                # Correct inverted SELL prices
+                if action == "SELL" and 0 < price < 1 and snap.limit_price is not None:
+                    limit = float(snap.limit_price)
+                    if limit > 0 and abs(price - limit) > abs((1 - price) - limit):
+                        price = 1.0 - price
+                all_orders.append(SimpleNamespace(
+                    ticker=snap.ticker, action=action,
+                    side=(snap.side or "yes").lower(),
+                    filled_shares=snap.fill_count, fill_price=price,
+                    fee_paid=snap.fee_paid or 0,
+                    price_cents=int(round(price * 100)),
+                    status=snap.status,
+                    created_at=snap.created_ts or snap.last_update_ts or snap.captured_at,
+                    count=int(round(snap.fill_count)),
+                ))
+            all_orders.sort(key=lambda o: getattr(o, "created_at", None) or datetime.min.replace(tzinfo=UTC))
         logger.info("Loaded %d orders for %d tickers for instance %s", len(all_orders), len(tickers), resolved_instance)
 
         rows = []
