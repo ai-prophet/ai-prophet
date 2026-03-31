@@ -1635,7 +1635,6 @@ function SubmittedTradesTimelineTab({
           if (event.type === "run") {
             const { run } = event;
             const isExpanded = expandedTradeId === -run.id;
-            const hasDetail = !!(run.reasoning || (run.sources && run.sources.length > 0));
             const isHold = isHoldLikeDecision(run.decision);
             const isSkip = isSkipLikeDecision(run.decision);
             const label = normalizedDecisionLabel(run.decision);
@@ -1644,6 +1643,23 @@ function SubmittedTradesTimelineTab({
             const displayContext = runDisplayContext.get(run.id);
             const pYes = displayContext?.pYes ?? null;
             const edge = displayContext?.edge ?? null;
+
+            // Compute hold rationale when model p_yes falls within spread dead zone
+            let holdRationale: string | null = null;
+            if (isHold && pYes != null && row.yes_ask != null && row.no_ask != null) {
+              const BUFFER = 0.02;
+              const lowerBound = Math.max(0, 1.0 - row.no_ask - BUFFER);
+              const upperBound = Math.min(1.0, row.yes_ask + BUFFER);
+              if (pYes >= lowerBound && pYes <= upperBound) {
+                holdRationale =
+                  `Model probability ${(pYes * 100).toFixed(0)}% is within the market spread dead zone ` +
+                  `[${(lowerBound * 100).toFixed(0)}%, ${(upperBound * 100).toFixed(0)}%] ` +
+                  `(yes_ask=${(row.yes_ask * 100).toFixed(0)}c, no_ask=${(row.no_ask * 100).toFixed(0)}c, buffer=2%). ` +
+                  `Edge of ${edge != null ? (edge * 100).toFixed(0) : "?"}pp is too small to justify trading.`;
+              }
+            }
+
+            const hasDetail = !!(holdRationale || run.reasoning || (run.sources && run.sources.length > 0));
             return (
               <div key={event.key} className="relative py-1.5">
                 <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
@@ -1691,7 +1707,13 @@ function SubmittedTradesTimelineTab({
                         {hasDetail && <span className="text-[8px] text-txt-muted ml-auto">{isExpanded ? "▲" : "▼"}</span>}
                       </div>
                       {isExpanded && hasDetail && (
-                        <div className="pt-2 pb-1">
+                        <div className="pt-2 pb-1 space-y-2">
+                          {holdRationale && (
+                            <div className="rounded border border-yellow-700/40 bg-yellow-900/15 px-2.5 py-1.5">
+                              <div className="text-[9px] font-medium text-yellow-500 mb-0.5">Hold Rationale</div>
+                              <p className="text-[10px] text-yellow-200/80 leading-relaxed">{holdRationale}</p>
+                            </div>
+                          )}
                           <RationalePanel reasoning={run.reasoning} sources={run.sources ?? []} />
                         </div>
                       )}
