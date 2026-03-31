@@ -1737,7 +1737,8 @@ function SubmittedTradesTimelineTab({
             const { runs, decision } = event;
             const isHold = decision === "HOLD";
             const groupExpandKey = -(runs[0].id + 2000000);
-            const isGroupExpanded = expandedTradeId === groupExpandKey;
+            const isGroupExpanded = expandedTradeId === groupExpandKey ||
+              runs.some(run => expandedTradeId === -run.id);
             const first = runs[0];
             const last = runs[runs.length - 1];
             const firstCtx = runDisplayContext.get(first.id);
@@ -1755,7 +1756,7 @@ function SubmittedTradesTimelineTab({
                 <button
                   type="button"
                   className="w-full text-left rounded px-1 -mx-1 transition-colors cursor-pointer hover:bg-t-panel-hover/40"
-                  onClick={() => setExpandedTradeId(isGroupExpanded ? null : groupExpandKey)}
+                  onClick={() => setExpandedTradeId(isGroupExpanded && expandedTradeId === groupExpandKey ? null : groupExpandKey)}
                 >
                   <div className="flex items-start gap-3">
                     <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
