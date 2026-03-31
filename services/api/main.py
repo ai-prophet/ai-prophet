@@ -640,13 +640,9 @@ def _load_resolved_visible_markets(
         if truly_missing:
             logger.info("Backfilling %d traded tickers missing from trading_markets: %s",
                         len(truly_missing), truly_missing)
-            # Try to fetch real market data from Kalshi for better titles/metadata
-            backfill_adapter: Any | None = None
-            try:
-                backfill_adapter = _build_kalshi_adapter(instance_name)
-            except Exception as e:
-                logger.warning("Could not build adapter for backfill enrichment: %s", e)
-
+            # Create minimal rows first (no API calls — avoids rate limits).
+            # The outcome lookup loop below will enrich via Kalshi API one
+            # market at a time with its existing rate-limit handling.
             for ticker in truly_missing:
                 snap = (
                     session.query(KalshiOrderSnapshot)
@@ -660,42 +656,15 @@ def _load_resolved_visible_markets(
                 if not snap:
                     continue
 
-                # Try to enrich from Kalshi API
-                title = ticker
-                category = None
-                event_ticker = "-".join(ticker.split("-")[:2]) if "-" in ticker else ticker
-                expiration = snap.created_ts
-                last_price = None
-                if backfill_adapter is not None:
-                    try:
-                        mkt_data = backfill_adapter.get_market(ticker)
-                        if mkt_data:
-                            title = mkt_data.get("title", ticker)
-                            category = mkt_data.get("category")
-                            event_ticker = mkt_data.get("event_ticker", event_ticker)
-                            exp_str = mkt_data.get("close_time") or mkt_data.get("expiration_time")
-                            if exp_str:
-                                try:
-                                    expiration = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
-                                except (ValueError, AttributeError):
-                                    pass
-                            last_price = mkt_data.get("last_price")
-                            if mkt_data.get("result") == "yes":
-                                last_price = 1.0
-                            elif mkt_data.get("result") == "no":
-                                last_price = 0.0
-                    except Exception as e:
-                        logger.debug("Could not fetch Kalshi data for %s: %s", ticker, e)
-
                 row = TradingMarket(
                     instance_name=instance_name,
                     market_id=f"kalshi:{ticker}",
                     ticker=ticker,
-                    event_ticker=event_ticker,
-                    title=title,
-                    category=category,
-                    expiration=expiration,
-                    last_price=last_price,
+                    event_ticker="-".join(ticker.split("-")[:2]) if "-" in ticker else ticker,
+                    title=ticker,
+                    category=None,
+                    expiration=snap.created_ts,
+                    last_price=None,
                     yes_bid=None,
                     yes_ask=None,
                     no_bid=None,
@@ -721,7 +690,8 @@ def _load_resolved_visible_markets(
 
     for market in markets:
         outcome = _normalized_binary_outcome(market.last_price)
-        if outcome is None and market.ticker:
+        needs_enrichment = market.title == market.ticker  # placeholder title from backfill
+        if (outcome is None or needs_enrichment) and market.ticker:
             if not looked_up_live:
                 looked_up_live = True
                 try:
@@ -730,15 +700,41 @@ def _load_resolved_visible_markets(
                     logger.warning("Failed to build Kalshi adapter for %s resolution lookup: %s", instance_name, e)
                     adapter = None
             if adapter is not None:
-                outcome = _fetch_market_resolution_outcome(adapter, market.ticker)
-                if outcome is not None:
-                    market.last_price = outcome
-                    market.yes_bid = outcome
-                    market.yes_ask = outcome
-                    market.no_bid = 1.0 - outcome
-                    market.no_ask = 1.0 - outcome
-                    market.updated_at = datetime.now(UTC)
-                    updated_rows = True
+                if outcome is None:
+                    outcome = _fetch_market_resolution_outcome(adapter, market.ticker)
+                    if outcome is not None:
+                        market.last_price = outcome
+                        market.yes_bid = outcome
+                        market.yes_ask = outcome
+                        market.no_bid = 1.0 - outcome
+                        market.no_ask = 1.0 - outcome
+                        market.updated_at = datetime.now(UTC)
+                        updated_rows = True
+                # Enrich placeholder titles from Kalshi API
+                if needs_enrichment:
+                    try:
+                        mkt_data = adapter.get_market(market.ticker)
+                        if mkt_data:
+                            market.title = mkt_data.get("title", market.title)
+                            market.category = mkt_data.get("category")
+                            market.event_ticker = mkt_data.get("event_ticker", market.event_ticker)
+                            exp_str = mkt_data.get("close_time") or mkt_data.get("expiration_time")
+                            if exp_str:
+                                try:
+                                    market.expiration = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+                                except (ValueError, AttributeError):
+                                    pass
+                            if outcome is None:
+                                result = mkt_data.get("result")
+                                if result == "yes":
+                                    outcome = 1.0
+                                    market.last_price = 1.0
+                                elif result == "no":
+                                    outcome = 0.0
+                                    market.last_price = 0.0
+                            updated_rows = True
+                    except Exception as e:
+                        logger.debug("Could not enrich %s from Kalshi: %s", market.ticker, e)
 
         # Include the market even if we can't determine the outcome
         # Use -1 as a sentinel value for "unknown outcome"

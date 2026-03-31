@@ -1193,13 +1193,14 @@ function ExpandedPanel({
   const [activeTab, setActiveTab] = useState<"timeline" | "trades" | "models">("trades");
   const [modelRuns, setModelRuns] = useState<ModelRun[] | null>(null);
   const [loadingRuns, setLoadingRuns] = useState(false);
-  const modelRunsCacheRef = useRef<Map<string, ModelRun[]>>(new Map());
+  const modelRunsCacheRef = useRef<Map<string, { data: ModelRun[]; ts: number }>>(new Map());
+  const MODEL_RUNS_CACHE_TTL_MS = 60_000; // 1 minute
 
   useEffect(() => {
     const cacheKey = `runs:${instanceCacheKey}:${row.market_id}`;
-    const cachedRuns = modelRunsCacheRef.current.get(cacheKey);
-    if (cachedRuns) {
-      setModelRuns(cachedRuns);
+    const cached = modelRunsCacheRef.current.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MODEL_RUNS_CACHE_TTL_MS) {
+      setModelRuns(cached.data);
       return;
     }
 
@@ -1207,7 +1208,7 @@ function ExpandedPanel({
     setLoadingRuns(true);
     apiClient.getMarketModelRuns(row.market_id).then((data) => {
       if (cancelled) return;
-      modelRunsCacheRef.current.set(cacheKey, data);
+      modelRunsCacheRef.current.set(cacheKey, { data, ts: Date.now() });
       setModelRuns(data);
       setLoadingRuns(false);
     }).catch(() => {
