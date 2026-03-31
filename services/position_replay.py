@@ -40,6 +40,8 @@ class InventoryPosition:
     realized_pnl: float = 0.0
     realized_trades: int = 0
     max_position: float = 0.0
+    last_side: str = ""
+    total_buy_cost: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
     def apply_order(self, order: Any, *, ticker: str = "") -> float:
@@ -66,6 +68,8 @@ class InventoryPosition:
         else:
             held_qty, held_cost = self._held_for(side)
             self._set_held(side, held_qty + shares, held_cost + shares * price + fee)
+            self.last_side = side
+            self.total_buy_cost += shares * price + fee
 
         self.max_position = max(self.max_position, self.yes_qty, self.no_qty)
         return realized_delta

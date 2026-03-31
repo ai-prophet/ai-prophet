@@ -402,28 +402,26 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
                   for (let i = 0; i <= idx; i++) {
                     const t = row.trades![i];
                     if (t.action === "BUY") {
-                      // Adding to position
                       const prevPosition = position;
                       const prevCostBasis = costBasis;
                       position += t.shares;
                       costBasis = ((prevPosition * prevCostBasis) + (t.shares * t.price)) / position;
-                      positionSide = t.side; // Track which side we're holding
+                      positionSide = t.side;
                     } else {
-                      // Selling position
                       const sellPnl = t.shares * (t.price - costBasis);
                       runningPnl += sellPnl;
                       position -= t.shares;
                     }
                   }
 
-                  // Add unrealized P&L if position remains
+                  // Add unrealized P&L if position remains (at last trade only)
                   if (position > 0 && idx === row.trades!.length - 1 && row.outcome !== "PENDING") {
-                    // Settlement price is $1 if our position matches outcome, $0 if not
-                    const settlementPrice =
+                    // $1 per contract if our side matches the outcome, $0 otherwise
+                    const positionWins =
                       (positionSide === "YES" && row.outcome === "YES") ||
-                      (positionSide === "NO" && row.outcome === "NO") ? 1.0 : 0.0;
-                    const unrealizedPnl = position * (settlementPrice - costBasis);
-                    runningPnl += unrealizedPnl;
+                      (positionSide === "NO" && row.outcome === "NO");
+                    const settlementPrice = positionWins ? 1.0 : 0.0;
+                    runningPnl += position * (settlementPrice - costBasis);
                   }
 
                   return (
@@ -466,51 +464,34 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
               {(() => {
                 let totalBought = 0;
                 let totalSold = 0;
-                let remainingShares = 0;
-                let holdingSide = ""; // Track which side we're holding
-
-                // Track by side to handle YES/NO correctly
                 let yesPosition = 0;
                 let noPosition = 0;
 
                 row.trades?.forEach(t => {
                   if (t.action === "BUY") {
                     totalBought += t.value;
-                    if (t.side === "YES") {
-                      yesPosition += t.shares;
-                    } else if (t.side === "NO") {
-                      noPosition += t.shares;
-                    }
-                  } else { // SELL
+                    if (t.side === "YES") yesPosition += t.shares;
+                    else if (t.side === "NO") noPosition += t.shares;
+                  } else {
                     totalSold += t.value;
-                    if (t.side === "YES") {
-                      yesPosition -= t.shares;
-                    } else if (t.side === "NO") {
-                      noPosition -= t.shares;
-                    }
+                    if (t.side === "YES") yesPosition -= t.shares;
+                    else if (t.side === "NO") noPosition -= t.shares;
                   }
                 });
 
-                // Determine remaining position and side
-                remainingShares = Math.max(yesPosition, noPosition);
-                holdingSide = yesPosition > 0 ? "YES" : noPosition > 0 ? "NO" : "";
+                // Remaining position after all trades
+                const remainingShares = Math.max(yesPosition, noPosition, 0);
+                const holdingSide = yesPosition > 0 ? "YES" : noPosition > 0 ? "NO" : "";
 
-                // Settlement value depends on if our position matches the outcome
-                const settlementValue = remainingShares > 0
-                  ? remainingShares * ((holdingSide === "YES" && row.outcome === "YES") ||
-                                      (holdingSide === "NO" && row.outcome === "NO") ? 1 : 0)
+                // $1 per contract if position side matches outcome, $0 otherwise
+                const positionWins = holdingSide !== "" && (
+                  (holdingSide === "YES" && row.outcome === "YES") ||
+                  (holdingSide === "NO" && row.outcome === "NO")
+                );
+                const perContract = positionWins ? 1.0 : 0.0;
+                const settlementValue = remainingShares > 0 && row.outcome !== "PENDING"
+                  ? remainingShares * perContract
                   : 0;
-
-                // Debug logging
-                if (settlementValue > 100) {
-                  console.error("Settlement calculation error:", {
-                    remainingShares,
-                    holdingSide,
-                    outcome: row.outcome,
-                    settlementValue,
-                    trades: row.trades
-                  });
-                }
 
                 const netPnl = totalSold + settlementValue - totalBought;
 
@@ -524,12 +505,9 @@ function ResolvedRow({ row }: { row: ResolvedMarketRow }) {
                       <span>Total Sold:</span>
                       <span className="font-mono">+${totalSold.toFixed(2)}</span>
                     </div>
-                    {remainingShares > 0 && (
+                    {remainingShares > 0 && row.outcome !== "PENDING" && (
                       <div className="flex justify-between text-txt-muted">
-                        <span>Settlement ({remainingShares.toFixed(0)} {holdingSide} @ {
-                          (holdingSide === "YES" && row.outcome === "YES") || (holdingSide === "NO" && row.outcome === "NO")
-                            ? "$1" : "$0"
-                        }):</span>
+                        <span>Settlement ({remainingShares.toFixed(0)} {holdingSide} @ ${perContract.toFixed(0)}):</span>
                         <span className="font-mono">{settlementValue > 0 ? "+" : ""}${settlementValue.toFixed(2)}</span>
                       </div>
                     )}

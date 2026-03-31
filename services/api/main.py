@@ -581,20 +581,34 @@ def _load_resolved_visible_markets(
     if visible_filter is False:
         return []
 
+    # Also include markets whose lifecycle status is closed/inactive/settled/finalized
+    closed_tickers = {
+        ticker for (ticker,) in (
+            _instance_query(session, TradingMarketLifecycle, instance_name)
+            .filter(TradingMarketLifecycle.status.in_(["closed", "inactive", "settled", "finalized"]))
+            .with_entities(TradingMarketLifecycle.ticker)
+            .all()
+        )
+        if ticker
+    }
+
+    expired_or_closed = [TradingMarket.expiration < datetime.now(UTC)]
+    if closed_tickers:
+        expired_or_closed.append(TradingMarket.ticker.in_(closed_tickers))
+
     markets = (
         _instance_query(session, TradingMarket, instance_name)
         .filter(
-            TradingMarket.expiration < datetime.now(UTC),
+            or_(*expired_or_closed),
             visible_filter,
         )
         .order_by(TradingMarket.expiration.desc())
         .all()
     )
 
-    # Debug logging
     logger.info(
-        "Resolved markets query: found %d markets for %s (filter resulted in %d tickers, %d market_ids)",
-        len(markets), instance_name, len(visible_tickers), len(visible_market_ids)
+        "Resolved markets query: found %d markets for %s (filter: %d tickers, %d market_ids, %d closed lifecycle)",
+        len(markets), instance_name, len(visible_tickers), len(visible_market_ids), len(closed_tickers)
     )
     if not markets:
         return []
@@ -641,10 +655,9 @@ def _build_resolved_market_trade_state(
     session: Any,
     instance_name: str,
     tickers: list[str],
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, InventoryPosition]]:
     orders = load_replayable_orders(session, BettingOrder, instance_name, tickers=tickers)
     positions: dict[str, InventoryPosition] = {}
-    settlement_state: dict[str, dict[str, Any]] = {}
 
     for order in orders:
         ticker = getattr(order, "ticker", "")
@@ -656,19 +669,11 @@ def _build_resolved_market_trade_state(
         if shares <= EPSILON:
             continue
 
+        # Skip settlement orders — their fill_price can be wrong
+        # (e.g. NO positions getting $1 fill when market resolves YES).
+        # P&L will be recalculated from the known market outcome instead.
         status = str(getattr(order, "status", "") or "").upper()
-        if action == "SELL" and status == "SETTLED":
-            held_qty, held_cost = pos._held_for(side)
-            avg_price = held_cost / held_qty if held_qty > EPSILON else 0.0
-            capital = held_qty * avg_price
-            pos.apply_order(order, ticker=ticker)
-            settlement_state[ticker] = {
-                "position_side": side.upper(),
-                "quantity": round(held_qty, 4),
-                "avg_price": round(avg_price, 4),
-                "capital": round(capital, 4),
-                "pnl": round(pos.realized_pnl, 4),
-            }
+        if status == "SETTLED":
             continue
 
         pos.apply_order(order, ticker=ticker)
@@ -677,7 +682,6 @@ def _build_resolved_market_trade_state(
     for ticker in tickers:
         state[ticker] = {
             "position": positions.get(ticker, InventoryPosition()),
-            "settlement": settlement_state.get(ticker),
         }
     return state
 
@@ -2562,7 +2566,6 @@ def get_resolved_markets(
         for mkt, outcome in markets:
             replay = trade_state.get(mkt.ticker, {})
             replay_pos = replay.get("position")
-            settlement = replay.get("settlement")
             resolved_at = mkt.expiration.isoformat() if mkt.expiration else None
             position_side: str | None = None
             quantity = 0.0
@@ -2570,36 +2573,26 @@ def get_resolved_markets(
             capital = 0.0
             pnl = 0.0
 
-            if settlement is not None:
-                position_side = settlement["position_side"]
-                quantity = settlement["quantity"]
-                avg_price = settlement["avg_price"]
-                capital = settlement["capital"]
-                pnl = settlement["pnl"]
-            elif isinstance(replay_pos, InventoryPosition):
+            if isinstance(replay_pos, InventoryPosition):
                 side, qty, avg = replay_pos.current_position()
                 if side is not None and qty > EPSILON:
-                    # If outcome is unknown (-1), can't calculate final P&L
+                    # Active position at resolution time
                     if outcome >= 0:
                         settlement_price = outcome if side == "yes" else 1.0 - outcome
                         unrealized = (settlement_price - avg) * qty
                         pnl = round(replay_pos.realized_pnl + unrealized, 4)
-
-                        # Debug logging for suspicious P&L values
-                        if abs(pnl) > 100 or (side == "no" and outcome == 1.0 and pnl > 0):
-                            logger.warning(
-                                "Suspicious P&L for %s: side=%s, qty=%s, avg=%s, outcome=%s, settlement=%s, realized=%s, unrealized=%s, total=%s",
-                                mkt.ticker, side, qty, avg, outcome, settlement_price, replay_pos.realized_pnl, unrealized, pnl
-                            )
                     else:
-                        # Only show realized P&L for unknown outcomes
                         pnl = round(replay_pos.realized_pnl, 4)
                     position_side = side.upper()
                     quantity = round(qty, 4)
                     avg_price = round(avg, 4)
                     capital = round(qty * avg, 4)
                 elif abs(replay_pos.realized_pnl) > EPSILON:
+                    # Fully exited before resolution — still show with realized P&L
                     pnl = round(replay_pos.realized_pnl, 4)
+                    if replay_pos.last_side:
+                        position_side = replay_pos.last_side.upper()
+                    capital = round(replay_pos.total_buy_cost, 4)
 
             ret_pct = round(pnl / capital * 100, 2) if capital else 0.0
             correct = None
@@ -2608,12 +2601,6 @@ def get_resolved_markets(
                     (position_side == "YES" and outcome == 1.0) or
                     (position_side == "NO" and outcome == 0.0)
                 )
-                # Debug logging for Duke game issue
-                if "Duke" in mkt.title or "XNCAAMBMTEN" in (mkt.ticker or ""):
-                    logger.info(
-                        "Duke game correctness: position_side=%s, outcome=%s, correct=%s",
-                        position_side, outcome, correct
-                    )
 
             # Determine outcome display string
             if outcome == 1.0:
@@ -2627,26 +2614,25 @@ def get_resolved_markets(
             trade_history = []
             if mkt.ticker:
                 market_orders = [o for o in all_orders if getattr(o, "ticker", "") == mkt.ticker]
-                if market_orders and "Duke" in mkt.title:
-                    logger.info("Duke market %s: found %d orders", mkt.ticker, len(market_orders))
                 for order in market_orders:
+                    status = str(getattr(order, "status", "")).upper()
+                    # Skip settlement orders — settlement is computed from outcome
+                    if status == "SETTLED":
+                        continue
+
                     action = str(getattr(order, "action", "")).upper()
                     side = str(getattr(order, "side", "")).lower()
-                    # BettingOrder uses 'count' for shares and 'price_cents' for price
-                    shares = float(getattr(order, "count", 0) or getattr(order, "filled_shares", 0) or 0)
-                    price_cents = float(getattr(order, "price_cents", 0))
-                    price = price_cents / 100.0 if price_cents > 0 else float(getattr(order, "fill_price", 0))
+                    # Use filled_shares (actual fills), matching normalize_order()
+                    shares = float(getattr(order, "filled_shares", 0) or 0)
+                    price = float(getattr(order, "fill_price", 0) or 0)
+                    if price <= 0:
+                        price_cents = float(getattr(order, "price_cents", 0) or 0)
+                        price = price_cents / 100.0
+                    if price > 1.0:
+                        price = price / 100.0
 
-                    # Debug first order of each market
-                    if market_orders.index(order) == 0:
-                        logger.debug("First order for %s: count=%s, price_cents=%s, filled_shares=%s",
-                                   mkt.ticker, getattr(order, "count", None),
-                                   getattr(order, "price_cents", None),
-                                   getattr(order, "filled_shares", None))
-                    status = str(getattr(order, "status", "")).upper()
                     created_at = getattr(order, "created_at", None)
 
-                    # Include all orders with shares > 0
                     if shares > 0:
                         trade_value = shares * price
                         trade_history.append({
@@ -2658,12 +2644,6 @@ def get_resolved_markets(
                             "value": round(trade_value, 2),
                             "status": status,
                         })
-                        if "Duke" in mkt.title or "Basketball" in mkt.title:
-                            logger.info("Added trade: %s %s %s @ %s (status: %s)", action, shares, side, price, status)
-
-            # Add debug logging for rows with trades
-            if trade_history:
-                logger.info("Market %s has %d trades", mkt.ticker, len(trade_history))
 
             rows.append({
                 "market_id": mkt.market_id,
