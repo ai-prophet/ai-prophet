@@ -2205,7 +2205,10 @@ function shouldShowInTradesTab(trade: Trade): boolean {
 
 // ── Tab 2: Trade History ────────────────────────────────────
 
+const TRADES_TAB_INITIAL_VISIBLE = 5;
+
 function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: ModelRun[] | null }) {
+  const [showAllTrades, setShowAllTrades] = useState(false);
   const chronTrades = useMemo(
     () => [...row.trades]
       .filter((trade) => !isSyntheticTrade(trade) && shouldShowInTradesTab(trade))
@@ -2256,7 +2259,66 @@ function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: Model
           </tr>
         </thead>
         <tbody className="divide-y divide-t-border/20">
-          {tradeStepGroups.map((group) => {
+          {/* tradeStepGroups is newest-first; show latest N, collapse older ones */}
+          {(() => {
+            const hasOlder = !showAllTrades && tradeStepGroups.length > TRADES_TAB_INITIAL_VISIBLE;
+            const visibleGroups = showAllTrades ? tradeStepGroups : tradeStepGroups.slice(0, TRADES_TAB_INITIAL_VISIBLE);
+            const hiddenGroups = hasOlder ? tradeStepGroups.slice(TRADES_TAB_INITIAL_VISIBLE) : [];
+
+            // Compute net state of hidden older trades
+            let hiddenNetQty = 0;
+            let hiddenTotalCash = 0;
+            let hiddenTradeCount = 0;
+            hiddenGroups.forEach((g) => {
+              g.lines.forEach((item) => {
+                const entry = submittedTradeTimelineItem(item.trade);
+                hiddenTotalCash += entry.cashFlow ?? 0;
+                hiddenTradeCount++;
+                const qty = getExecutedTradeQuantity(item.trade);
+                const side = item.trade.side?.toUpperCase() ?? null;
+                const isSell = item.trade.action?.toUpperCase() === "SELL";
+                if (qty > 0 && side) {
+                  const signedDelta = side === "YES" ? qty : -qty;
+                  hiddenNetQty += isSell ? -signedDelta : signedDelta;
+                }
+              });
+            });
+            const hiddenPosition = signedQtyToPosition(hiddenNetQty);
+            const oldestTime = hiddenGroups.length > 0
+              ? hiddenGroups[hiddenGroups.length - 1].lines[0].trade.created_at
+              : null;
+
+            return (
+              <>
+                {/* Summary row for older hidden trades */}
+                {hasOlder && (
+                  <tr className="bg-t-bg-secondary/40 border-b border-t-border/40">
+                    <td colSpan={10} className="px-2 py-2">
+                      <div className="flex items-center gap-3 text-[9px] font-mono">
+                        <button
+                          onClick={() => setShowAllTrades(true)}
+                          className="px-2 py-0.5 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition-colors font-medium"
+                        >
+                          Show {hiddenGroups.length} older trade{hiddenGroups.length !== 1 ? "s" : ""}
+                        </button>
+                        <span className="text-txt-muted">
+                          {hiddenTradeCount} order{hiddenTradeCount !== 1 ? "s" : ""} since {oldestTime ? fmtTime(oldestTime) : "—"}
+                        </span>
+                        <span className="text-txt-muted">→</span>
+                        <span className="text-txt-secondary">
+                          net position: {hiddenPosition
+                            ? <span className={sideToneClass(hiddenPosition.side, true)}>{hiddenPosition.quantity} {hiddenPosition.side}</span>
+                            : <span className="text-txt-muted">flat</span>
+                          }
+                        </span>
+                        <span className={`${pnlCls(hiddenTotalCash)}`}>
+                          cash: {hiddenTotalCash >= 0 ? "+" : ""}{fmtDollar(hiddenTotalCash)}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {visibleGroups.map((group) => {
             const latestTrade = group.lines[group.lines.length - 1].trade;
             const firstTrade = group.lines[0].trade;
             const lastTrade = group.lines[group.lines.length - 1].trade;
@@ -2408,6 +2470,9 @@ function TradesTab({ row, modelRuns }: { row: UnifiedMarketRow; modelRuns: Model
               </tr>
             );
           })}
+              </>
+            );
+          })()}
         </tbody>
         <tfoot>
           <tr className="border-t border-t-border/60 text-[9px] text-txt-muted">

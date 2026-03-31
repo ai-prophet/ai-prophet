@@ -927,16 +927,17 @@ def get_trades(
     engine = get_db()
     try:
         with get_session(engine) as session:
+            # Load ALL orders (no display cutoff) so trade history is complete.
+            # Without pre-cutoff trades, position replay can show impossible
+            # sequences (e.g. sell 12 after only buying 2).
             local_rows = (
                 _instance_query(session, BettingOrder, resolved_instance)
-                .filter(BettingOrder.created_at >= DISPLAY_CUTOFF_UTC)
                 .order_by(BettingOrder.created_at.desc())
                 .all()
             )
             deferred_rows = (
                 _instance_query(session, BettingDeferredFlip, resolved_instance)
                 .filter(
-                    BettingDeferredFlip.created_at >= DISPLAY_CUTOFF_UTC,
                     BettingDeferredFlip.status.in_((
                         "WAITING_SELL",
                         "WAITING_POSITION_SYNC",
@@ -946,10 +947,7 @@ def get_trades(
                 .order_by(BettingDeferredFlip.updated_at.desc(), BettingDeferredFlip.id.desc())
                 .all()
             )
-            latest_snapshots = [
-                snap for snap in get_latest_order_snapshots(session, resolved_instance)
-                if _display_visible_ts(snap.created_ts or snap.last_update_ts or snap.captured_at)
-            ]
+            latest_snapshots = list(get_latest_order_snapshots(session, resolved_instance))
 
             # Bulk-load signals, predictions, and market titles (avoid N+1)
             signal_ids = [r.signal_id for r in local_rows if r.signal_id]
