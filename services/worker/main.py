@@ -1794,6 +1794,25 @@ def run_cycle(args) -> None:
 
     markets_to_analyze: list[dict] = []  # enriched market dicts
 
+    # Pre-load latest prediction prices per market for price-movement check
+    # (single query instead of per-market to avoid DB pool exhaustion)
+    last_pred_prices: dict[str, tuple[float, float]] = {}
+    if db_engine is not None:
+        try:
+            from sqlalchemy import text as sa_text
+            with db_engine.connect() as conn:
+                result = conn.execute(sa_text("""
+                    SELECT DISTINCT ON (market_id) market_id, yes_ask, no_ask
+                    FROM betting_predictions
+                    WHERE instance_name = :instance
+                    ORDER BY market_id, created_at DESC
+                """), {"instance": INSTANCE_NAME})
+                for row in result:
+                    last_pred_prices[row[0]] = (float(row[1]), float(row[2]))
+            logger.info("Loaded %d latest prediction prices for price-movement filter", len(last_pred_prices))
+        except Exception as e:
+            logger.warning("Failed to pre-load prediction prices: %s", e)
+
     for market in raw_markets:
         if _shutdown_requested:
             logger.info("Shutdown requested, stopping analysis")
@@ -1881,45 +1900,28 @@ def run_cycle(args) -> None:
 
         # Skip markets where the price hasn't moved 10+ cents since last forecast
         MIN_PRICE_MOVEMENT = 0.10
-        if db_engine is not None:
-            try:
-                from ai_prophet_core.betting.db_schema import BettingPrediction
-                from ai_prophet_core.betting.db import get_session as core_session
-                with core_session(db_engine) as session:
-                    last_pred = (
-                        session.query(BettingPrediction)
-                        .filter(
-                            BettingPrediction.instance_name == INSTANCE_NAME,
-                            BettingPrediction.market_id == market_id,
-                        )
-                        .order_by(BettingPrediction.created_at.desc())
-                        .first()
-                    )
-                    if last_pred:
-                        max_dev = max(
-                            abs(yes_ask - float(last_pred.yes_ask)),
-                            abs(no_ask - float(last_pred.no_ask)),
-                        )
-                        if max_dev < MIN_PRICE_MOVEMENT:
-                            logger.info(
-                                "Skipping LLM for %s: price unchanged (%.1f¢ < %.0f¢ threshold). "
-                                "Last forecast: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
-                                ticker, max_dev * 100, MIN_PRICE_MOVEMENT * 100,
-                                float(last_pred.yes_ask), float(last_pred.no_ask), yes_ask, no_ask,
-                            )
-                            log_cycle_skip_for_models(
-                                db_engine,
-                                model_specs,
-                                market_id,
-                                yes_ask=yes_ask,
-                                no_ask=no_ask,
-                                reason=f"Skipped because the market price moved only {max_dev*100:.1f}c since last forecast (need {MIN_PRICE_MOVEMENT*100:.0f}c).",
-                                instance_name=INSTANCE_NAME,
-                            )
-                            all_market_prices[market_id] = (yes_ask, no_ask)
-                            continue
-            except Exception as e:
-                logger.warning("Failed to check price movement for %s: %s", ticker, e)
+        prev_prices = last_pred_prices.get(market_id)
+        if prev_prices is not None:
+            last_yes, last_no = prev_prices
+            max_dev = max(abs(yes_ask - last_yes), abs(no_ask - last_no))
+            if max_dev < MIN_PRICE_MOVEMENT:
+                logger.info(
+                    "Skipping LLM for %s: price unchanged (%.1f¢ < %.0f¢ threshold). "
+                    "Last forecast: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
+                    ticker, max_dev * 100, MIN_PRICE_MOVEMENT * 100,
+                    last_yes, last_no, yes_ask, no_ask,
+                )
+                log_cycle_skip_for_models(
+                    db_engine,
+                    model_specs,
+                    market_id,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                    reason=f"Skipped because the market price moved only {max_dev*100:.1f}c since last forecast (need {MIN_PRICE_MOVEMENT*100:.0f}c).",
+                    instance_name=INSTANCE_NAME,
+                )
+                all_market_prices[market_id] = (yes_ask, no_ask)
+                continue
 
         # Market passed all filters — queue for LLM analysis
         markets_to_analyze.append({
