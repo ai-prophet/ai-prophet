@@ -1475,13 +1475,30 @@ function SubmittedTradesTimelineTab({
     () => [...(modelRuns ?? [])].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
     [modelRuns]
   );
-  const tradesWithRuns = useMemo(() => matchTradesToRuns(chronTrades, chronRuns, row), [chronTrades, chronRuns, row]);
+  const syncedPosition = useMemo(() => syncedTimelinePosition(row), [row]);
+
+  // Compute seed position: if replaying visible trades from 0 doesn't match
+  // the synced position, the difference is the pre-cutoff position we need
+  // to seed with so "hold:" labels and mismatch detection are correct.
+  const seedSignedQty = useMemo(() => {
+    const naiveEnd = replayedTimelinePosition(chronTrades, 0);
+    const syncedQty = positionToSignedQty(syncedPosition);
+    const naiveQty = positionToSignedQty(naiveEnd);
+    return syncedQty - naiveQty;
+  }, [chronTrades, syncedPosition]);
+
+  const tradesWithRuns = useMemo(
+    () => matchTradesToRuns(chronTrades, chronRuns, row, seedSignedQty),
+    [chronTrades, chronRuns, row, seedSignedQty]
+  );
   const unmatchedRuns = useMemo(
     () => unmatchedTimelineRuns(tradesWithRuns, chronRuns, row.pending_orders ?? []),
     [tradesWithRuns, chronRuns, row.pending_orders]
   );
-  const replayedPosition = useMemo(() => replayedTimelinePosition(chronTrades), [chronTrades]);
-  const syncedPosition = useMemo(() => syncedTimelinePosition(row), [row]);
+  const replayedPosition = useMemo(
+    () => replayedTimelinePosition(chronTrades, seedSignedQty),
+    [chronTrades, seedSignedQty]
+  );
   const hasHistoryMismatch = useMemo(
     () => !sameTimelinePosition(replayedPosition, syncedPosition),
     [replayedPosition, syncedPosition]
@@ -1574,6 +1591,55 @@ function SubmittedTradesTimelineTab({
     return events.sort((a, b) => b.sortTs - a.sortTs);
   }, [tradesWithRuns, unmatchedRuns]);
 
+  // Collapse consecutive HOLD/SKIP runs into groups
+  type CollapsedEvent =
+    | SubmittedTimelineEvent
+    | { type: "run_group"; key: string; sortTs: number; decision: string; runs: ModelRun[] };
+
+  const collapsedEvents = useMemo<CollapsedEvent[]>(() => {
+    const result: CollapsedEvent[] = [];
+    let i = 0;
+    while (i < mergedEvents.length) {
+      const ev = mergedEvents[i];
+      if (ev.type === "run") {
+        const dec = ev.run.decision?.toUpperCase() ?? "";
+        const isCollapsible = isHoldLikeDecision(dec) || isSkipLikeDecision(dec);
+        if (isCollapsible) {
+          // Gather consecutive runs with the same decision category
+          const group: ModelRun[] = [ev.run];
+          let j = i + 1;
+          while (j < mergedEvents.length) {
+            const next = mergedEvents[j];
+            if (next.type !== "run") break;
+            const nextDec = next.run.decision?.toUpperCase() ?? "";
+            const sameCategory =
+              (isHoldLikeDecision(dec) && isHoldLikeDecision(nextDec)) ||
+              (isSkipLikeDecision(dec) && isSkipLikeDecision(nextDec));
+            if (!sameCategory) break;
+            group.push(next.run);
+            j++;
+          }
+          if (group.length > 1) {
+            result.push({
+              type: "run_group",
+              key: `run-group-${group[0].id}`,
+              sortTs: ev.sortTs,
+              decision: isHoldLikeDecision(dec) ? "HOLD" : "SKIP",
+              runs: group,
+            });
+          } else {
+            result.push(ev);
+          }
+          i = j;
+          continue;
+        }
+      }
+      result.push(ev);
+      i++;
+    }
+    return result;
+  }, [mergedEvents]);
+
   if (mergedEvents.length === 0) {
     return <div className="text-[10px] text-txt-muted">No timeline activity for this market</div>;
   }
@@ -1631,7 +1697,96 @@ function SubmittedTradesTimelineTab({
         {loadingRuns && (
           <div className="mb-2 text-[9px] text-txt-muted italic">Loading prediction history...</div>
         )}
-        {mergedEvents.map((event) => {
+        {collapsedEvents.map((event) => {
+          if (event.type === "run_group") {
+            const { runs, decision } = event;
+            const isHold = decision === "HOLD";
+            const groupExpandKey = -(runs[0].id + 2000000);
+            const isGroupExpanded = expandedTradeId === groupExpandKey;
+            const first = runs[0];
+            const last = runs[runs.length - 1];
+            const firstCtx = runDisplayContext.get(first.id);
+            const pYesRange = runs.map(r => runDisplayContext.get(r.id)?.pYes).filter((v): v is number => v != null);
+            const minP = pYesRange.length > 0 ? Math.min(...pYesRange) : null;
+            const maxP = pYesRange.length > 0 ? Math.max(...pYesRange) : null;
+            const pLabel = minP != null && maxP != null
+              ? minP === maxP ? `${(minP * 100).toFixed(0)}%` : `${(minP * 100).toFixed(0)}-${(maxP * 100).toFixed(0)}%`
+              : null;
+            return (
+              <div key={event.key} className="relative py-1.5">
+                <div className={`absolute left-[-12px] top-[8px] w-[7px] h-[7px] rounded-full border-2 border-t-bg z-10 ${
+                  isHold ? "bg-orange-400" : "bg-txt-muted"
+                }`} />
+                <button
+                  type="button"
+                  className="w-full text-left rounded px-1 -mx-1 transition-colors cursor-pointer hover:bg-t-panel-hover/40"
+                  onClick={() => setExpandedTradeId(isGroupExpanded ? null : groupExpandKey)}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="text-[9px] text-txt-muted font-mono whitespace-nowrap w-[100px] flex-shrink-0">
+                      {fmtTime(last.timestamp)}
+                    </div>
+                    <div className="flex-1 min-w-0 overflow-hidden">
+                      <div className="flex flex-wrap items-center gap-2.5 text-[10px] font-mono">
+                        <span className={`text-[9px] px-1 py-px rounded font-bold ${
+                          isHold ? "bg-yellow-900/30 text-yellow-500" : "bg-t-border/50 text-txt-muted"
+                        }`}>
+                          {runs.length}× {decision}
+                        </span>
+                        <span className={TIMELINE_MODEL_CLASS}>
+                          {shortModelName(first.model_name)}
+                        </span>
+                        {pLabel && <span className="text-accent">model: {pLabel}</span>}
+                        {row.yes_ask != null && <span className="text-txt-secondary">mkt: {(row.yes_ask * 100).toFixed(0)}c</span>}
+                        <span className="text-txt-muted text-[9px]">
+                          {fmtTime(last.timestamp)} — {fmtTime(first.timestamp)}
+                        </span>
+                        <span className="text-[8px] text-txt-muted ml-auto">{isGroupExpanded ? "▲" : "▼"}</span>
+                      </div>
+                      {isGroupExpanded && (
+                        <div className="mt-2 space-y-1 pl-2 border-l border-t-border/30">
+                          {runs.map((run) => {
+                            const ctx = runDisplayContext.get(run.id);
+                            const rPYes = ctx?.pYes ?? null;
+                            const rEdge = ctx?.edge ?? null;
+                            const innerExpanded = expandedTradeId === -run.id;
+                            const runHasDetail = !!(run.reasoning || (run.sources && run.sources.length > 0));
+                            return (
+                              <div key={run.id}>
+                                <button
+                                  type="button"
+                                  className={`w-full text-left text-[9px] font-mono text-txt-muted py-0.5 rounded px-1 -mx-1 ${runHasDetail ? "hover:bg-t-panel-hover/40 cursor-pointer" : ""}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!runHasDetail) return;
+                                    setExpandedTradeId(innerExpanded ? groupExpandKey : -run.id);
+                                  }}
+                                >
+                                  <span className="inline-flex items-center gap-2">
+                                    <span>{fmtTime(run.timestamp)}</span>
+                                    <span className={isHold ? "text-yellow-500" : "text-txt-muted"}>{decision}</span>
+                                    {rPYes != null && <span className="text-accent">model: {(rPYes * 100).toFixed(0)}%</span>}
+                                    {rEdge != null && <span className={pnlCls(rEdge)}>edge: {rEdge >= 0 ? "+" : ""}{(rEdge * 100).toFixed(0)}pp</span>}
+                                    {runHasDetail && <span className="text-[8px]">{innerExpanded ? "▲" : "▼"}</span>}
+                                  </span>
+                                </button>
+                                {innerExpanded && runHasDetail && (
+                                  <div className="pt-1 pb-1 pl-2">
+                                    <RationalePanel reasoning={run.reasoning} sources={run.sources ?? []} />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              </div>
+            );
+          }
+
           if (event.type === "run") {
             const { run } = event;
             const isExpanded = expandedTradeId === -run.id;
@@ -1908,8 +2063,18 @@ function syncedTimelinePosition(row: UnifiedMarketRow): TimelinePositionState {
   };
 }
 
-function replayedTimelinePosition(chronTrades: Trade[]): TimelinePositionState {
-  let currentSignedQuantity = 0;
+function positionToSignedQty(pos: TimelinePositionState): number {
+  if (!pos) return 0;
+  return pos.side === "YES" ? pos.quantity : -pos.quantity;
+}
+
+function signedQtyToPosition(qty: number): TimelinePositionState {
+  if (qty === 0) return null;
+  return { quantity: Math.abs(qty), side: qty > 0 ? "YES" : "NO" };
+}
+
+function replayedTimelinePosition(chronTrades: Trade[], initialSignedQty: number = 0): TimelinePositionState {
+  let currentSignedQuantity = initialSignedQty;
 
   chronTrades.forEach((trade) => {
     const qty = getExecutedTradeQuantity(trade);
@@ -1920,11 +2085,7 @@ function replayedTimelinePosition(chronTrades: Trade[]): TimelinePositionState {
     currentSignedQuantity += isSell ? -signedDelta : signedDelta;
   });
 
-  if (currentSignedQuantity === 0) return null;
-  return {
-    quantity: Math.abs(currentSignedQuantity),
-    side: currentSignedQuantity > 0 ? "YES" : "NO",
-  };
+  return signedQtyToPosition(currentSignedQuantity);
 }
 
 function sameTimelinePosition(a: TimelinePositionState, b: TimelinePositionState): boolean {
@@ -1942,9 +2103,10 @@ function matchTradesToRuns(
   chronTrades: Trade[],
   chronRuns: ModelRun[],
   row: UnifiedMarketRow,
+  initialSignedQty: number = 0,
 ): TimelineTradeItem[] {
   const matchWindowMs = 15 * 60 * 1000;
-  let currentSignedQuantity = 0;
+  let currentSignedQuantity = initialSignedQty;
 
   const items = chronTrades.map((trade) => {
     const pred = trade.prediction;
