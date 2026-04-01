@@ -280,13 +280,13 @@ class BettingEngine:
 
             if signal is None:
                 if not skip_due_to_constraints:
+                    reason = getattr(self.strategy, "last_skip_reason", None) or "No edge - within spread"
                     logger.info(
-                        "[BETTING] %s on %s: p_yes=%.3f → SKIP",
-                        source, market_id, p_yes,
+                        "[BETTING] %s on %s: p_yes=%.3f → SKIP (%s)",
+                        source, market_id, p_yes, reason,
                     )
-                    # Strategy returned None - mark as "No edge"
                     if prediction_id:
-                        self._update_prediction_skip_reason(prediction_id, "No edge - within spread")
+                        self._update_prediction_skip_reason(prediction_id, reason)
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
                 continue
 

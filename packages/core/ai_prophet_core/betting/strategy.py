@@ -81,6 +81,7 @@ class BettingStrategy(ABC):
 
     name: str = "base"
     _portfolio: PortfolioSnapshot | None = None
+    last_skip_reason: str | None = None
 
     @property
     def portfolio(self) -> PortfolioSnapshot | None:
@@ -158,13 +159,15 @@ class DefaultBettingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        # REMOVED: Spread filter check - we now trade on all markets
-        # spread = yes_ask + no_ask
-        # if not _is_tradeable_spread(spread, self.max_spread):
-        #     return None
+        self.last_skip_reason = None
+        spread = yes_ask + no_ask
+        if not _is_tradeable_spread(spread, self.max_spread):
+            self.last_skip_reason = f"Spread too wide ({spread:.2f} > {self.max_spread:.2f})"
+            return None
 
         within_spread, _lower_bound, _upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
         if within_spread:
+            self.last_skip_reason = "No edge - within spread"
             return None
 
         diff = p_yes - yes_ask
@@ -178,6 +181,7 @@ class DefaultBettingStrategy(BettingStrategy):
             price = no_ask
             side = "no"
         else:
+            self.last_skip_reason = "No edge - zero diff"
             return None
 
         # Subtract same-side holdings so we only buy the delta needed to reach
@@ -254,10 +258,11 @@ class RebalancingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        # REMOVED: Spread filter check - we now trade on all markets
-        # spread = yes_ask + no_ask
-        # if not _is_tradeable_spread(spread, self.max_spread):
-        #     return None
+        self.last_skip_reason = None
+        spread = yes_ask + no_ask
+        if not _is_tradeable_spread(spread, self.max_spread):
+            self.last_skip_reason = f"Spread too wide ({spread:.2f} > {self.max_spread:.2f})"
+            return None
 
         # If the model sits inside the widened market band, there is no
         # directional edge. Stay flat if we have no position; otherwise
@@ -266,6 +271,7 @@ class RebalancingStrategy(BettingStrategy):
         within_spread, lower_bound, upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
         if within_spread:
             if abs(current_pos) < self.min_trade:
+                self.last_skip_reason = "No edge - within spread"
                 return None
 
             side = "no" if current_pos > 0 else "yes"
