@@ -1598,6 +1598,7 @@ def run_cycle(args) -> None:
                         "[CYCLE] Another %s worker appears to be running. Skipping this cycle to prevent duplicates.",
                         INSTANCE_NAME
                     )
+                    db_engine.dispose()
                     return
         except Exception as e:
             logger.warning("[CYCLE] Could not check for duplicate workers: %s", e)
@@ -1609,6 +1610,8 @@ def run_cycle(args) -> None:
 
     if betting_engine is None:
         logger.error("Betting engine not available, skipping cycle")
+        if db_engine is not None:
+            db_engine.dispose()
         return
 
     # Get the Kalshi adapter from the engine to reuse auth
@@ -1777,6 +1780,7 @@ def run_cycle(args) -> None:
         if db_engine:
             log_system_event(db_engine, "WARNING", "No markets fetched from Kalshi", instance_name=INSTANCE_NAME)
             log_heartbeat(db_engine, message="cycle_end", instance_name=INSTANCE_NAME)
+            db_engine.dispose()
         if betting_engine:
             betting_engine.close()
         return
@@ -2044,6 +2048,8 @@ def run_cycle(args) -> None:
             logger.error("No predictors available, skipping cycle")
             if betting_engine:
                 betting_engine.close()
+            if db_engine is not None:
+                db_engine.dispose()
             return
 
         for mkt in markets_to_analyze:
@@ -2363,6 +2369,7 @@ def run_cycle(args) -> None:
         betting_engine.close()
     if db_engine is not None:
         log_heartbeat(db_engine, message="cycle_end", instance_name=INSTANCE_NAME)
+        db_engine.dispose()
 
     total_placed = sum(1 for r in total_results if r.order_placed)
     logger.info(
@@ -2496,14 +2503,15 @@ def main() -> None:
             traceback.print_exc()
             try:
                 from ai_prophet_core.betting.db import create_db_engine
-                db_engine = create_db_engine()
+                _err_engine = create_db_engine()
                 log_system_event(
-                    db_engine,
+                    _err_engine,
                     "ERROR",
                     f"Worker loop crashed: {type(e).__name__}: {e}",
                     instance_name=INSTANCE_NAME,
                 )
-                log_heartbeat(db_engine, message="cycle_error", instance_name=INSTANCE_NAME)
+                log_heartbeat(_err_engine, message="cycle_error", instance_name=INSTANCE_NAME)
+                _err_engine.dispose()
             except Exception:
                 pass
 
