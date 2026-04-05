@@ -158,6 +158,54 @@ class SearchStage(PipelineStage):
             success=True,
             data={"summaries": summaries},
         )
+    
+    def _clean_queries(self, queries: list[str]) -> list[str]:
+        """Strip, drop empty queries, and deduplicate while preserving order."""
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for query in queries:
+            if not isinstance(query, str):
+                continue
+            normalized = " ".join(query.split()).strip()
+            if not normalized:
+                continue
+            dedup_key = normalized.casefold()
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            cleaned.append(normalized)
+        return cleaned
+
+    def _deduplicate_results(
+    self,
+    results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Deduplicate search results by URL while preserving order."""
+        deduped: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+
+            url = result.get("url")
+            if not isinstance(url, str):
+                deduped.append(result)
+                continue
+
+            normalized_url = url.strip()
+            if not normalized_url:
+                deduped.append(result)
+                continue
+
+            dedup_key = normalized_url.casefold()
+            if dedup_key in seen_urls:
+                continue
+
+            seen_urls.add(dedup_key)
+            deduped.append(result)
+
+        return deduped
 
     def _execute_searches(self, queries: list[str]) -> list[dict[str, Any]]:
         """Execute web searches for queries.
@@ -169,7 +217,9 @@ class SearchStage(PipelineStage):
             List of search results with url, title, snippet, text
         """
         # Limit queries per market (configurable via config.yaml)
-        queries_to_run = queries[:self.max_queries_per_market]
+        
+        cleaned_queries = self._clean_queries(queries)
+        queries_to_run = cleaned_queries[:self.max_queries_per_market]
 
         if not queries_to_run:
             logger.debug("No queries to execute")
@@ -194,9 +244,9 @@ class SearchStage(PipelineStage):
             except Exception as e:
                 logger.warning(f"Search failed for query '{query}': {e}")
                 # Continue with other queries
-
-        logger.debug(f"Total search results: {len(all_results)}")
-        return all_results
+        deduped_results = self._deduplicate_results(all_results)
+        logger.debug( f"Search results deduplicated from {len(all_results)} to {len(deduped_results)}")
+        return deduped_results
 
     def _summarize_results(
         self,
