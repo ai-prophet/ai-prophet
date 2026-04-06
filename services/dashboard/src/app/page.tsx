@@ -35,7 +35,7 @@ import { AlertsPanel } from "@/components/AlertsPanel";
 import { UnifiedMarketTable } from "@/components/UnifiedMarketTable";
 import { OrderMonitoringPanel } from "@/components/OrderMonitoringPanel";
 
-const REFRESH_INTERVAL = 5_000;
+const REFRESH_INTERVAL = 60_000;
 const INSTANCE_STORAGE_KEY = "dashboard-instance-key";
 const DISPLAY_CUTOFF_MS = new Date("2026-03-24T18:00:00-05:00").getTime();
 const SYNTHETIC_BACKFILL_SOURCE_PREFIX = "kalshi:";

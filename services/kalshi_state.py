@@ -136,7 +136,7 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
             portfolio_value=_to_float(balance_data.get("portfolio_value")) / 100.0,
             updated_ts=_parse_ts(balance_data.get("updated_ts")),
             snapshot_ts=snapshot_ts,
-            raw_json=json.dumps(balance_data),
+            raw_json=None,
         )
     )
     results["balances"] += 1
@@ -149,6 +149,20 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
             continue
         current_tickers.add(ticker)
         signed_quantity = _to_float(raw_pos.get("position_fp"))
+        market_exposure = _to_float(raw_pos.get("market_exposure_dollars"))
+        resting_orders_count = int(round(_to_float(raw_pos.get("resting_orders_count"))))
+
+        # Skip snapshotting if nothing changed since the last snapshot.
+        # Unchanged zero-quantity positions (resolved markets) are the biggest
+        # source of wasted rows — 48 identical snapshots/day per dead market.
+        prev = previous_positions.get(ticker)
+        if prev is not None:
+            qty_unchanged = abs(signed_quantity - float(prev.signed_quantity or 0.0)) < 1e-9
+            exposure_unchanged = abs(market_exposure - float(prev.market_exposure or 0.0)) < 0.001
+            resting_unchanged = resting_orders_count == int(prev.resting_orders_count or 0)
+            if qty_unchanged and exposure_unchanged and resting_unchanged:
+                continue
+
         session.add(
             KalshiPositionSnapshot(
                 instance_name=instance_name,
@@ -157,15 +171,15 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
                 side="yes" if signed_quantity >= 0 else "no",
                 signed_quantity=signed_quantity,
                 quantity=abs(signed_quantity),
-                market_exposure=_to_float(raw_pos.get("market_exposure_dollars")),
+                market_exposure=market_exposure,
                 realized_pnl=_to_float(raw_pos.get("realized_pnl_dollars")),
                 fees_paid=_to_float(raw_pos.get("fees_paid_dollars")),
                 total_cost=_to_float(raw_pos.get("total_cost_dollars"), default=0.0) or None,
                 total_cost_shares=_to_float(raw_pos.get("total_cost_shares_fp"), default=0.0) or None,
                 total_traded=_to_float(raw_pos.get("total_traded_dollars"), default=0.0) or None,
-                resting_orders_count=int(round(_to_float(raw_pos.get("resting_orders_count")))),
+                resting_orders_count=resting_orders_count,
                 snapshot_ts=snapshot_ts,
-                raw_json=json.dumps(raw_pos),
+                raw_json=None,
             )
         )
         results["positions"] += 1
@@ -205,7 +219,7 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
                 total_traded=float(previous.total_traded or 0.0),
                 resting_orders_count=0,
                 snapshot_ts=snapshot_ts,
-                raw_json=json.dumps(reconciled_raw_pos),
+                raw_json=None,
             )
         )
         results["positions"] += 1
@@ -291,7 +305,7 @@ def record_kalshi_state(session, adapter, instance_name: str, *, snapshot_ts: da
                 created_ts=_parse_ts(raw_order.get("created_time")),
                 last_update_ts=last_update_ts,
                 captured_at=snapshot_ts,
-                raw_json=json.dumps(raw_order),
+                raw_json=None,
             )
         )
         results["orders"] += 1

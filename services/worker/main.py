@@ -2235,14 +2235,27 @@ def run_cycle(args) -> None:
                     strategy_metadata = None
                     skip_reason = None
 
+                # Keep only fields not already in betting_predictions.
+                # p_yes, yes_ask, no_ask, skip_reason are stored there.
+                run_metadata: dict[str, Any] = {}
+                if pred.get("reasoning"):
+                    run_metadata["reasoning"] = pred["reasoning"]
+                if pred.get("analysis"):
+                    run_metadata["analysis"] = pred["analysis"]
+                if strategy_metadata:
+                    run_metadata["strategy"] = strategy_metadata
+                # sources can be large — keep titles/URLs but drop full text excerpts
+                sources = pred.get("sources", [])
+                if sources:
+                    run_metadata["sources"] = [
+                        {k: v for k, v in s.items() if k in ("title", "url", "source", "name")}
+                        if isinstance(s, dict) else s
+                        for s in sources
+                    ]
+
                 save_model_run(
                     db_engine, ms, market_id, decision, pred.get("confidence"),
-                    metadata={"p_yes": pred["p_yes"], "reasoning": pred.get("reasoning", ""),
-                              "analysis": pred.get("analysis", {}),
-                              "sources": pred.get("sources", []),
-                              "yes_ask": yes_ask, "no_ask": no_ask,
-                              "strategy": strategy_metadata,
-                              "skip_reason": skip_reason},
+                    metadata=run_metadata or None,
                     instance_name=INSTANCE_NAME,
                 )
 
