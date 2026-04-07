@@ -15,7 +15,7 @@ def test_engine_processes_forecasts_and_places_orders():
     db_engine = create_engine("sqlite:///:memory:")
     engine = BettingEngine(
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
 
@@ -65,7 +65,7 @@ def test_engine_with_custom_strategy():
     engine = BettingEngine(
         strategy=FixedBetStrategy(),
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
 

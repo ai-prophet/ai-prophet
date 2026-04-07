@@ -29,12 +29,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PipelineResult:
-    """Output of a pipeline execution.
-
-    Always contains intents. Optionally contains per-stage reasoning
-    (controlled by publish_reasoning flag on execute).
-    """
+    """Output of a pipeline execution."""
     intents: list[dict[str, Any]]
+    forecasts: dict[str, dict[str, Any]] | None = None
     reasoning: dict[str, Any] | None = None
 
 
@@ -106,9 +103,6 @@ class AgentPipeline:
 
         logger.debug(f"Pipeline config: max_markets={max_markets}, min_size=${min_size}, "
                      f"search={max_queries}q×{max_results}r")
-
-        # Optional callback fired after forecast stage with per-market results
-        self.on_forecast: Callable[..., None] | None = self.config.get("on_forecast")
 
         # Initialize stages
         self.stages: list[PipelineStage] = [
@@ -183,14 +177,6 @@ class AgentPipeline:
                 # Log stage result
                 self._log_stage_result(stage.name, result, tick_ctx)
 
-                # Fire on_forecast callback after forecast stage
-                # Wrapped in its own try/except — live betting will never break the pipeline
-                if stage.name == "forecast" and callable(self.on_forecast) and result.success:
-                    try:
-                        self._fire_forecast_hook(result, tick_ctx)
-                    except Exception as hook_err:
-                        logger.warning(f"on_forecast hook failed (non-fatal): {hook_err}")
-
                 # Store result
                 stage_results[stage.name] = result
 
@@ -221,11 +207,16 @@ class AgentPipeline:
 
         logger.info(f"Pipeline execution complete: {len(intents)} intents")
 
+        forecast_result = stage_results.get("forecast")
+        forecasts = None
+        if forecast_result and forecast_result.success:
+            forecasts = forecast_result.data.get("forecasts")
+
         reasoning = None
         if publish_reasoning:
             reasoning = _extract_reasoning(stage_results, tick_ctx)
 
-        return PipelineResult(intents=intents, reasoning=reasoning)
+        return PipelineResult(intents=intents, forecasts=forecasts, reasoning=reasoning)
 
     def close(self) -> None:
         """Release any underlying client resources (HTTP pools, etc)."""
@@ -248,41 +239,6 @@ class AgentPipeline:
                 close()
         except Exception:
             pass
-
-    def _fire_forecast_hook(
-        self,
-        result: StageResult,
-        tick_ctx: TickContext,
-    ) -> None:
-        """Fire the on_forecast callback for each forecasted market.
-
-        The callback receives (tick_ts, market_id, p_yes, yes_ask, no_ask,
-        question) for each market with a forecast. Errors are logged but
-        never propagate — betting must not break the pipeline.
-        """
-        callback = self.on_forecast
-        if callback is None:
-            return
-        forecasts = result.data.get("forecasts", {})
-        for market_id, forecast in forecasts.items():
-            market_info = tick_ctx.get_candidate(market_id)
-            if not market_info:
-                continue
-            try:
-                callback(
-                    tick_ts=tick_ctx.tick_ts,
-                    market_id=market_id,
-                    p_yes=forecast["p_yes"],
-                    yes_ask=market_info.yes_ask,
-                    no_ask=market_info.no_ask,
-                    question=market_info.question,
-                    cash=tick_ctx.cash,
-                    equity=tick_ctx.equity,
-                    total_pnl=tick_ctx.total_pnl,
-                    positions=tick_ctx.positions,
-                )
-            except Exception as e:
-                logger.warning(f"on_forecast hook error for {market_id}: {e}")
 
     def _log_stage_result(
         self,

@@ -188,13 +188,14 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
 
     runner = ExperimentRunner(
         api_url=api_url,
+        api_key=creds.server_api_key,
         experiment_slug=slug,
         models=model_configs,
         config=config,
         n_ticks=max_ticks,
         starting_cash=starting_cash,
         trace_dir=trace_path,
-        build_pipeline=_make_pipeline_builder(creds, client_config, verbose, api_url, engine),
+        build_pipeline=_make_pipeline_builder(creds, client_config, verbose, api_url),
         publish_reasoning=publish_reasoning,
         betting_engine=engine,
         client_config=client_config,
@@ -247,13 +248,13 @@ def _get_betting_engine(strategy_name: str = "default"):
         engine = BettingEngine(
             strategy=strategy,
             db_engine=db_engine,
-            dry_run=settings.dry_run,
+            paper=settings.paper,
             kalshi_config=settings.kalshi,
             enabled=settings.enabled,
         )
         click.echo(
             f"[BETTING] Engine ENABLED — strategy={engine.strategy.name}, "
-            f"dry_run={settings.dry_run}"
+            f"paper={settings.paper}"
         )
         _engine_holder["engine"] = engine
         return engine
@@ -268,13 +269,8 @@ def _make_pipeline_builder(
     client_config: ClientConfig,
     verbose: bool,
     api_url: str,
-    betting_engine=None,
 ):
-    """Return a callable that builds an AgentPipeline for a participant config.
-
-    When a betting engine is provided, every pipeline gets an ``on_forecast``
-    callback that feeds predictions into the engine for bet placement.
-    """
+    """Return a callable that builds an AgentPipeline for a participant config."""
     def builder(participant_cfg: dict):
         model_spec = participant_cfg["model"]
         provider, model_name = _split_model_spec(model_spec)
@@ -308,46 +304,6 @@ def _make_pipeline_builder(
             "max_markets": client_config.pipeline.max_markets,
             "min_size_usd": client_config.pipeline.min_size_usd,
         }
-
-        # Wire betting engine as on_forecast callback for all participants
-        if betting_engine is not None:
-            from ai_prophet_core.betting.strategy import PortfolioSnapshot
-
-            def on_forecast_cb(
-                tick_ts, market_id, p_yes, yes_ask, no_ask, question,
-                cash=None, equity=None, total_pnl=None, positions=(),
-                _source=model_spec, _engine=betting_engine,
-            ):
-                portfolio = None
-                if cash is not None:
-                    from decimal import Decimal
-                    mkt_pos_shares = Decimal("0")
-                    mkt_pos_side = None
-                    for pos in positions:
-                        if pos.market_id == market_id:
-                            mkt_pos_shares = pos.shares
-                            mkt_pos_side = pos.side
-                            break
-                    portfolio = PortfolioSnapshot(
-                        cash=cash,
-                        equity=equity,
-                        total_pnl=total_pnl,
-                        position_count=len(positions),
-                        market_position_shares=mkt_pos_shares,
-                        market_position_side=mkt_pos_side,
-                    )
-                _engine.on_forecast(
-                    tick_ts=tick_ts,
-                    market_id=market_id,
-                    p_yes=p_yes,
-                    yes_ask=yes_ask,
-                    no_ask=no_ask,
-                    question=question,
-                    source=_source,
-                    portfolio=portfolio,
-                )
-
-            pipeline_config["on_forecast"] = on_forecast_cb
 
         pipeline = AgentPipeline(
             llm_client=llm_client,

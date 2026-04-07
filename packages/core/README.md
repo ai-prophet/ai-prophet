@@ -4,46 +4,135 @@
 [![PyPI: ai-prophet-core](https://img.shields.io/badge/PyPI-ai--prophet--core-blue.svg)](https://pypi.org/project/ai-prophet-core/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ai-prophet/ai-prophet/blob/main/LICENSE)
 
-Typed SDK for interacting with the Prophet Arena API.
-
-## Install
-
-```bash
-python -m pip install ai-prophet-core
-```
-
-For local development from this repository:
+SDK for Prophet Arena. Read prediction markets, run benchmark experiments,
+and place trades on Kalshi.
 
 ```bash
-python -m pip install -e packages/core
+pip install ai-prophet-core
 ```
 
-## Live Betting
+## Browse Markets
 
-`ai-prophet-core` also ships `ai_prophet_core.betting` for forecast aggregation,
-order routing, and local persistence. The public API is explicit: importing the module
-does not enable trading or load dotenv files. Callers opt in by constructing a
-`BettingEngine` directly or by loading `LiveBettingSettings` from the environment.
-
-Common environment variables:
-
-- `LIVE_BETTING_ENABLED` for CLI-side enablement
-- `LIVE_BETTING_DRY_RUN` with `true` as the safe default
-- `KALSHI_API_KEY_ID`
-- `KALSHI_PRIVATE_KEY_B64` for the base64-encoded Kalshi private key
-- `KALSHI_BASE_URL` to override the default Kalshi endpoint
-- `DATABASE_URL` to override the default local SQLite database
-
-If you want dotenv-backed local development, call `LiveBettingSettings.from_env()`.
-That helper will honor `LIVE_BETTING_DOTENV_PATH` or `LIVE_BETTING_LOAD_DOTENV=true`
-when it reads process configuration.
-
-## Quickstart
+Fetch the current market snapshot without creating an experiment or claiming
+a tick. Returns Prophet Arena's curated universe (liquid markets filtered by
+volume, quote freshness, and time to resolution).
 
 ```python
 from ai_prophet_core import ServerAPIClient
 
-client = ServerAPIClient(base_url="https://ai-prophet-core-api-998105805337.us-central1.run.app")
-health = client.health_check()
-print(health.status)
+api = ServerAPIClient(
+    base_url="https://ai-prophet-core-api-998105805337.us-central1.run.app",
+    api_key="prophet_...",
+)
+
+snapshot = api.get_market_snapshot()
+for market in snapshot.markets:
+    print(f"{market.market_id}: {market.question}")
+    print(f"  bid={market.quote.best_bid} ask={market.quote.best_ask}")
+```
+
+## Run a Benchmark Experiment
+
+Tick-based experiment with deterministic scoring. Claim ticks, submit intents,
+finalize. The server owns execution and scoring.
+
+```python
+from ai_prophet_core import ServerAPIClient
+from ai_prophet_core.arena import BenchmarkSession
+
+api = ServerAPIClient(base_url="...", api_key="...")
+session = BenchmarkSession(api)
+session.create_experiment(
+    slug="my-agent-v1",
+    config_hash="sha256:abc",
+    config_json={"description": "test run"},
+    n_ticks=24,
+)
+session.upsert_participant(model="custom:my-agent")
+
+while True:
+    lease = session.claim_tick()
+    if not lease.available:
+        if lease.reason == "experiment_completed":
+            break
+        time.sleep(lease.retry_after_sec or 15)
+        continue
+
+    candidates = session.get_candidates(lease)
+    portfolio = session.get_portfolio(participant_idx=0)
+
+    # Your agent logic here
+    intents = my_agent(candidates, portfolio)
+
+    session.submit_intents(lease, participant_idx=0, intents=intents)
+    session.finalize(lease, participant_idx=0)
+    session.complete_tick(lease)
+```
+
+## Place a Trade on Kalshi
+
+Direct trade execution. Routes to paper (dry-run simulated fill) or live
+Kalshi based on the `dry_run` flag.
+
+```python
+from ai_prophet_core.betting import BettingEngine
+
+engine = BettingEngine(paper=True)
+
+# Option A: you decide side and size
+result = engine.make_trade("kalshi:TICKER", side="yes", shares=10, price=0.65)
+
+# Option B: strategy decides from your probability forecast
+result = engine.trade_from_forecast(
+    market_id="kalshi:TICKER",
+    p_yes=0.72,
+    yes_ask=0.65,
+    no_ask=0.37,
+)
+```
+
+Set `dry_run=False` for real orders. Requires `KALSHI_API_KEY_ID` and
+`KALSHI_PRIVATE_KEY_B64` environment variables.
+
+## Submit Forecasts
+
+Submit probability predictions to the Prophet Arena forecast leaderboard.
+
+```python
+api.submit_forecast(predictions=[
+    {"market_ticker": "TICKER-123", "p_yes": 0.72, "rationale": "Based on..."},
+])
+```
+
+## MCP Server
+
+Exposes all of the above as MCP tools for Claude Desktop, Cursor, etc.
+
+```bash
+pip install ai-prophet-core[mcp]
+prophet-mcp
+```
+
+Tools: `health_check`, `create_experiment`, `add_participant`, `claim_tick`,
+`get_markets`, `submit_trades`, `finalize_tick`, `get_portfolio`,
+`get_reasoning`, `get_current_markets`, `forecast_to_trade`, `place_trade`,
+`submit_forecast`.
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PA_SERVER_URL` | No | Override default API URL |
+| `PA_SERVER_API_KEY` | Yes (for authenticated endpoints) | Prophet Arena API key |
+| `KALSHI_API_KEY_ID` | For live trading | Kalshi API key ID |
+| `KALSHI_PRIVATE_KEY_B64` | For live trading | Base64-encoded Kalshi private key |
+| `KALSHI_BASE_URL` | No | Override default Kalshi endpoint |
+| `LIVE_BETTING_ENABLED` | No | Enable betting engine in CLI |
+| `LIVE_BETTING_DRY_RUN` | No | Dry-run mode (default: true) |
+
+## Development
+
+```bash
+pip install -e packages/core
+pytest packages/core/tests/
 ```

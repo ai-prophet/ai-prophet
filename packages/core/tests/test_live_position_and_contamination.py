@@ -106,7 +106,7 @@ def _make_engine(db_engine, instance_name="Haifeng", starting_cash=10000.0, stra
     engine = BettingEngine(
         strategy=strategy or RebalancingStrategy(),
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
         instance_name=instance_name,
         starting_cash=starting_cash,
@@ -370,7 +370,7 @@ def test_default_strategy_skips_when_at_target(db_engine):
 # ── Test 5: DRY_RUN cash uses starting_cash ────────────────────────
 
 
-def test_dry_run_cash_uses_starting_cash(db_engine):
+def test_paper_cash_uses_starting_cash(db_engine):
     """DRY_RUN mode should compute cash from starting_cash, not Kalshi API."""
     _seed_orders(db_engine, [
         {"instance_name": "Haifeng", "ticker": "KXTEST-26APR01", "side": "yes",
@@ -389,7 +389,7 @@ def test_dry_run_cash_uses_starting_cash(db_engine):
     # and returned $0 for a DRY_RUN account)
 
 
-def test_dry_run_cash_blocks_buy_when_exhausted(db_engine):
+def test_paper_cash_blocks_buy_when_exhausted(db_engine):
     """When DRY_RUN cash is exhausted, engine should reject BUY orders."""
     # Spend almost all of the $100 starting cash
     _seed_orders(db_engine, [

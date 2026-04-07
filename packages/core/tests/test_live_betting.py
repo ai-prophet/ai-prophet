@@ -50,7 +50,7 @@ def test_live_betting_settings_from_env_prefers_explicit_private_key_name(monkey
 
     assert settings == LiveBettingSettings(
         enabled=True,
-        dry_run=False,
+        paper=False,
         kalshi=KalshiConfig(
             api_key_id="key-id",
             private_key_base64="new-key",
@@ -119,15 +119,13 @@ def test_engine_disabled_returns_empty():
     assert results == []
 
 
-def test_engine_on_forecast_disabled_returns_none():
+def test_trade_from_forecast_disabled_returns_none():
     engine = BettingEngine(enabled=False)
-    result = engine.on_forecast(
-        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+    result = engine.trade_from_forecast(
         market_id="kalshi:TEST-MARKET",
         p_yes=0.72,
         yes_ask=0.55,
         no_ask=0.45,
-        question="Test market?",
     )
     assert result is None
 
@@ -136,7 +134,7 @@ def test_engine_processes_forecast_and_places_order(monkeypatch):
     db_engine = create_engine("sqlite:///:memory:")
     engine = BettingEngine(
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
 
@@ -171,7 +169,7 @@ def test_engine_skips_when_strategy_returns_none(monkeypatch):
     db_engine = create_engine("sqlite:///:memory:")
     engine = BettingEngine(
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
 
@@ -200,7 +198,7 @@ def test_engine_with_custom_strategy():
     engine = BettingEngine(
         strategy=AlwaysBetYes(),
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
 
@@ -232,7 +230,7 @@ def test_engine_logs_to_db():
     db_engine = create_engine("sqlite:///:memory:")
     engine = BettingEngine(
         db_engine=db_engine,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
 
@@ -268,7 +266,7 @@ def test_engine_logs_to_db():
 
 def test_engine_no_db_works():
     """Engine works fine without a DB engine (no persistence)."""
-    engine = BettingEngine(db_engine=None, dry_run=True, enabled=True)
+    engine = BettingEngine(db_engine=None, paper=True, enabled=True)
 
     mock_adapter = Mock()
     mock_adapter.submit_order.return_value = Mock(
@@ -350,7 +348,7 @@ def test_parse_order_pending_returns_pending():
 
 def test_poll_order_fills_after_retries(monkeypatch):
     """Engine should poll pending orders and detect fill."""
-    engine = BettingEngine(db_engine=None, dry_run=False, enabled=True)
+    engine = BettingEngine(db_engine=None, paper=False, enabled=True)
 
     # submit_order returns PENDING
     mock_adapter = Mock()
@@ -417,7 +415,7 @@ def test_strategy_receives_portfolio():
     engine = BettingEngine(
         strategy=PortfolioAwareStrategy(),
         db_engine=None,
-        dry_run=True,
+        paper=True,
         enabled=True,
     )
     mock_adapter = Mock()
@@ -467,7 +465,7 @@ def test_max_markets_per_tick_caps_orders():
     engine = BettingEngine(
         strategy=AlwaysBet(),
         db_engine=None,
-        dry_run=True,
+        paper=True,
         enabled=True,
         max_markets_per_tick=2,
     )

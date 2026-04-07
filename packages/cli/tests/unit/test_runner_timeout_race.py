@@ -4,6 +4,8 @@ import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+from ai_prophet_core.arena import TickLease
+
 from ai_prophet.trade.runner import ExperimentRunner
 
 
@@ -44,19 +46,23 @@ def test_process_tick_timeout_ignores_late_finalize(monkeypatch):
         models=[],
         build_pipeline=None,
     )
-    runner.api = api
-    runner.experiment_id = "exp-1"
+    runner.session.api = api
+    runner.session.experiment_id = "exp-1"
     runner.participants = {0: {"model": "openai:gpt-5", "rep": 0, "participant_idx": 0}}
 
-    def late_participant_finalize(idx: int, tick_id: str, *_args):
+    lease = TickLease(
+        available=True,
+        tick_id="2026-03-01T12:00:00+00:00",
+        candidate_set_id="snap-1",
+    )
+
+    def late_participant_finalize(idx: int, _lease: TickLease, *_args):
         time.sleep(0.05)
-        runner._finalize(idx, tick_id, "COMPLETED")
+        runner._finalize(idx, lease, "COMPLETED")
 
     monkeypatch.setattr("ai_prophet.trade.runner.PARTICIPANT_TICK_BUDGET_SEC", 0.01)
     monkeypatch.setattr(runner, "_process_participant", late_participant_finalize)
 
-    runner._process_tick("2026-03-01T12:00:00+00:00", "snap-1")
+    runner._process_tick(lease)
 
-    # TIMEOUT should be persisted; late COMPLETED is dropped by timeout guard.
     assert finalize_calls == [(0, "TIMEOUT")]
-

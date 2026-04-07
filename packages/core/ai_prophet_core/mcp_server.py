@@ -25,12 +25,14 @@ DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
 mcp = FastMCP(
     "Prophet Arena",
     instructions=(
-        "You are connected to Prophet Arena, a benchmark for trading on real "
-        "prediction markets. Use these tools to create experiments, browse "
-        "live markets, submit trades, and check results. "
-        "Typical workflow: health_check -> create_experiment -> add_participant "
-        "-> claim_tick -> get_markets -> submit_trades -> finalize_tick -> "
-        "(repeat). Each tick is a 15-minute decision window."
+        "You are connected to Prophet Arena, a platform for trading on real "
+        "prediction markets. There are two modes:\n\n"
+        "BENCHMARK MODE (evaluating models): health_check -> create_experiment "
+        "-> add_participant -> claim_tick -> get_markets -> submit_trades -> "
+        "finalize_tick -> (repeat). Each tick is a 15-minute decision window.\n\n"
+        "AGENT MODE (quick exploration): get_current_markets to browse markets, "
+        "forecast_to_trade to bet from a probability, place_trade for direct "
+        "execution, submit_forecast for the leaderboard."
     ),
 )
 
@@ -267,6 +269,130 @@ def get_reasoning(
     with _get_client() as api:
         resp = api.get_reasoning(experiment_id, participant_idx, limit)
         return _model_to_dict(resp)
+
+
+# ---------------------------------------------------------------------------
+# Agent-builder tools (no benchmark tick required)
+# ---------------------------------------------------------------------------
+
+@mcp.tool
+def get_current_markets() -> dict:
+    """Fetch current prediction markets without creating an experiment.
+
+    Returns Prophet Arena's curated market universe: liquid, tradeable
+    markets filtered by volume, quote freshness, and time to resolution.
+    This is NOT every market on every exchange.
+    """
+    with _get_client() as api:
+        resp = api.get_market_snapshot()
+        markets = []
+        for m in resp.markets:
+            markets.append({
+                "market_id": m.market_id,
+                "question": m.question,
+                "description": m.description,
+                "resolution_time": m.resolution_time.isoformat(),
+                "topic": m.topic,
+                "best_bid": m.quote.best_bid,
+                "best_ask": m.quote.best_ask,
+                "volume_24h": m.quote.volume_24h,
+            })
+        return {
+            "snapshot_id": resp.snapshot_id,
+            "data_as_of_ts": resp.data_as_of_ts.isoformat(),
+            "market_count": resp.market_count,
+            "markets": markets,
+        }
+
+
+@mcp.tool
+def submit_forecast(predictions: list[dict]) -> dict:
+    """Submit probability predictions to the forecast leaderboard.
+
+    Each prediction needs: market_ticker, p_yes (0-1), rationale (optional).
+    Team is resolved from the API key.
+    """
+    with _get_client() as api:
+        return _model_to_dict(api.submit_forecast(predictions))
+
+
+# ---------------------------------------------------------------------------
+# Live betting tools (uses BettingEngine)
+# ---------------------------------------------------------------------------
+
+def _get_betting_engine():
+    """Lazy-create a BettingEngine from env vars."""
+    from .betting import BettingEngine, LiveBettingSettings
+
+    settings = LiveBettingSettings.from_env()
+    return BettingEngine(paper=settings.paper, enabled=settings.enabled)
+
+
+def _bet_result_to_dict(result) -> dict:
+    d: dict = {
+        "market_id": result.market_id,
+        "order_placed": result.order_placed,
+    }
+    if result.signal:
+        d["side"] = result.signal.side
+        d["shares"] = result.signal.shares
+        d["price"] = result.signal.price
+    if result.status:
+        d["status"] = result.status
+    if result.error:
+        d["error"] = result.error
+    return d
+
+
+@mcp.tool
+def forecast_to_trade(
+    market_id: str,
+    p_yes: float,
+    yes_ask: float,
+    no_ask: float,
+) -> dict:
+    """Place a bet based on a probability forecast.
+
+    The betting strategy decides side and size. Routes to paper trade
+    or live Kalshi based on engine config.
+
+    Args:
+        market_id: Market identifier (e.g. "kalshi:NASDAQ-100-GT5K").
+        p_yes: Your probability estimate that YES resolves (0-1).
+        yes_ask: Current ask price for YES contracts (0-1).
+        no_ask: Current ask price for NO contracts (0-1).
+    """
+    engine = _get_betting_engine()
+    result = engine.trade_from_forecast(
+        market_id=market_id, p_yes=p_yes, yes_ask=yes_ask, no_ask=no_ask,
+    )
+    if result is None:
+        return {"market_id": market_id, "action": "SKIP", "reason": "strategy passed"}
+    return _bet_result_to_dict(result)
+
+
+@mcp.tool
+def place_trade(
+    market_id: str,
+    side: str,
+    shares: int,
+    price: float,
+) -> dict:
+    """Place a trade directly, bypassing strategy evaluation.
+
+    Routes to paper trade or live Kalshi based on engine config.
+
+    Args:
+        market_id: Market identifier (e.g. "kalshi:NASDAQ-100-GT5K").
+        side: "yes" or "no".
+        shares: Number of contracts.
+        price: Limit price (0-1).
+    """
+    engine = _get_betting_engine()
+    result = engine.make_trade(
+        market_id=market_id, side=side, shares=shares, price=price,
+    )
+    return _bet_result_to_dict(result)
 
 
 # ---------------------------------------------------------------------------

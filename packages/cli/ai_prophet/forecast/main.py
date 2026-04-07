@@ -291,6 +291,8 @@ def _save_team_name_to_env(team_name: str) -> None:
     multiple=True,
     help="Only predict specific market ticker(s). Can be repeated.",
 )
+@click.option("--trade", is_flag=True, help="Also place bets via BettingEngine.")
+@click.option("--paper/--live", "paper", default=True, help="Paper trade (simulated) or live Kalshi.")
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
 def predict(
     events: str,
@@ -299,10 +301,20 @@ def predict(
     output: str,
     timeout: int,
     ticker: tuple[str, ...],
+    trade: bool,
+    paper: bool,
     verbose: bool,
 ) -> None:
     """Collect predictions from an agent endpoint and produce a submission file."""
     _setup_logging(verbose)
+
+    betting_engine = None
+    if trade:
+        from ai_prophet_core.betting import BettingEngine
+
+        betting_engine = BettingEngine(paper=paper, enabled=True)
+        mode = "PAPER" if paper else "LIVE"
+        click.echo(f"[TRADE] Betting engine enabled ({mode})")
 
     if not agent_url and not local:
         raise click.ClickException("Provide --agent-url or --local <module.path>")
@@ -360,14 +372,32 @@ def predict(
                 resp.raise_for_status()
                 result = resp.json()
 
+            p_yes = result["p_yes"]
             predictions.append(
                 Prediction(
                     market_ticker=market_ticker,
-                    p_yes=result["p_yes"],
+                    p_yes=p_yes,
                     rationale=result.get("rationale"),
                 )
             )
-            click.echo(f"  {market_ticker}: p_yes={result['p_yes']:.3f}")
+            click.echo(f"  {market_ticker}: p_yes={p_yes:.3f}")
+
+            if betting_engine is not None:
+                yes_ask = float(event.get("yes_price", event.get("yes_ask", 0.5)))
+                no_ask = 1.0 - yes_ask
+                bet = betting_engine.trade_from_forecast(
+                    market_id=f"kalshi:{market_ticker}",
+                    p_yes=p_yes,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                    source="forecast-cli",
+                )
+                if bet and bet.order_placed:
+                    click.echo(f"    -> TRADE: {bet.signal.side} @ {bet.signal.price:.2f}")
+                elif bet:
+                    click.echo(f"    -> TRADE: skipped ({bet.error or 'no edge'})")
+                else:
+                    click.echo("    -> TRADE: skipped (no edge)")
         except Exception as e:
             logger.warning("Skipping %s: %s", market_ticker, e)
             click.echo(f"  {market_ticker}: SKIPPED ({e})")

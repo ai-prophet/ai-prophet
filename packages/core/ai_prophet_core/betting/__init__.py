@@ -4,10 +4,10 @@ Quick-start::
 
     from ai_prophet_core.betting import BettingEngine
 
-    # Paper trading (dry_run=True by default)
-    engine = BettingEngine(dry_run=True)
+    # Paper trading (default)
+    engine = BettingEngine(paper=True)
 
-    # Place a trade directly (paper or live based on dry_run):
+    # Place a trade directly (paper or live based on engine config):
     result = engine.make_trade("kalshi:NASDAQ-100-GT5K", side="yes", shares=10, price=0.65)
 
     # Or let the strategy decide from a forecast:

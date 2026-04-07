@@ -32,6 +32,7 @@ from .client_models import (
     ForecastSubmitRequest,
     ForecastSubmitResponse,
     HealthResponse,
+    MarketSnapshot,
     PlanRequest,
     PutPlanResponse,
     PortfolioResponse,
@@ -368,6 +369,27 @@ class ServerAPIClient:
             params["snapshot_id"] = snapshot_id
         response = self._get("/candidates", params=params)
         return self._parse_response(response, CandidatesResponse)
+
+    def get_market_snapshot(
+        self, as_of: datetime | None = None,
+    ) -> MarketSnapshot:
+        """Fetch a point-in-time snapshot of Prophet Arena's market universe.
+
+        Returns the curated set of prediction markets that Prophet Arena
+        tracks, filtered by eligibility criteria (volume, quote freshness,
+        time to resolution). This is NOT a raw exchange feed.
+
+        The server binds the response to the nearest available snapshot.
+        Check data_as_of_ts to see what you actually got vs. what you
+        requested.
+
+        Does not require a benchmark tick claim or experiment.
+        """
+        params: dict = {}
+        if as_of is not None:
+            params["as_of_ts"] = as_of.isoformat()
+        response = self._get("/candidates/asof", params=params)
+        return self._parse_response(response, MarketSnapshot)
 
     # --- Trade Submission -----------------------------------------------------
 
