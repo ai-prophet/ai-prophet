@@ -333,7 +333,7 @@ def _instance_float_setting(key: str, instance_name: str, default: float) -> flo
 
 
 def _display_baseline_for_instance(session, instance_name: str) -> dict[str, Any]:
-    initial_loaded = _instance_float_setting("WORKER_STARTING_CASH", instance_name, 10000.0)
+    initial_loaded = _instance_float_setting("WORKER_STARTING_CASH", instance_name, 500.0)
     hardcoded_starting_total = DISPLAY_BASELINE_OVERRIDES.get(instance_name)
 
     if hardcoded_starting_total is not None:
@@ -3806,7 +3806,7 @@ def get_comparison_models() -> dict[str, Any]:
     """
     engine = get_db()
     starting_cash = float(
-        os.getenv("COMPARISON_STARTING_CASH", os.getenv("WORKER_STARTING_CASH", "10000"))
+        os.getenv("COMPARISON_STARTING_CASH", os.getenv("WORKER_STARTING_CASH", "500"))
     )
     results: dict[str, Any] = {}
 
