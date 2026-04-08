@@ -160,7 +160,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
     click.echo(f"API: {api_url}")
 
     # If slug is completed or conflicts (different config), auto-bump.
-    api = ServerAPIClient(base_url=api_url)
+    api = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
     config_hash = compute_config_hash(config)
     try:
         resp = api.create_or_get_experiment(
@@ -195,7 +195,13 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
         n_ticks=max_ticks,
         starting_cash=starting_cash,
         trace_dir=trace_path,
-        build_pipeline=_make_pipeline_builder(creds, client_config, verbose, api_url),
+        build_pipeline=_make_pipeline_builder(
+            creds,
+            client_config,
+            verbose,
+            api_url,
+            creds.server_api_key,
+        ),
         publish_reasoning=publish_reasoning,
         betting_engine=engine,
         client_config=client_config,
@@ -224,12 +230,12 @@ def eval_run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publ
     _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose, strategy=strategy)
 
 
-_engine_holder: dict = {}
+_engine_holder: dict[str, object | None] = {}
 
 def _get_betting_engine(strategy_name: str = "default"):
     """Create or return the shared BettingEngine."""
-    if "engine" in _engine_holder:
-        return _engine_holder["engine"]
+    if strategy_name in _engine_holder:
+        return _engine_holder[strategy_name]
 
     try:
         from ai_prophet_core.betting import BettingEngine, LiveBettingSettings
@@ -239,7 +245,7 @@ def _get_betting_engine(strategy_name: str = "default"):
 
         if not settings.enabled:
             click.echo("[BETTING] Engine DISABLED (LIVE_BETTING_ENABLED=false)")
-            _engine_holder["engine"] = None
+            _engine_holder[strategy_name] = None
             return None
 
         db_engine = create_db_engine()
@@ -256,12 +262,12 @@ def _get_betting_engine(strategy_name: str = "default"):
             f"[BETTING] Engine ENABLED — strategy={engine.strategy.name}, "
             f"paper={settings.paper}"
         )
-        _engine_holder["engine"] = engine
+        _engine_holder[strategy_name] = engine
         return engine
     except Exception as e:
         click.echo(f"[BETTING] Engine FAILED to create: {type(e).__name__}: {e}", err=True)
         logger.warning("Betting engine unavailable: %s", e, exc_info=True)
-        _engine_holder["engine"] = None
+        _engine_holder[strategy_name] = None
         return None
 
 def _make_pipeline_builder(
@@ -269,6 +275,7 @@ def _make_pipeline_builder(
     client_config: ClientConfig,
     verbose: bool,
     api_url: str,
+    server_api_key: str | None,
 ):
     """Return a callable that builds an AgentPipeline for a participant config."""
     def builder(participant_cfg: dict):
@@ -295,7 +302,7 @@ def _make_pipeline_builder(
                 api_key=creds.brave_api_key,
                 config=client_config.search,
             )
-        api_client = ServerAPIClient(base_url=api_url)
+        api_client = ServerAPIClient(base_url=api_url, api_key=server_api_key)
 
         pipeline_config: dict = {
             "search_client": search_client,
@@ -326,7 +333,7 @@ def health(api_url, legacy_url):
     api_url = api_url or legacy_url or creds.server_url
 
     click.echo(f"Checking: {api_url}")
-    client = ServerAPIClient(api_url)
+    client = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
     try:
         resp = client.health_check()
         click.echo(f"Status:  {resp.status}")
@@ -350,7 +357,7 @@ def progress(experiment_id, api_url, legacy_url):
     creds = _load_runtime_credentials()
     api_url = api_url or legacy_url or creds.server_url
 
-    client = ServerAPIClient(api_url)
+    client = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
     try:
         p = client.get_progress(experiment_id)
         click.echo(f"Experiment: {p.experiment_id}")

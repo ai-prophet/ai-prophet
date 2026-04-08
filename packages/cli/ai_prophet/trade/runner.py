@@ -261,6 +261,16 @@ class ExperimentRunner:
         tick_ts = _parse_tick_id(tick_id)
 
         candidates_resp = self.session.get_candidates(lease)
+        candidate_set_id = candidates_resp.candidate_set_id
+        if not candidate_set_id:
+            raise RuntimeError("get_candidates returned no candidate_set_id")
+        bound_lease = TickLease(
+            available=lease.available,
+            tick_id=lease.tick_id,
+            candidate_set_id=candidate_set_id,
+            reason=lease.reason,
+            retry_after_sec=lease.retry_after_sec,
+        )
         candidate_markets = tuple(
             CandidateMarket.from_server_response(m.model_dump())
             for m in candidates_resp.markets
@@ -273,13 +283,13 @@ class ExperimentRunner:
             "tick_ts": tick_ts,
             "candidate_markets": candidate_markets,
             "data_asof": data_asof,
-            "candidate_set_id": candidates_resp.candidate_set_id,
+            "candidate_set_id": candidate_set_id,
         }
 
         workers = min(MAX_CONCURRENT_PARTICIPANTS, len(self.participants))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(self._process_participant, idx, lease, tick_shared): idx
+                pool.submit(self._process_participant, idx, bound_lease, tick_shared): idx
                 for idx in self.participants
             }
             done, not_done = wait(futures.keys(), timeout=PARTICIPANT_TICK_BUDGET_SEC)
@@ -289,7 +299,7 @@ class ExperimentRunner:
                 future.cancel()
                 self._mark_timed_out(idx, tick_id)
                 model = self.participants[idx].get("model", "unknown")
-                self._finalize(idx, lease, "TIMEOUT")
+                self._finalize(idx, bound_lease, "TIMEOUT")
                 logger.warning(
                     f"Participant {idx} ({model}) timed out on tick {tick_id} "
                     f"(budget={PARTICIPANT_TICK_BUDGET_SEC}s exceeded)"
@@ -300,7 +310,7 @@ class ExperimentRunner:
                 exc = future.exception()
                 if exc:
                     self._finalize(
-                        idx, lease, "FAILED",
+                        idx, bound_lease, "FAILED",
                         error_code="PIPELINE_ERROR",
                         error_detail=str(exc)[:1024],
                     )
@@ -334,8 +344,9 @@ class ExperimentRunner:
             return
 
         exp_id = self._require_experiment_id()
+        candidate_set_id = tick_shared["candidate_set_id"]
         plan_resp = self.session.api.put_plan(
-            exp_id, idx, tick_id, lease.candidate_set_id or "", plan_json=plan_json,
+            exp_id, idx, tick_id, candidate_set_id, plan_json=plan_json,
         )
         authoritative_plan = plan_resp.plan_json or plan_json
         already_persisted = plan_resp.already_persisted
@@ -376,7 +387,7 @@ class ExperimentRunner:
         """Run the agent pipeline and return a plan dict."""
         tick_id = lease.tick_id
         assert tick_id is not None
-        candidate_set_id = lease.candidate_set_id or ""
+        candidate_set_id = tick_shared["candidate_set_id"]
         tick_ts: datetime = tick_shared["tick_ts"]
         candidate_markets: tuple[CandidateMarket, ...] = tick_shared["candidate_markets"]
         market_ids = [m.market_id for m in candidate_markets]
@@ -470,26 +481,26 @@ class ExperimentRunner:
                 f"{exp_id}:{idx}",
                 publish_reasoning=True,
             )
+        except Exception as exc:
+            self._process_betting_forecasts(
+                tick_ts=tick_ts,
+                candidate_markets=candidate_markets,
+                forecasts=getattr(exc, "forecasts", None),
+                source=cfg["model"],
+            )
+            raise
         finally:
             # Pipeline holds HTTP clients; close them deterministically.
             try:
                 pipeline.close()
             except Exception:
                 pass
-        if self.betting_engine and result.forecasts:
-            market_prices = {
-                m.market_id: (m.yes_ask, m.no_ask)
-                for m in candidate_markets
-            }
-            try:
-                self.betting_engine.process_forecasts(
-                    tick_ts=tick_ts,
-                    forecasts={mid: f["p_yes"] for mid, f in result.forecasts.items()},
-                    market_prices=market_prices,
-                    source=cfg["model"],
-                )
-            except Exception as e:
-                logger.warning(f"Participant {idx}: betting engine failed (non-fatal): {e}")
+        self._process_betting_forecasts(
+            tick_ts=tick_ts,
+            candidate_markets=candidate_markets,
+            forecasts=result.forecasts,
+            source=cfg["model"],
+        )
 
         sorted_intents = prepare_intents(result.intents)
 
@@ -544,6 +555,42 @@ class ExperimentRunner:
                     idx,
                     result.rejected,
                 )
+
+    def _process_betting_forecasts(
+        self,
+        *,
+        tick_ts: datetime,
+        candidate_markets: tuple[CandidateMarket, ...],
+        forecasts: dict[str, dict[str, Any]] | None,
+        source: str,
+    ) -> None:
+        if not self.betting_engine or not forecasts:
+            return
+
+        market_prices = {
+            market.market_id: (market.yes_ask, market.no_ask)
+            for market in candidate_markets
+        }
+        normalized_forecasts = {}
+        for market_id, forecast in forecasts.items():
+            p_yes = forecast.get("p_yes")
+            if p_yes is None:
+                logger.warning("Skipping betting forecast for %s: missing p_yes", market_id)
+                continue
+            normalized_forecasts[market_id] = p_yes
+
+        if not normalized_forecasts:
+            return
+
+        try:
+            self.betting_engine.process_forecasts(
+                tick_ts=tick_ts,
+                forecasts=normalized_forecasts,
+                market_prices=market_prices,
+                source=source,
+            )
+        except Exception as e:
+            logger.warning("Betting engine failed (non-fatal): %s", e)
 
     def _finalize(
         self, idx: int, lease: TickLease, status: str, **kwargs,

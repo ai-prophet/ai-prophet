@@ -164,6 +164,9 @@ class BenchmarkSession:
         tick_id = lease.tick_id
         if tick_id is None:
             raise ValueError("TickLease has no tick_id")
+        candidate_set_id = lease.candidate_set_id
+        if not candidate_set_id:
+            raise ValueError("TickLease has no candidate_set_id")
 
         key_fn = idempotency_key_fn or _default_idempotency_key
         keyed_intents = []
@@ -180,7 +183,7 @@ class BenchmarkSession:
             experiment_id=exp_id,
             participant_idx=participant_idx,
             tick_id=tick_id,
-            candidate_set_id=lease.candidate_set_id or "",
+            candidate_set_id=candidate_set_id,
             intents=keyed_intents,
         )
         return SubmissionResult(

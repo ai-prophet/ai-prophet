@@ -285,6 +285,8 @@ def get_current_markets() -> dict:
     """
     with _get_client() as api:
         resp = api.get_market_snapshot()
+        requested_as_of_ts = resp.requested_asof_ts.isoformat()
+        data_as_of_ts = resp.data_asof_ts.isoformat()
         markets = []
         for m in resp.markets:
             markets.append({
@@ -299,7 +301,8 @@ def get_current_markets() -> dict:
             })
         return {
             "snapshot_id": resp.snapshot_id,
-            "data_as_of_ts": resp.data_as_of_ts.isoformat(),
+            "requested_as_of_ts": requested_as_of_ts,
+            "data_as_of_ts": data_as_of_ts,
             "market_count": resp.market_count,
             "markets": markets,
         }
@@ -323,9 +326,16 @@ def submit_forecast(predictions: list[dict]) -> dict:
 def _get_betting_engine():
     """Lazy-create a BettingEngine from env vars."""
     from .betting import BettingEngine, LiveBettingSettings
+    from .betting.db import create_db_engine
 
     settings = LiveBettingSettings.from_env()
-    return BettingEngine(paper=settings.paper, enabled=settings.enabled)
+    db_engine = create_db_engine() if settings.enabled else None
+    return BettingEngine(
+        db_engine=db_engine,
+        paper=settings.paper,
+        kalshi_config=settings.kalshi,
+        enabled=settings.enabled,
+    )
 
 
 def _bet_result_to_dict(result) -> dict:
@@ -342,6 +352,15 @@ def _bet_result_to_dict(result) -> dict:
     if result.error:
         d["error"] = result.error
     return d
+
+
+def _trade_status_response(market_id: str, *, status: str, reason: str) -> dict:
+    return {
+        "market_id": market_id,
+        "order_placed": False,
+        "status": status,
+        "reason": reason,
+    }
 
 
 @mcp.tool
@@ -363,11 +382,21 @@ def forecast_to_trade(
         no_ask: Current ask price for NO contracts (0-1).
     """
     engine = _get_betting_engine()
+    if not engine.enabled:
+        return _trade_status_response(
+            market_id,
+            status="DISABLED",
+            reason="betting engine disabled",
+        )
     result = engine.trade_from_forecast(
         market_id=market_id, p_yes=p_yes, yes_ask=yes_ask, no_ask=no_ask,
     )
     if result is None:
-        return {"market_id": market_id, "action": "SKIP", "reason": "strategy passed"}
+        return _trade_status_response(
+            market_id,
+            status="SKIP",
+            reason="strategy passed",
+        )
     return _bet_result_to_dict(result)
 
 
@@ -389,6 +418,12 @@ def place_trade(
         price: Limit price (0-1).
     """
     engine = _get_betting_engine()
+    if not engine.enabled:
+        return _trade_status_response(
+            market_id,
+            status="DISABLED",
+            reason="betting engine disabled",
+        )
     result = engine.make_trade(
         market_id=market_id, side=side, shares=shares, price=price,
     )

@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PipelineResult:
-    """Output of a pipeline execution."""
+    """Output of a pipeline execution.
+
+    ``forecasts`` contains the successful forecast-stage output so callers can
+    trigger side effects, such as betting, without re-running the stage.
+    """
     intents: list[dict[str, Any]]
     forecasts: dict[str, dict[str, Any]] | None = None
     reasoning: dict[str, Any] | None = None
@@ -142,7 +146,8 @@ class AgentPipeline:
             publish_reasoning: If True, include per-stage reasoning in result
 
         Returns:
-            PipelineResult with intents and optional reasoning
+            PipelineResult with intents, forecast-stage output, and optional
+            reasoning.
         """
         logger.info(f"Pipeline execution started for tick {tick_ctx.tick_ts}")
         logger.debug(f"Tick context: run_id={run_id}, candidates={len(tick_ctx.candidates)}, "
@@ -183,11 +188,21 @@ class AgentPipeline:
                 # Stop if stage failed critically
                 if not result.success:
                     logger.error(f"Stage {stage.name} failed: {result.error}")
-                    raise PipelineError(f"Stage '{stage.name}' failed: {result.error}")
+                    raise PipelineError(
+                        f"Stage '{stage.name}' failed: {result.error}",
+                        stage_name=stage.name,
+                        forecasts=_extract_forecasts(stage_results),
+                    )
 
+            except PipelineError:
+                raise
             except Exception as e:
                 logger.error(f"Stage {stage.name} raised exception: {e}", exc_info=True)
-                raise PipelineError(f"Stage '{stage.name}' raised exception: {e}") from e
+                raise PipelineError(
+                    f"Stage '{stage.name}' raised exception: {e}",
+                    stage_name=stage.name,
+                    forecasts=_extract_forecasts(stage_results),
+                ) from e
 
         # Extract trade intents from action stage
         action_result = stage_results.get("action")
@@ -207,10 +222,7 @@ class AgentPipeline:
 
         logger.info(f"Pipeline execution complete: {len(intents)} intents")
 
-        forecast_result = stage_results.get("forecast")
-        forecasts = None
-        if forecast_result and forecast_result.success:
-            forecasts = forecast_result.data.get("forecasts")
+        forecasts = _extract_forecasts(stage_results)
 
         reasoning = None
         if publish_reasoning:
@@ -320,8 +332,28 @@ class AgentPipeline:
 
 
 class PipelineError(Exception):
-    """Pipeline execution error."""
-    pass
+    """Pipeline execution error with any completed forecast-stage output."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage_name: str | None = None,
+        forecasts: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage_name = stage_name
+        self.forecasts = forecasts
+
+
+def _extract_forecasts(
+    stage_results: dict[str, StageResult],
+) -> dict[str, dict[str, Any]] | None:
+    forecast_result = stage_results.get("forecast")
+    if not forecast_result or not forecast_result.success:
+        return None
+    forecasts = forecast_result.data.get("forecasts")
+    return forecasts or None
 
 
 def _extract_reasoning(

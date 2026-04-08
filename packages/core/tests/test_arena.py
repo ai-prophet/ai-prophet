@@ -6,7 +6,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from ai_prophet_core.arena import BenchmarkSession, TickLease, SubmissionResult
+import pytest
+
+from ai_prophet_core.arena import BenchmarkSession, TickLease
 
 
 def _mock_api():
@@ -128,6 +130,22 @@ def test_submit_intents_custom_key_fn():
     assert submitted[0].idempotency_key == "custom:exp-1:0"
 
 
+def test_submit_intents_requires_candidate_set_id():
+    api = _mock_api()
+    session = BenchmarkSession(api)
+    session.experiment_id = "exp-1"
+
+    lease = TickLease(available=True, tick_id="tick-1", candidate_set_id=None)
+
+    from ai_prophet_core.client_models import TradeIntentRequest
+    intents = [
+        TradeIntentRequest(market_id="m1", action="BUY", side="YES", shares="100", idempotency_key=""),
+    ]
+
+    with pytest.raises(ValueError, match="candidate_set_id"):
+        session.submit_intents(lease, participant_idx=0, intents=intents)
+
+
 def test_finalize_calls_api():
     api = _mock_api()
     session = BenchmarkSession(api)
@@ -154,11 +172,8 @@ def test_complete_tick_calls_api():
 
 def test_require_experiment_id_raises_before_init():
     session = BenchmarkSession(_mock_api())
-    try:
+    with pytest.raises(RuntimeError, match="not initialized"):
         session._require_experiment_id()
-        assert False, "Should have raised"
-    except RuntimeError as e:
-        assert "not initialized" in str(e)
 
 
 def test_tick_lease_tick_ts_property():

@@ -39,6 +39,51 @@ def _setup_logging(verbose: bool = False):
     )
 
 
+def _coerce_price(event: dict, *keys: str) -> float | None:
+    for key in keys:
+        value = event.get(key)
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _extract_trade_prices(event: dict) -> tuple[float, float]:
+    yes_ask = _coerce_price(event, "yes_ask", "yes_price")
+    no_ask = _coerce_price(event, "no_ask", "no_price")
+
+    if yes_ask is None and no_ask is None:
+        raise ValueError("event missing yes/no ask prices")
+    if yes_ask is None:
+        yes_ask = 1.0 - no_ask
+    if no_ask is None:
+        no_ask = 1.0 - yes_ask
+
+    assert yes_ask is not None
+    assert no_ask is not None
+
+    for label, price in (("yes_ask", yes_ask), ("no_ask", no_ask)):
+        if not 0.0 <= price <= 1.0:
+            raise ValueError(f"{label} must be between 0 and 1, got {price}")
+
+    return yes_ask, no_ask
+
+
+def _create_betting_engine(*, paper: bool):
+    from ai_prophet_core.betting import BettingEngine, LiveBettingSettings
+    from ai_prophet_core.betting.db import create_db_engine
+
+    settings = LiveBettingSettings.from_env()
+    if not settings.enabled:
+        return None
+
+    return BettingEngine(
+        db_engine=create_db_engine(),
+        paper=paper,
+        kalshi_config=settings.kalshi,
+        enabled=settings.enabled,
+    )
+
+
 @click.group(name="forecast", invoke_without_command=True)
 @click.pass_context
 def cli(ctx: click.Context) -> None:
@@ -310,11 +355,16 @@ def predict(
 
     betting_engine = None
     if trade:
-        from ai_prophet_core.betting import BettingEngine
+        try:
+            betting_engine = _create_betting_engine(paper=paper)
+        except Exception as e:
+            raise click.ClickException(f"Failed to initialize betting engine: {e}") from e
 
-        betting_engine = BettingEngine(paper=paper, enabled=True)
-        mode = "PAPER" if paper else "LIVE"
-        click.echo(f"[TRADE] Betting engine enabled ({mode})")
+        if betting_engine is None:
+            click.echo("[TRADE] Betting engine disabled (LIVE_BETTING_ENABLED=false)")
+        else:
+            mode = "PAPER" if paper else "LIVE"
+            click.echo(f"[TRADE] Betting engine enabled ({mode})")
 
     if not agent_url and not local:
         raise click.ClickException("Provide --agent-url or --local <module.path>")
@@ -351,26 +401,31 @@ def predict(
 
     now = datetime.now(timezone.utc)
 
-    for event in events_data:
-        market_ticker = event.get("market_ticker", "unknown")
+    try:
+        for event in events_data:
+            market_ticker = event.get("market_ticker", "unknown")
 
-        close_str = event.get("close_time", "")
-        if close_str:
+            close_str = event.get("close_time", "")
+            if close_str:
+                try:
+                    close_time = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+                    if close_time <= now:
+                        click.echo(f"  {market_ticker}: SKIPPED (market closed at {close_str})")
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
             try:
-                close_time = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
-                if close_time <= now:
-                    click.echo(f"  {market_ticker}: SKIPPED (market closed at {close_str})")
-                    continue
-            except (ValueError, TypeError):
-                pass
-
-        try:
-            if local_predict:
-                result = local_predict(event)
-            else:
-                resp = requests.post(agent_url, json=event, timeout=timeout)
-                resp.raise_for_status()
-                result = resp.json()
+                if local_predict:
+                    result = local_predict(event)
+                else:
+                    resp = requests.post(agent_url, json=event, timeout=timeout)
+                    resp.raise_for_status()
+                    result = resp.json()
+            except Exception as e:
+                logger.warning("Skipping %s: %s", market_ticker, e)
+                click.echo(f"  {market_ticker}: SKIPPED ({e})")
+                continue
 
             p_yes = result["p_yes"]
             predictions.append(
@@ -382,9 +437,11 @@ def predict(
             )
             click.echo(f"  {market_ticker}: p_yes={p_yes:.3f}")
 
-            if betting_engine is not None:
-                yes_ask = float(event.get("yes_price", event.get("yes_ask", 0.5)))
-                no_ask = 1.0 - yes_ask
+            if betting_engine is None:
+                continue
+
+            try:
+                yes_ask, no_ask = _extract_trade_prices(event)
                 bet = betting_engine.trade_from_forecast(
                     market_id=f"kalshi:{market_ticker}",
                     p_yes=p_yes,
@@ -398,9 +455,14 @@ def predict(
                     click.echo(f"    -> TRADE: skipped ({bet.error or 'no edge'})")
                 else:
                     click.echo("    -> TRADE: skipped (no edge)")
-        except Exception as e:
-            logger.warning("Skipping %s: %s", market_ticker, e)
-            click.echo(f"  {market_ticker}: SKIPPED ({e})")
+            except Exception as e:
+                logger.warning("Trade skipped for %s: %s", market_ticker, e)
+                click.echo(f"    -> TRADE: skipped ({e})")
+    finally:
+        if betting_engine is not None:
+            close = getattr(betting_engine, "close", None)
+            if callable(close):
+                close()
 
     if not predictions:
         raise click.ClickException("No predictions collected — nothing to submit.")

@@ -380,7 +380,7 @@ class ServerAPIClient:
         time to resolution). This is NOT a raw exchange feed.
 
         The server binds the response to the nearest available snapshot.
-        Check data_as_of_ts to see what you actually got vs. what you
+        Check ``data_asof_ts`` to see what you actually got vs. what you
         requested.
 
         Does not require a benchmark tick claim or experiment.

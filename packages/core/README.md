@@ -71,8 +71,8 @@ while True:
 
 ## Place a Trade on Kalshi
 
-Direct trade execution. Routes to paper (dry-run simulated fill) or live
-Kalshi based on the `dry_run` flag.
+Direct trade execution. Routes to paper (simulated fill) or live
+Kalshi based on the `paper` flag.
 
 ```python
 from ai_prophet_core.betting import BettingEngine
@@ -91,7 +91,7 @@ result = engine.trade_from_forecast(
 )
 ```
 
-Set `dry_run=False` for real orders. Requires `KALSHI_API_KEY_ID` and
+Set `paper=False` for real orders. Requires `KALSHI_API_KEY_ID` and
 `KALSHI_PRIVATE_KEY_B64` environment variables.
 
 ## Submit Forecasts

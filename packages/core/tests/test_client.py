@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 
@@ -147,3 +149,43 @@ def test_health_check_raises_api_validation_error_on_schema_mismatch(monkeypatch
 
     with pytest.raises(APIValidationError, match="Invalid HealthResponse response payload"):
         client.health_check()
+
+
+def test_get_market_snapshot_passes_as_of_query(monkeypatch):
+    client = ServerAPIClient("https://example.test")
+    requested_asof = datetime(2026, 1, 20, 5, 30, tzinfo=UTC)
+    captured: dict[str, object] = {}
+    response = httpx.Response(
+        200,
+        json={
+            "candidate_set_id": "snap_123",
+            "requested_asof_ts": requested_asof.isoformat(),
+            "data_asof_ts": "2026-01-20T05:31:39+00:00",
+            "market_count": 1,
+            "markets": [{
+                "market_id": "market_123",
+                "question": "Will X happen?",
+                "description": "Details...",
+                "resolution_time": "2026-02-01T00:00:00+00:00",
+                "quote": {
+                    "best_bid": "0.45",
+                    "best_ask": "0.55",
+                    "volume_24h": 1000.0,
+                    "ts": "2026-01-20T05:30:00+00:00",
+                },
+            }],
+        },
+    )
+
+    def fake_get(path, params=None):
+        captured["path"] = path
+        captured["params"] = params
+        return response
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    snapshot = client.get_market_snapshot(requested_asof)
+
+    assert captured["path"] == "/candidates/asof"
+    assert captured["params"] == {"as_of_ts": requested_asof.isoformat()}
+    assert snapshot.candidate_set_id == "snap_123"
