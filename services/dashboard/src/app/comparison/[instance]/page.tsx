@@ -36,7 +36,7 @@ const MODEL_META: Record<string, { label: string; color: string }> = {
   Opus46: { label: "Claude Opus 4.6", color: "#d4a017" },
 };
 
-const STARTING_CASH = 10_000;
+const STARTING_CASH = 500;
 const WIN_RATE_TOOLTIP =
   "A win means positive realized P&L. Losses have negative realized P&L. Zero realized P&L counts as neither, so this is not the same as final market resolution.";
 
