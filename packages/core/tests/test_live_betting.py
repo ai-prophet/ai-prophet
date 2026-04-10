@@ -20,6 +20,7 @@ from ai_prophet_core.betting.strategy import (
     BettingStrategy,
     DefaultBettingStrategy,
     PortfolioSnapshot,
+    RebalancingStrategy,
 )
 
 
@@ -504,3 +505,66 @@ def test_max_markets_per_tick_caps_orders():
     assert len(placed) == 2
     assert len(dropped) == 1
     assert mock_adapter.submit_order.call_count == 2
+
+
+# ── Rebalancing strategy tests ─────────────────────────────────────
+
+
+def _rebal(cash=100.0, shares=0, side=None):
+    """Create a RebalancingStrategy pre-loaded with a portfolio snapshot."""
+    strategy = RebalancingStrategy()
+    strategy._portfolio = PortfolioSnapshot(
+        cash=Decimal(str(cash)),
+        market_position_shares=Decimal(str(shares)),
+        market_position_side=side,
+    )
+    return strategy
+
+
+def test_rebalancing_sell_down_on_edge_flip():
+    """Hold 3 NO, edge flips to +3pp → should sell all 3 NO + buy 3 YES."""
+    strategy = _rebal(cash=100.0, shares=3, side="no")
+    # p_yes=0.15, yes_ask=0.12 → target=+0.03, current=-0.03, delta=+0.06
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.15, yes_ask=0.12, no_ask=0.88)
+    assert signal is not None
+    assert signal.side == "yes"
+    # delta=0.06 → 6 contracts (3 sell NO + 3 buy YES)
+    assert round(signal.shares * 100) == 6
+    assert signal.metadata["sell_portion"] > 0
+
+
+def test_rebalancing_sell_down_zero_cash():
+    """Hold 3 NO, edge flips positive, cash=0 → sell proceeds fund the buy."""
+    strategy = _rebal(cash=0.0, shares=3, side="no")
+    # p_yes=0.15, yes_ask=0.14 → target=+0.01, current=-0.03, delta=+0.04
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.15, yes_ask=0.14, no_ask=0.87)
+    assert signal is not None
+    assert signal.side == "yes"
+    # sell_portion=0.03 (3 NO), sell proceeds (0.03*0.87=0.026) fund buy_portion=0.01
+    assert round(signal.shares * 100) == 4
+    assert signal.metadata["sell_portion"] > 0
+    assert signal.metadata["buy_portion"] > 0
+
+
+def test_rebalancing_partial_sell_down_same_side():
+    """Hold 5 NO, target is -2 NO → sell 3 NO to reduce from 5 to 2."""
+    strategy = _rebal(cash=100.0, shares=5, side="no")
+    # p_yes=0.12, yes_ask=0.14 → target=-0.02, current=-0.05, delta=+0.03
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.12, yes_ask=0.14, no_ask=0.87)
+    assert signal is not None
+    assert signal.side == "yes"
+    # delta=+0.03 → 3 contracts; all from selling existing NO (sell_portion=0.03)
+    assert round(signal.shares * 100) == 3
+    assert signal.metadata["sell_portion"] > 0
+
+
+def test_rebalancing_pure_buy_no_position():
+    """No existing position, edge negative → pure BUY NO, no sell-down."""
+    strategy = _rebal(cash=100.0, shares=0, side=None)
+    # p_yes=0.12, yes_ask=0.15 → target=-0.03, current=0, delta=-0.03
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.12, yes_ask=0.15, no_ask=0.86)
+    assert signal is not None
+    assert signal.side == "no"
+    assert round(signal.shares * 100) == 3
+    assert signal.metadata["sell_portion"] == 0
+    assert signal.metadata["buy_portion"] > 0

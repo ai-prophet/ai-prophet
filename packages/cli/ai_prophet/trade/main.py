@@ -93,6 +93,9 @@ def eval_group(ctx: click.Context) -> None:
         click.echo(ctx.get_help())
 
 
+_STRATEGY_CHOICES = ("default", "rebalancing")
+
+
 def _run_options(command_func):
     options = [
         click.option("--models", "-m", multiple=True, required=True, help="Model specs (e.g., openai:gpt-4o)"),
@@ -104,6 +107,7 @@ def _run_options(command_func):
         click.option("--publish-reasoning", is_flag=True, help="Persist per-stage reasoning in plan_json"),
         click.option("--dashboard", is_flag=True, help="Open local dashboard in browser alongside the run"),
         click.option("--api-url", default=None, help="Core API URL"),
+        click.option("--strategy", type=click.Choice(_STRATEGY_CHOICES), default="default", help="Betting strategy (default | rebalancing)"),
         click.option("-v", "--verbose", is_flag=True, help="Verbose output"),
     ]
     for option in reversed(options):
@@ -117,7 +121,17 @@ def _load_runtime_credentials() -> Credentials:
     return Credentials.from_env()
 
 
-def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose):
+def _build_strategy(strategy_name: str):
+    """Instantiate a betting strategy by name."""
+    if strategy_name == "rebalancing":
+        from ai_prophet_core.betting import RebalancingStrategy
+        return RebalancingStrategy()
+    # default
+    from ai_prophet_core.betting import DefaultBettingStrategy
+    return DefaultBettingStrategy()
+
+
+def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose, strategy="default"):
     _setup_logging(verbose)
 
     client_config = ClientConfig.load_runtime()
@@ -135,6 +149,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
         "models": list(models),
         "replicates": replicates,
         "starting_cash": starting_cash,
+        "strategy": strategy,
     }
 
     trace_path = Path(trace_dir) if trace_dir else None
@@ -145,7 +160,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
     click.echo(f"API: {api_url}")
 
     # If slug is completed or conflicts (different config), auto-bump.
-    api = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
+    api = ServerAPIClient(base_url=api_url)
     config_hash = compute_config_hash(config)
     try:
         resp = api.create_or_get_experiment(
@@ -165,29 +180,21 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
         api.close()
 
     if dashboard:
-        open_dashboard(api_url=api_url, slug=slug, api_key=creds.server_api_key)
+        open_dashboard(api_url=api_url, slug=slug)
 
     click.echo()
 
-    engine = _get_betting_engine()
+    engine = _get_betting_engine(strategy_name=strategy)
 
     runner = ExperimentRunner(
         api_url=api_url,
-        api_key=creds.server_api_key,
         experiment_slug=slug,
         models=model_configs,
         config=config,
         n_ticks=max_ticks,
         starting_cash=starting_cash,
         trace_dir=trace_path,
-        build_pipeline=_make_pipeline_builder(
-            creds,
-            client_config,
-            verbose,
-            api_url,
-            creds.server_api_key,
-            engine,
-        ),
+        build_pipeline=_make_pipeline_builder(creds, client_config, verbose, api_url, engine),
         publish_reasoning=publish_reasoning,
         betting_engine=engine,
         client_config=client_config,
@@ -204,21 +211,21 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
 
 @cli.command(hidden=True)
 @_run_options
-def run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose):
+def run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, strategy, verbose):
     """Legacy alias for `eval run`."""
-    _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose)
+    _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose, strategy=strategy)
 
 
 @eval_group.command(name="run")
 @_run_options
-def eval_run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose):
+def eval_run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, strategy, verbose):
     """Run an experiment. Restarts resume from where they left off."""
-    _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose)
+    _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose, strategy=strategy)
 
 
 _engine_holder: dict = {}
 
-def _get_betting_engine():
+def _get_betting_engine(strategy_name: str = "default"):
     """Create or return the shared BettingEngine."""
     if "engine" in _engine_holder:
         return _engine_holder["engine"]
@@ -235,8 +242,10 @@ def _get_betting_engine():
             return None
 
         db_engine = create_db_engine()
+        strategy = _build_strategy(strategy_name)
 
         engine = BettingEngine(
+            strategy=strategy,
             db_engine=db_engine,
             dry_run=settings.dry_run,
             kalshi_config=settings.kalshi,
@@ -259,7 +268,6 @@ def _make_pipeline_builder(
     client_config: ClientConfig,
     verbose: bool,
     api_url: str,
-    server_api_key: str | None,
     betting_engine=None,
 ):
     """Return a callable that builds an AgentPipeline for a participant config.
@@ -291,7 +299,7 @@ def _make_pipeline_builder(
                 api_key=creds.brave_api_key,
                 config=client_config.search,
             )
-        api_client = ServerAPIClient(base_url=api_url, api_key=server_api_key)
+        api_client = ServerAPIClient(base_url=api_url)
 
         pipeline_config: dict = {
             "search_client": search_client,
@@ -362,7 +370,7 @@ def health(api_url, legacy_url):
     api_url = api_url or legacy_url or creds.server_url
 
     click.echo(f"Checking: {api_url}")
-    client = ServerAPIClient(api_url, api_key=creds.server_api_key)
+    client = ServerAPIClient(api_url)
     try:
         resp = client.health_check()
         click.echo(f"Status:  {resp.status}")
@@ -386,7 +394,7 @@ def progress(experiment_id, api_url, legacy_url):
     creds = _load_runtime_credentials()
     api_url = api_url or legacy_url or creds.server_url
 
-    client = ServerAPIClient(api_url, api_key=creds.server_api_key)
+    client = ServerAPIClient(api_url)
     try:
         p = client.get_progress(experiment_id)
         click.echo(f"Experiment: {p.experiment_id}")

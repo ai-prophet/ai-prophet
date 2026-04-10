@@ -32,7 +32,9 @@ from typing import Any
 from sqlalchemy.engine import Engine
 
 from .config import MAX_MARKETS_PER_TICK, KalshiConfig
-from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot
+from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
+
+from .position_replay import replay_orders_by_ticker, summarize_replayed_positions
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +81,15 @@ class BettingEngine:
         kalshi_config: KalshiConfig | None = None,
         enabled: bool = True,
         max_markets_per_tick: int = MAX_MARKETS_PER_TICK,
+        instance_name: str = "Haifeng",
+        starting_cash: float = 10000.0,
     ) -> None:
         self.strategy = strategy or DefaultBettingStrategy()
         self.dry_run = dry_run
+        self.starting_cash = starting_cash
         self.enabled = enabled
         self.max_markets_per_tick = max_markets_per_tick
+        self.instance_name = instance_name
         self._engine = db_engine
         self._kalshi_config = kalshi_config or KalshiConfig.from_env()
         self._adapter = None
@@ -107,7 +113,7 @@ class BettingEngine:
         forecasts: dict[str, float],
         market_prices: dict[str, tuple[float, float]],
         source: str = "",
-        portfolio: PortfolioSnapshot | None = None,
+        portfolio: PortfolioSnapshot | None = None,  # noqa: ARG002 — kept for API compat; live DB state used instead
     ) -> list[BetResult]:
         """Run the full predict → evaluate → place → log cycle.
 
@@ -116,7 +122,8 @@ class BettingEngine:
             forecasts: ``{market_id: p_yes}`` predictions.
             market_prices: ``{market_id: (yes_ask, no_ask)}`` live quotes.
             source: Identifier for the prediction source (model name, etc.).
-            portfolio: Optional portfolio snapshot for strategy context.
+            portfolio: Ignored. Portfolio is refreshed from live DB state
+                before each market's strategy evaluation.
 
         Returns:
             A :class:`BetResult` for every market in *forecasts*.
@@ -124,12 +131,12 @@ class BettingEngine:
         if not self.enabled:
             return []
 
-        # Make portfolio context available to the strategy
+        # Use caller's portfolio as fallback when no DB is available
         self.strategy._portfolio = portfolio
 
         results: list[BetResult] = []
         # Collect evaluated signals before placing orders (for cap enforcement)
-        pending_orders: list[tuple[str, float, float, BetSignal, int | None]] = []
+        pending_orders: list[tuple[str, float, float, float, BetSignal, int | None]] = []
 
         for market_id, p_yes in forecasts.items():
             prices = market_prices.get(market_id)
@@ -152,7 +159,20 @@ class BettingEngine:
                 no_ask=no_ask,
             )
 
-            # 2. Evaluate strategy
+            # 2. Refresh portfolio from live DB state (not the stale snapshot
+            #    from the caller) so the strategy always sees the authoritative
+            #    position for THIS market — prevents stale-delta over-buying.
+            #    Falls back to caller's portfolio when no DB is configured.
+            if self._engine is not None:
+                ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
+                live_side, live_qty, live_cash = self._live_ledger_state(ticker)
+                self.strategy._portfolio = PortfolioSnapshot(
+                    cash=live_cash,
+                    market_position_shares=Decimal(str(live_qty)),
+                    market_position_side=live_side,
+                )
+
+            # 3. Evaluate strategy
             signal = self.strategy.evaluate(
                 market_id=market_id,
                 p_yes=p_yes,
@@ -168,7 +188,7 @@ class BettingEngine:
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
                 continue
 
-            # 3. Persist signal
+            # 4. Persist signal
             signal_id = self._save_signal(prediction_id, signal)
 
             logger.info(
@@ -177,9 +197,9 @@ class BettingEngine:
                 signal.side.upper(), signal.shares, signal.price,
             )
 
-            pending_orders.append((market_id, p_yes, yes_ask, signal, signal_id))
+            pending_orders.append((market_id, p_yes, yes_ask, no_ask, signal, signal_id))
 
-        # 4. Cap to max_markets_per_tick, keeping highest-edge signals
+        # 5. Cap to max_markets_per_tick, keeping highest-edge signals
         if len(pending_orders) > self.max_markets_per_tick:
             logger.warning(
                 "[BETTING] %d signals exceed max_markets_per_tick=%d, "
@@ -193,19 +213,21 @@ class BettingEngine:
             )
             dropped = pending_orders[self.max_markets_per_tick:]
             pending_orders = pending_orders[:self.max_markets_per_tick]
-            for mid, _, _, sig, _ in dropped:
+            for mid, _, _, _, sig, _ in dropped:
                 results.append(BetResult(
                     market_id=mid, signal=sig, order_placed=False,
                     error="Dropped: exceeded max_markets_per_tick",
                 ))
 
-        # 5. Place orders
-        for market_id, _p_yes, _, signal, signal_id in pending_orders:
+        # 6. Place orders
+        for market_id, _p_yes, yes_ask, no_ask, signal, signal_id in pending_orders:
             result = self._place_and_log_order(
                 tick_ts=tick_ts,
                 market_id=market_id,
                 signal=signal,
                 signal_id=signal_id,
+                yes_ask=yes_ask,
+                no_ask=no_ask,
             )
             results.append(result)
 
@@ -241,6 +263,88 @@ class BettingEngine:
         )
         return results[0] if results else None
 
+    def make_trade(
+        self,
+        market_id: str,
+        side: str,
+        shares: int,
+        price: float,
+        tick_ts: datetime | None = None,
+    ) -> BetResult:
+        """Execute a trade directly, bypassing strategy evaluation.
+
+        Routes to paper trading (simulated fill) or live Kalshi based on
+        the ``dry_run`` flag set at construction time.
+
+        Args:
+            market_id: Market identifier, e.g. ``"kalshi:NASDAQ-100-GT5K"``
+                or just ``"NASDAQ-100-GT5K"``.
+            side: ``"yes"`` or ``"no"``.
+            shares: Number of contracts to trade.
+            price: Limit price in the range ``[0.0, 1.0]``.
+            tick_ts: Timestamp for DB records. Defaults to now.
+        """
+        if not self.enabled:
+            return BetResult(market_id=market_id, signal=None, order_placed=False)
+        if tick_ts is None:
+            tick_ts = datetime.now(UTC)
+        signal = BetSignal(
+            side=side.lower(),
+            shares=float(shares),
+            price=price,
+            cost=shares * price,
+        )
+        yes_ask = price if side.lower() == "yes" else 0.0
+        no_ask = price if side.lower() == "no" else 0.0
+        return self._place_and_log_order(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            signal=signal,
+            signal_id=None,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+        )
+
+    def trade_from_forecast(
+        self,
+        market_id: str,
+        p_yes: float,
+        yes_ask: float,
+        no_ask: float,
+        tick_ts: datetime | None = None,
+        source: str = "",
+        question: str = "",
+        portfolio: PortfolioSnapshot | None = None,
+    ) -> BetResult | None:
+        """Evaluate a forecast through the strategy and place a trade if warranted.
+
+        The strategy decides whether to bet, which side, and how many shares.
+        Routes to paper or live Kalshi based on ``dry_run``.
+
+        Args:
+            market_id: Market identifier, e.g. ``"kalshi:NASDAQ-100-GT5K"``.
+            p_yes: Forecast probability that the YES side resolves true (0–1).
+            yes_ask: Current ask price for YES contracts (0–1).
+            no_ask: Current ask price for NO contracts (0–1).
+            tick_ts: Timestamp for DB records. Defaults to now.
+            source: Label for the prediction source (model name, etc.).
+            question: Human-readable market question (for logging).
+            portfolio: Optional portfolio snapshot; overridden by live DB state
+                when a DB engine is configured.
+        """
+        if tick_ts is None:
+            tick_ts = datetime.now(UTC)
+        return self.on_forecast(
+            tick_ts=tick_ts,
+            market_id=market_id,
+            p_yes=p_yes,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            question=question,
+            source=source,
+            portfolio=portfolio,
+        )
+
     def close(self) -> None:
         """Release resources."""
         if self._adapter:
@@ -271,14 +375,72 @@ class BettingEngine:
         )
         return self._adapter
 
+    def _live_ledger_state(self, ticker: str) -> tuple[str | None, int, Decimal]:
+        """Query the live order ledger for ground-truth position and cash.
+
+        Returns (side, qty, available_cash) by replaying ALL instance orders
+        from the DB.  Called immediately before every order placement so
+        nothing is ever stale.
+
+        For DRY_RUN mode: uses starting_cash as the fixed baseline (no API
+        call needed — DRY_RUN orders never affect the real Kalshi balance).
+        For LIVE mode: fetches real balance from the adapter (Kalshi already
+        deducts for real orders, so we use it directly without subtraction).
+        """
+        if self._engine is None:
+            return None, 0, Decimal(str(self.starting_cash))
+        try:
+            from .db import get_session
+            from .db_schema import BettingOrder
+
+            with get_session(self._engine) as session:
+                orders = (
+                    session.query(BettingOrder)
+                    .filter(BettingOrder.instance_name == self.instance_name)
+                    .filter(BettingOrder.status.in_(["FILLED", "DRY_RUN"]))
+                    .order_by(BettingOrder.created_at.asc(), BettingOrder.id.asc())
+                    .all()
+                )
+
+            positions = replay_orders_by_ticker(orders)
+            capital_deployed, total_realized, _ = summarize_replayed_positions(positions)
+
+            if self.dry_run:
+                # DRY_RUN: fixed virtual budget — no API call needed
+                base = Decimal(str(self.starting_cash))
+                cash = base - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
+            else:
+                # LIVE: real balance from Kalshi already accounts for real orders
+                try:
+                    cash = self._get_adapter().get_balance()
+                except Exception:
+                    cash = Decimal("0")
+
+            pos = positions.get(ticker)
+            if pos is None:
+                return None, 0, cash
+            side, qty, _ = pos.current_position()
+            return side, max(0, round(qty)), cash
+        except Exception as e:
+            logger.warning("[BETTING] _live_ledger_state query failed for %s: %s", ticker, e)
+            return None, 0, Decimal("0")
+
     def _place_and_log_order(
         self,
         tick_ts: datetime,
         market_id: str,
         signal: BetSignal,
         signal_id: int | None,
+        yes_ask: float = 0.0,
+        no_ask: float = 0.0,
     ) -> BetResult:
-        """Convert a signal into an exchange order, persist the result."""
+        """Convert a signal into an exchange order, persist the result.
+
+        Implements NET position management: if the strategy wants to buy
+        one side but we already hold the opposite side, we SELL existing
+        contracts first.  We only buy the new side when the desired
+        quantity exceeds the existing opposite position.
+        """
         from .adapters.base import OrderRequest
 
         ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
@@ -288,6 +450,120 @@ class BettingEngine:
         count = max(1, round(abs(signal.shares) * 100))
         price_cents = max(1, min(99, round(signal.price * 100)))
 
+        # --- Live ledger state: single DB query for ground-truth position + cash ---
+        # Both NET management and the cash check use this so neither is ever stale,
+        # even when multiple markets are processed in the same cycle.
+        live_side, live_qty, live_cash = self._live_ledger_state(ticker)
+        action = "BUY"
+        effective_side = signal.side.upper()
+        sell_price = signal.price  # fallback; overwritten if a SELL is needed
+
+        if live_side and live_qty > 0:
+            held_side = live_side.lower()
+            want_side = signal.side.lower()
+
+            if held_side != want_side:
+                held_count = live_qty
+                # Use the correct price for the side being sold
+                sell_price = yes_ask if held_side == "yes" else no_ask
+                sell_price_cents = max(1, min(99, round(sell_price * 100)))
+
+                if count <= held_count:
+                    # Just sell some of the existing opposite position
+                    action = "SELL"
+                    effective_side = held_side.upper()
+                    price_cents = sell_price_cents
+                    logger.info(
+                        "[BETTING] NET: selling %d %s instead of buying %d %s on %s",
+                        count, held_side.upper(), count, want_side.upper(), ticker,
+                    )
+                else:
+                    # Sell all existing, then buy remainder on new side
+                    sell_order_id = str(uuid.uuid4())
+                    sell_req = OrderRequest(
+                        order_id=sell_order_id,
+                        intent_id=f"net-sell-{sell_order_id[:8]}",
+                        market_id=market_id,
+                        exchange_ticker=ticker,
+                        action="SELL",
+                        side=held_side.upper(),
+                        shares=Decimal(str(held_count)),
+                        limit_price=Decimal(str(sell_price)),
+                    )
+                    sell_status = "FILLED"
+                    try:
+                        sell_result = adapter.submit_order(sell_req)
+                        sell_status = sell_result.status.value
+                        logger.info(
+                            "[BETTING] NET: sold %d %s on %s → %s",
+                            held_count, held_side.upper(), ticker, sell_status,
+                        )
+                        self._save_order(
+                            signal_id=signal_id,
+                            order_id=sell_order_id,
+                            ticker=ticker,
+                            side=held_side,
+                            count=held_count,
+                            price_cents=sell_price_cents,
+                            status=sell_status,
+                            filled_shares=float(sell_result.filled_shares),
+                            fill_price=float(sell_result.fill_price),
+                            exchange_order_id=sell_result.exchange_order_id,
+                            action="SELL",
+                        )
+                    except Exception as e:
+                        logger.error("[BETTING] NET sell failed: %s", e)
+                        sell_status = "ERROR"
+
+                    count = count - held_count
+                    if count <= 0:
+                        return BetResult(
+                            market_id=market_id,
+                            signal=signal,
+                            order_placed=sell_status != "ERROR",
+                            order_id=sell_order_id,
+                            status=sell_status,
+                        )
+                    # Continue to buy remaining on new side
+                    action = "BUY"
+                    effective_side = want_side.upper()
+                    # Refresh cash after the NET sell — proceeds are now persisted
+                    # to DB and must be available for the subsequent BUY.
+                    _, _, live_cash = self._live_ledger_state(ticker)
+
+        # --- Cash constraint: use live cash so multi-market cycles don't overspend ---
+        if action == "BUY":
+            if live_cash <= 0:
+                logger.warning(
+                    "[BETTING] Insufficient cash: live balance is $%.2f, skipping BUY %s",
+                    float(live_cash), ticker,
+                )
+                return BetResult(
+                    market_id=market_id,
+                    signal=signal,
+                    order_placed=False,
+                    error=f"Insufficient cash: live balance is ${float(live_cash):.2f}",
+                )
+            order_cost = Decimal(str(count)) * Decimal(str(signal.price))
+            if order_cost > live_cash:
+                max_shares = int(live_cash / Decimal(str(signal.price)))
+                if max_shares <= 0:
+                    logger.warning(
+                        "[BETTING] Insufficient cash: need $%.2f but only $%.2f available, skipping %s",
+                        float(order_cost), float(live_cash), ticker,
+                    )
+                    return BetResult(
+                        market_id=market_id,
+                        signal=signal,
+                        order_placed=False,
+                        error=f"Insufficient cash: need ${float(order_cost):.2f}, have ${float(live_cash):.2f}",
+                    )
+                logger.info(
+                    "[BETTING] Cash cap: reducing %s from %d to %d shares (cash=$%.2f)",
+                    ticker, count, max_shares, float(live_cash),
+                )
+                count = max_shares
+
         order_id = str(uuid.uuid4())
 
         order_req = OrderRequest(
@@ -295,10 +571,10 @@ class BettingEngine:
             intent_id=f"bet-{order_id[:8]}",
             market_id=market_id,
             exchange_ticker=ticker,
-            action="BUY",
-            side=signal.side.upper(),
+            action=action,
+            side=effective_side,
             shares=Decimal(str(count)),
-            limit_price=Decimal(str(signal.price)),
+            limit_price=Decimal(str(sell_price if action == "SELL" else signal.price)),
         )
 
         try:
@@ -329,8 +605,8 @@ class BettingEngine:
             error = str(e)
 
         logger.info(
-            "[BETTING] Order %s: %s %s×%s @ %sc → %s (filled=%s @ %s)",
-            order_id[:8], signal.side.upper(), count, ticker,
+            "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s)",
+            order_id[:8], action, effective_side, count, ticker,
             price_cents, status, filled_shares, fill_price,
         )
 
@@ -338,13 +614,14 @@ class BettingEngine:
             signal_id=signal_id,
             order_id=order_id,
             ticker=ticker,
-            side=signal.side,
+            side=effective_side.lower(),
             count=count,
             price_cents=price_cents,
             status=status,
             filled_shares=filled_shares,
             fill_price=fill_price,
             exchange_order_id=exchange_oid,
+            action=action,
         )
 
         return BetResult(
@@ -414,6 +691,7 @@ class BettingEngine:
 
         now = datetime.now(UTC)
         row = BettingPrediction(
+            instance_name=self.instance_name,
             tick_ts=tick_ts,
             market_id=market_id,
             source=source,
@@ -445,6 +723,7 @@ class BettingEngine:
         now = datetime.now(UTC)
         metadata_json = json.dumps(signal.metadata) if signal.metadata else None
         row = BettingSignal(
+            instance_name=self.instance_name,
             prediction_id=prediction_id,
             strategy_name=self.strategy.name,
             side=signal.side,
@@ -475,6 +754,7 @@ class BettingEngine:
         filled_shares: float,
         fill_price: float,
         exchange_order_id: str | None,
+        action: str = "BUY",
     ) -> None:
         if self._engine is None or signal_id is None:
             return
@@ -484,10 +764,12 @@ class BettingEngine:
 
         now = datetime.now(UTC)
         row = BettingOrder(
+            instance_name=self.instance_name,
             signal_id=signal_id,
             order_id=order_id,
             ticker=ticker,
             side=side,
+            action=action,
             count=count,
             price_cents=price_cents,
             status=status,
@@ -516,6 +798,7 @@ class BettingEngine:
         with get_session(self._engine) as session:
             rows = (
                 session.query(BettingPrediction)
+                .filter(BettingPrediction.instance_name == self.instance_name)
                 .order_by(BettingPrediction.created_at.desc())
                 .limit(limit)
                 .all()
