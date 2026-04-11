@@ -53,10 +53,7 @@ class KalshiForecastClient:
             return self._private_key
 
         if not self._private_key_base64:
-            raise RuntimeError(
-                "Kalshi private key not configured. "
-                "Set KALSHI_PRIVATE_KEY_B64 or pass private_key_base64."
-            )
+            return None
 
         from cryptography.hazmat.backends import default_backend
         from cryptography.hazmat.primitives import serialization
@@ -68,10 +65,14 @@ class KalshiForecastClient:
         return self._private_key
 
     def _sign_request(self, method: str, path: str) -> dict[str, str]:
+        """Return auth headers, or just Content-Type if no credentials are configured."""
+        private_key = self._load_private_key()
+        if private_key is None:
+            return {"Content-Type": "application/json"}
+
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding
 
-        private_key = self._load_private_key()
         timestamp_str = str(int(datetime.now().timestamp() * 1000))
         msg_string = timestamp_str + method.upper() + path
 
