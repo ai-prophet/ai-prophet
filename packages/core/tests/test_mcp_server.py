@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from ai_prophet_core import mcp_server
+
+
+@pytest.fixture(autouse=True)
+def reset_betting_engine_cache():
+    mcp_server._close_betting_engine()
+    yield
+    mcp_server._close_betting_engine()
 
 
 def test_get_current_markets_uses_market_snapshot_fields(monkeypatch):
@@ -48,6 +57,7 @@ def test_get_current_markets_uses_market_snapshot_fields(monkeypatch):
 
 def test_get_betting_engine_uses_db_backing(monkeypatch):
     captured: dict[str, object] = {}
+    calls = {"db": 0, "engine": 0}
 
     monkeypatch.setattr(
         "ai_prophet_core.betting.LiveBettingSettings.from_env",
@@ -55,18 +65,30 @@ def test_get_betting_engine_uses_db_backing(monkeypatch):
     )
     monkeypatch.setattr(
         "ai_prophet_core.betting.db.create_db_engine",
-        lambda: "db-engine",
+        lambda: calls.__setitem__("db", calls["db"] + 1) or "db-engine",
     )
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.BettingEngine",
-        lambda **kwargs: captured.update(kwargs)
-        or SimpleNamespace(enabled=kwargs["enabled"]),
-    )
+    class FakeEngine(SimpleNamespace):
+        def close(self):
+            captured["closed"] = True
 
-    mcp_server._get_betting_engine()
+    def build_engine(**kwargs):
+        calls["engine"] += 1
+        captured.update(kwargs)
+        return FakeEngine(enabled=kwargs["enabled"])
+
+    monkeypatch.setattr("ai_prophet_core.betting.BettingEngine", build_engine)
+
+    engine = mcp_server._get_betting_engine()
+    cached = mcp_server._get_betting_engine()
 
     assert captured["db_engine"] == "db-engine"
     assert captured["kalshi_config"] == "kalshi-config"
+    assert engine is cached
+    assert calls == {"db": 1, "engine": 1}
+
+    mcp_server._close_betting_engine()
+    assert captured["closed"] is True
+    assert mcp_server._betting_engine is None
 
 
 def test_forecast_to_trade_reports_disabled_engine(monkeypatch):

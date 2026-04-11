@@ -301,6 +301,11 @@ class BettingEngine:
                 self._adapter.close()
             except Exception:
                 pass
+        if self._engine is not None:
+            try:
+                self._engine.dispose()
+            except Exception:
+                pass
 
     # ── internals ─────────────────────────────────────────────────────
 

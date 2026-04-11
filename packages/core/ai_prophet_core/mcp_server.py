@@ -7,6 +7,7 @@ on prediction markets through natural language.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import uuid
@@ -37,6 +38,7 @@ mcp = FastMCP(
 )
 
 _lease_owner = str(uuid.uuid4())
+_betting_engine = None
 
 
 def _get_client() -> ServerAPIClient:
@@ -50,6 +52,22 @@ def _model_to_dict(obj) -> dict:
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")
     return dict(obj)
+
+
+def _close_betting_engine() -> None:
+    global _betting_engine
+
+    engine = _betting_engine
+    if engine is None:
+        return
+
+    close = getattr(engine, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+    _betting_engine = None
 
 
 # ---------------------------------------------------------------------------
@@ -325,17 +343,23 @@ def submit_forecast(predictions: list[dict]) -> dict:
 
 def _get_betting_engine():
     """Lazy-create a BettingEngine from env vars."""
+    global _betting_engine
+
+    if _betting_engine is not None:
+        return _betting_engine
+
     from .betting import BettingEngine, LiveBettingSettings
     from .betting.db import create_db_engine
 
     settings = LiveBettingSettings.from_env()
     db_engine = create_db_engine() if settings.enabled else None
-    return BettingEngine(
+    _betting_engine = BettingEngine(
         db_engine=db_engine,
         paper=settings.paper,
         kalshi_config=settings.kalshi,
         enabled=settings.enabled,
     )
+    return _betting_engine
 
 
 def _bet_result_to_dict(result) -> dict:
@@ -436,6 +460,9 @@ def place_trade(
 
 def main():
     mcp.run()
+
+
+atexit.register(_close_betting_engine)
 
 
 if __name__ == "__main__":

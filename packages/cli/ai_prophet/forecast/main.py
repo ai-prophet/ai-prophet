@@ -422,20 +422,20 @@ def predict(
                     resp = requests.post(agent_url, json=event, timeout=timeout)
                     resp.raise_for_status()
                     result = resp.json()
+
+                p_yes = float(result["p_yes"])
+                predictions.append(
+                    Prediction(
+                        market_ticker=market_ticker,
+                        p_yes=p_yes,
+                        rationale=result.get("rationale"),
+                    )
+                )
+                click.echo(f"  {market_ticker}: p_yes={p_yes:.3f}")
             except Exception as e:
                 logger.warning("Skipping %s: %s", market_ticker, e)
                 click.echo(f"  {market_ticker}: SKIPPED ({e})")
                 continue
-
-            p_yes = result["p_yes"]
-            predictions.append(
-                Prediction(
-                    market_ticker=market_ticker,
-                    p_yes=p_yes,
-                    rationale=result.get("rationale"),
-                )
-            )
-            click.echo(f"  {market_ticker}: p_yes={p_yes:.3f}")
 
             if betting_engine is None:
                 continue
