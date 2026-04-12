@@ -2,6 +2,7 @@
 
 from ._version import __version__
 from .client import (
+    DEFAULT_API_URL,
     APIClientError,
     APIConnectionError,
     APIError,
@@ -77,6 +78,7 @@ from .time import (
 
 __all__ = [
     "__version__",
+    "DEFAULT_API_URL",
     "ServerAPIClient",
     "APIError",
     "APIConnectionError",

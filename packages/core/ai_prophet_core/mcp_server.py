@@ -15,12 +15,10 @@ from datetime import datetime
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
-from .client import ServerAPIClient
+from .client import DEFAULT_API_URL, ServerAPIClient
 from .client_models import TradeIntentRequest
 
 load_dotenv()
-
-DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
 
 mcp = FastMCP(
     "Prophet Arena",

@@ -415,7 +415,8 @@ def evaluate(submission: str, actuals: str, verbose: bool) -> None:
 
 def _resolve_server(server_url: str | None, api_key: str | None) -> tuple[str, str]:
     """Resolve server URL and API key from flags or env vars."""
-    DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
+    from ai_prophet_core import DEFAULT_API_URL
+
     url = server_url or os.environ.get("PA_SERVER_URL", DEFAULT_API_URL)
     key = api_key or os.environ.get("PA_SERVER_API_KEY")
     if not key:

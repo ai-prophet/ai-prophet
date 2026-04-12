@@ -10,10 +10,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from ai_prophet_core import DEFAULT_API_URL
 from dotenv import load_dotenv
 
-# Hosted Core API -- default trade benchmark endpoint.
-DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "grok": "xai",
