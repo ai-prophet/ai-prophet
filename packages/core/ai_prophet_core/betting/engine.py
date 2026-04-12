@@ -235,13 +235,20 @@ class BettingEngine:
                                 )
 
                         # Price movement: check against last FORECAST (BettingPrediction has yes_ask/no_ask)
+                        # Exclude the prediction we just saved (prediction_id) to avoid
+                        # comparing current prices against themselves.
                         if not skip_due_to_constraints:
-                            last_pred = (
+                            pred_query = (
                                 session.query(BettingPrediction)
                                 .filter(
                                     BettingPrediction.instance_name == self.instance_name,
                                     BettingPrediction.market_id == market_id,
                                 )
+                            )
+                            if prediction_id is not None:
+                                pred_query = pred_query.filter(BettingPrediction.id != prediction_id)
+                            last_pred = (
+                                pred_query
                                 .order_by(BettingPrediction.created_at.desc())
                                 .first()
                             )
