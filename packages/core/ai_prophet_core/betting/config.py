@@ -8,22 +8,23 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
+from ai_prophet_core.kalshi_config import (
+    DEFAULT_KALSHI_BASE_URL,
+    KALSHI_API_KEY_ID_ENV,
+    KALSHI_BASE_URL_ENV,
+    KALSHI_PRIVATE_KEY_B64_ENV,
+)
+
 MAX_SPREAD = 1.03
 
-# Maximum number of markets to place orders on per tick.
-# Change this to limit how many bets the engine places in a single tick.
 MAX_MARKETS_PER_TICK = 10
 
-DEFAULT_KALSHI_BASE_URL = "https://api.elections.kalshi.com"
 KALSHI_BASE_URL = DEFAULT_KALSHI_BASE_URL
 
 LIVE_BETTING_ENABLED_ENV = "LIVE_BETTING_ENABLED"
 LIVE_BETTING_DRY_RUN_ENV = "LIVE_BETTING_DRY_RUN"
 LIVE_BETTING_DOTENV_PATH_ENV = "LIVE_BETTING_DOTENV_PATH"
 LIVE_BETTING_LOAD_DOTENV_ENV = "LIVE_BETTING_LOAD_DOTENV"
-KALSHI_API_KEY_ID_ENV = "KALSHI_API_KEY_ID"
-KALSHI_BASE_URL_ENV = "KALSHI_BASE_URL"
-KALSHI_PRIVATE_KEY_B64_ENV = "KALSHI_PRIVATE_KEY_B64"
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
@@ -78,7 +79,7 @@ class LiveBettingSettings:
     """Runtime settings for live betting integration."""
 
     enabled: bool = False
-    dry_run: bool = True
+    paper: bool = True
     kalshi: KalshiConfig = field(default_factory=KalshiConfig)
 
     @classmethod
@@ -106,7 +107,7 @@ class LiveBettingSettings:
 
         return cls(
             enabled=_parse_bool(env_map.get(LIVE_BETTING_ENABLED_ENV), default=False),
-            dry_run=_parse_bool(env_map.get(LIVE_BETTING_DRY_RUN_ENV), default=True),
+            paper=_parse_bool(env_map.get(LIVE_BETTING_DRY_RUN_ENV), default=True),
             kalshi=KalshiConfig.from_env(env_map),
         )
 

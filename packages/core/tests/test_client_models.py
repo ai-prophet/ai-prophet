@@ -9,6 +9,7 @@ from ai_prophet_core.client_models import (
     CreateExperimentResponse,
     FillData,
     HealthResponse,
+    MarketSnapshot,
     MarketQuote,
     ProgressResponse,
     ReasoningEntry,
@@ -37,6 +38,7 @@ def test_claim_tick_response_success():
             "lease_expires_at": "2026-02-08T12:10:00Z", "reclaim_count": 0}
     resp = ClaimTickResponse.model_validate(data)
     assert resp.tick_id == "2026-02-08T12:00:00Z"
+    assert resp.candidate_set_id == "snap_1"
     assert resp.no_tick_available is None
 
 
@@ -81,6 +83,30 @@ def test_candidates_response_model():
     assert resp.markets[0].source_url == "https://kalshi.com/markets/ABC"
     assert resp.markets[0].topic == "politics"
     assert resp.markets[0].family == "ABC"
+
+
+def test_market_snapshot_model_exposes_snapshot_alias():
+    data = {
+        "candidate_set_id": "snap_123",
+        "requested_asof_ts": "2026-01-20T05:30:00Z",
+        "data_asof_ts": "2026-01-20T05:31:39Z",
+        "market_count": 1,
+        "markets": [{
+            "market_id": "market_123",
+            "question": "Will X happen?",
+            "description": "Details...",
+            "resolution_time": "2026-02-01T00:00:00Z",
+            "quote": {
+                "best_bid": "0.45",
+                "best_ask": "0.55",
+                "volume_24h": 1000.0,
+                "ts": "2026-01-20T05:30:00Z",
+            },
+        }],
+    }
+    resp = MarketSnapshot.model_validate(data)
+    assert resp.snapshot_id == "snap_123"
+    assert resp.data_asof_ts.isoformat() == "2026-01-20T05:31:39+00:00"
 
 
 def test_trade_intent_request():

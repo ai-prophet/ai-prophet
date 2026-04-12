@@ -61,6 +61,11 @@ class ClaimTickResponse(BaseModel):
     reason: str | None = None
 
     @property
+    def candidate_set_id(self) -> str | None:
+        """Alias for snapshot_id matching the field name used in trade submission."""
+        return self.snapshot_id
+
+    @property
     def tick_ts(self) -> datetime | None:
         """Parsed datetime view of ``tick_id`` for internal use."""
         if not self.tick_id:
@@ -157,6 +162,27 @@ class CandidatesResponse(BaseModel):
     candidate_set_id: str
     market_count: int
     markets: list[MarketData]
+
+
+class MarketSnapshot(BaseModel):
+    """Point-in-time market snapshot for arbitrary-time market reads.
+
+    Used by get_market_snapshot(). Unlike CandidatesResponse, this does
+    not carry tick_ts -- it's not bound to a benchmark tick.
+
+    Two timestamps: ``requested_asof_ts`` is what the caller asked for,
+    ``data_asof_ts`` is the actual snapshot the server bound the response to.
+    """
+    candidate_set_id: str
+    requested_asof_ts: datetime
+    data_asof_ts: datetime
+    market_count: int
+    markets: list[MarketData]
+
+    @property
+    def snapshot_id(self) -> str:
+        """Alias for candidate_set_id -- the general-purpose name."""
+        return self.candidate_set_id
 
 
 # --- Trade Submission Models --------------------------------------------------

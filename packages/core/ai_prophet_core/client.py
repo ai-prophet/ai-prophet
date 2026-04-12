@@ -32,6 +32,7 @@ from .client_models import (
     ForecastSubmitRequest,
     ForecastSubmitResponse,
     HealthResponse,
+    MarketSnapshot,
     PlanRequest,
     PutPlanResponse,
     PortfolioResponse,
@@ -310,10 +311,10 @@ class ServerAPIClient:
         experiment_id: str,
         participant_idx: int,
         tick_id: str,
-        snapshot_id: str,
+        candidate_set_id: str,
         plan_json: dict,
     ) -> PutPlanResponse:
-        req = PlanRequest(snapshot_id=snapshot_id, plan_json=plan_json)
+        req = PlanRequest(snapshot_id=candidate_set_id, plan_json=plan_json)
         response = self._put(
             f"/experiments/{experiment_id}/participants/{participant_idx}"
             f"/ticks/{tick_id}/plan",
@@ -361,13 +362,34 @@ class ServerAPIClient:
     # --- Candidates -----------------------------------------------------------
 
     def get_candidates(
-        self, tick_ts: datetime, snapshot_id: str | None = None,
+        self, tick_ts: datetime, candidate_set_id: str | None = None,
     ) -> CandidatesResponse:
         params: dict = {"tick_ts": tick_ts.isoformat()}
-        if snapshot_id:
-            params["snapshot_id"] = snapshot_id
+        if candidate_set_id:
+            params["snapshot_id"] = candidate_set_id
         response = self._get("/candidates", params=params)
         return self._parse_response(response, CandidatesResponse)
+
+    def get_market_snapshot(
+        self, as_of: datetime | None = None,
+    ) -> MarketSnapshot:
+        """Fetch a point-in-time snapshot of Prophet Arena's market universe.
+
+        Returns the curated set of prediction markets that Prophet Arena
+        tracks, filtered by eligibility criteria (volume, quote freshness,
+        time to resolution). This is NOT a raw exchange feed.
+
+        The server binds the response to the nearest available snapshot.
+        Check ``data_asof_ts`` to see what you actually got vs. what you
+        requested.
+
+        Does not require a benchmark tick claim or experiment.
+        """
+        params: dict = {}
+        if as_of is not None:
+            params["as_of_ts"] = as_of.isoformat()
+        response = self._get("/candidates/asof", params=params)
+        return self._parse_response(response, MarketSnapshot)
 
     # --- Trade Submission -----------------------------------------------------
 

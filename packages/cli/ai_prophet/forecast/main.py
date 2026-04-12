@@ -360,17 +360,19 @@ def predict(
                 resp.raise_for_status()
                 result = resp.json()
 
+            p_yes = float(result["p_yes"])
             predictions.append(
                 Prediction(
                     market_ticker=market_ticker,
-                    p_yes=result["p_yes"],
+                    p_yes=p_yes,
                     rationale=result.get("rationale"),
                 )
             )
-            click.echo(f"  {market_ticker}: p_yes={result['p_yes']:.3f}")
+            click.echo(f"  {market_ticker}: p_yes={p_yes:.3f}")
         except Exception as e:
             logger.warning("Skipping %s: %s", market_ticker, e)
             click.echo(f"  {market_ticker}: SKIPPED ({e})")
+            continue
 
     if not predictions:
         raise click.ClickException("No predictions collected — nothing to submit.")

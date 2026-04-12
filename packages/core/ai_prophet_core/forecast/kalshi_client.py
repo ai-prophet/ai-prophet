@@ -10,7 +10,7 @@ from typing import Any
 
 import requests
 
-from ..betting.config import (
+from ai_prophet_core.kalshi_config import (
     DEFAULT_KALSHI_BASE_URL,
     KALSHI_API_KEY_ID_ENV,
     KALSHI_BASE_URL_ENV,

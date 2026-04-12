@@ -71,10 +71,10 @@ def _seed_order(db, ticker="KXTEST-CASH", side="yes", action="BUY",
         ))
 
 
-def _make_engine(db, starting_cash=10000.0, strategy=None, dry_run=True):
+def _make_engine(db, starting_cash=10000.0, strategy=None, paper=True):
     engine = BettingEngine(
         strategy=strategy or RebalancingStrategy(),
-        db_engine=db, dry_run=dry_run, enabled=True,
+        db_engine=db, paper=paper, enabled=True,
         instance_name="Haifeng", starting_cash=starting_cash,
     )
     mock_adapter = Mock()
@@ -237,7 +237,7 @@ def test_live_mode_uses_adapter_balance(db):
     """In LIVE mode, cash comes from get_balance(), not starting_cash."""
     engine = BettingEngine(
         strategy=RebalancingStrategy(),
-        db_engine=db, dry_run=False, enabled=True,
+        db_engine=db, paper=False, enabled=True,
         instance_name="Haifeng", starting_cash=99999.0,  # should be ignored
     )
     mock_adapter = Mock()

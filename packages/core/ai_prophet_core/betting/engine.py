@@ -9,7 +9,7 @@ Usage::
 
     from ai_prophet_core.betting import BettingEngine
 
-    engine = BettingEngine(dry_run=True)
+    engine = BettingEngine(paper=True)
     results = engine.process_forecasts(
         tick_ts=tick_ts,
         forecasts={"kalshi:TICKER": 0.72},
@@ -68,7 +68,8 @@ class BettingEngine:
             :class:`DefaultBettingStrategy`.
         db_engine: SQLAlchemy engine for persistence.  ``None`` disables
             DB logging (useful in tests / notebooks).
-        dry_run: When ``True`` the exchange adapter simulates fills.
+        paper: When ``True`` (the default), the engine simulates fills
+            locally instead of sending orders to Kalshi.
         kalshi_config: Explicit Kalshi credentials.  Defaults to env vars.
         enabled: Master kill-switch.
     """
@@ -77,7 +78,7 @@ class BettingEngine:
         self,
         strategy: BettingStrategy | None = None,
         db_engine: Engine | None = None,
-        dry_run: bool = True,
+        paper: bool = True,
         kalshi_config: KalshiConfig | None = None,
         enabled: bool = True,
         max_markets_per_tick: int = MAX_MARKETS_PER_TICK,
@@ -85,7 +86,7 @@ class BettingEngine:
         starting_cash: float = 10000.0,
     ) -> None:
         self.strategy = strategy or DefaultBettingStrategy()
-        self.dry_run = dry_run
+        self.paper = paper
         self.starting_cash = starting_cash
         self.enabled = enabled
         self.max_markets_per_tick = max_markets_per_tick
@@ -100,7 +101,7 @@ class BettingEngine:
         logger.info(
             "BettingEngine initialized: strategy=%s, mode=%s, enabled=%s, db=%s",
             self.strategy.name,
-            "DRY RUN" if dry_run else "LIVE",
+            "PAPER" if paper else "LIVE",
             self.enabled,
             "yes" if self._engine else "none",
         )
@@ -233,61 +234,21 @@ class BettingEngine:
 
         return results
 
-    def on_forecast(
-        self,
-        tick_ts: datetime,
-        market_id: str,
-        p_yes: float,
-        yes_ask: float,
-        no_ask: float,
-        question: str = "",
-        source: str = "",
-        portfolio: PortfolioSnapshot | None = None,
-    ) -> BetResult | None:
-        """Convenience method for single-market callback use.
-
-        Matches the signature expected by the pipeline's ``on_forecast``
-        callback so it can be wired directly::
-
-            pipeline_config["on_forecast"] = engine.on_forecast
-        """
-        if not self.enabled:
-            return None
-
-        results = self.process_forecasts(
-            tick_ts=tick_ts,
-            forecasts={market_id: p_yes},
-            market_prices={market_id: (yes_ask, no_ask)},
-            source=source,
-            portfolio=portfolio,
-        )
-        return results[0] if results else None
-
     def make_trade(
         self,
         market_id: str,
         side: str,
         shares: int,
         price: float,
-        tick_ts: datetime | None = None,
+        observed_at: datetime | None = None,
     ) -> BetResult:
         """Execute a trade directly, bypassing strategy evaluation.
 
-        Routes to paper trading (simulated fill) or live Kalshi based on
-        the ``dry_run`` flag set at construction time.
-
-        Args:
-            market_id: Market identifier, e.g. ``"kalshi:NASDAQ-100-GT5K"``
-                or just ``"NASDAQ-100-GT5K"``.
-            side: ``"yes"`` or ``"no"``.
-            shares: Number of contracts to trade.
-            price: Limit price in the range ``[0.0, 1.0]``.
-            tick_ts: Timestamp for DB records. Defaults to now.
+        Routes to paper or live Kalshi based on the ``paper`` flag.
         """
         if not self.enabled:
             return BetResult(market_id=market_id, signal=None, order_placed=False)
-        if tick_ts is None:
-            tick_ts = datetime.now(UTC)
+        ts = observed_at or datetime.now(UTC)
         signal = BetSignal(
             side=side.lower(),
             shares=float(shares),
@@ -297,7 +258,7 @@ class BettingEngine:
         yes_ask = price if side.lower() == "yes" else 0.0
         no_ask = price if side.lower() == "no" else 0.0
         return self._place_and_log_order(
-            tick_ts=tick_ts,
+            tick_ts=ts,
             market_id=market_id,
             signal=signal,
             signal_id=None,
@@ -311,45 +272,38 @@ class BettingEngine:
         p_yes: float,
         yes_ask: float,
         no_ask: float,
-        tick_ts: datetime | None = None,
+        observed_at: datetime | None = None,
         source: str = "",
-        question: str = "",
         portfolio: PortfolioSnapshot | None = None,
     ) -> BetResult | None:
-        """Evaluate a forecast through the strategy and place a trade if warranted.
+        """Evaluate a forecast through the strategy and place a trade.
 
-        The strategy decides whether to bet, which side, and how many shares.
-        Routes to paper or live Kalshi based on ``dry_run``.
-
-        Args:
-            market_id: Market identifier, e.g. ``"kalshi:NASDAQ-100-GT5K"``.
-            p_yes: Forecast probability that the YES side resolves true (0–1).
-            yes_ask: Current ask price for YES contracts (0–1).
-            no_ask: Current ask price for NO contracts (0–1).
-            tick_ts: Timestamp for DB records. Defaults to now.
-            source: Label for the prediction source (model name, etc.).
-            question: Human-readable market question (for logging).
-            portfolio: Optional portfolio snapshot; overridden by live DB state
-                when a DB engine is configured.
+        The strategy decides whether to bet, which side, and how many
+        shares. Routes to paper or live Kalshi based on the ``paper``
+        flag.
         """
-        if tick_ts is None:
-            tick_ts = datetime.now(UTC)
-        return self.on_forecast(
-            tick_ts=tick_ts,
-            market_id=market_id,
-            p_yes=p_yes,
-            yes_ask=yes_ask,
-            no_ask=no_ask,
-            question=question,
+        if not self.enabled:
+            return None
+        ts = observed_at or datetime.now(UTC)
+        results = self.process_forecasts(
+            tick_ts=ts,
+            forecasts={market_id: p_yes},
+            market_prices={market_id: (yes_ask, no_ask)},
             source=source,
             portfolio=portfolio,
         )
+        return results[0] if results else None
 
     def close(self) -> None:
         """Release resources."""
         if self._adapter:
             try:
                 self._adapter.close()
+            except Exception:
+                pass
+        if self._engine is not None:
+            try:
+                self._engine.dispose()
             except Exception:
                 pass
 
@@ -371,7 +325,7 @@ class BettingEngine:
             api_key_id=self._kalshi_config.api_key_id,
             private_key_base64=self._kalshi_config.private_key_base64,
             base_url=self._kalshi_config.base_url,
-            dry_run=self.dry_run,
+            dry_run=self.paper,
         )
         return self._adapter
 
@@ -405,7 +359,7 @@ class BettingEngine:
             positions = replay_orders_by_ticker(orders)
             capital_deployed, total_realized, _ = summarize_replayed_positions(positions)
 
-            if self.dry_run:
+            if self.paper:
                 # DRY_RUN: fixed virtual budget — no API call needed
                 base = Decimal(str(self.starting_cash))
                 cash = base - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
@@ -585,7 +539,7 @@ class BettingEngine:
             if (
                 order_result.status == OrderStatus.PENDING
                 and order_result.exchange_order_id
-                and not self.dry_run
+                and not self.paper
             ):
                 order_result = self._poll_order_status(
                     adapter, order_result,
@@ -776,7 +730,7 @@ class BettingEngine:
             filled_shares=filled_shares,
             fill_price=fill_price,
             exchange_order_id=exchange_order_id,
-            dry_run=self.dry_run,
+            dry_run=self.paper,
             created_at=now,
         )
         try:
