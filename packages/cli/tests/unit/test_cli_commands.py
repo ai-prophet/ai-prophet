@@ -6,7 +6,6 @@ from click.testing import CliRunner
 from ai_prophet.main import cli
 from ai_prophet.trade.core.config import ClientConfig
 from ai_prophet.trade.core.credentials import Credentials
-import ai_prophet.trade.main as trade_main
 
 
 def test_root_help_lists_top_level_commands():
@@ -76,13 +75,14 @@ def test_eval_run_passes_explicit_runtime_config_to_runner(monkeypatch):
     )
     monkeypatch.setattr(
         "ai_prophet.trade.main._make_pipeline_builder",
-        lambda creds, client_config, verbose, api_url, server_api_key: captured.update(
+        lambda creds, client_config, verbose, api_url, server_api_key, betting_engine: captured.update(
             {
                 "builder_creds": creds,
                 "builder_config": client_config,
                 "builder_verbose": verbose,
                 "builder_api_url": api_url,
                 "builder_server_api_key": server_api_key,
+                "builder_betting_engine": betting_engine,
             }
         )
         or "builder",
@@ -125,36 +125,5 @@ def test_eval_run_passes_explicit_runtime_config_to_runner(monkeypatch):
     assert captured["runner_kwargs"]["memory_max_rows"] == 1000
     assert captured["runner_kwargs"]["build_pipeline"] == "builder"
     assert captured["runner_kwargs"]["betting_engine"] is None
+    assert captured["builder_betting_engine"] is None
     assert captured["runner_ran"] is True
-
-
-def test_get_betting_engine_caches_per_strategy(monkeypatch):
-    trade_main._engine_holder.clear()
-    created: list[str] = []
-
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.LiveBettingSettings.from_env",
-        lambda: SimpleNamespace(enabled=True, paper=True, kalshi="kalshi-config"),
-    )
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.db.create_db_engine",
-        lambda: "db-engine",
-    )
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.BettingEngine",
-        lambda **kwargs: created.append(kwargs["strategy"].name)
-        or SimpleNamespace(strategy=kwargs["strategy"]),
-    )
-    monkeypatch.setattr(
-        "ai_prophet.trade.main._build_strategy",
-        lambda strategy_name: SimpleNamespace(name=strategy_name),
-    )
-
-    default_a = trade_main._get_betting_engine("default")
-    default_b = trade_main._get_betting_engine("default")
-    rebalancing = trade_main._get_betting_engine("rebalancing")
-
-    assert default_a is default_b
-    assert rebalancing is not default_a
-    assert created == ["default", "rebalancing"]
-    trade_main._engine_holder.clear()

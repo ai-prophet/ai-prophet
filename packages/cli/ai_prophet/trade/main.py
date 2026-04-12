@@ -137,6 +137,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
     client_config = ClientConfig.load_runtime()
     creds = _load_runtime_credentials()
     api_url = api_url or creds.server_url
+    server_api_key = creds.server_api_key
 
     model_configs = []
     for spec in models:
@@ -160,7 +161,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
     click.echo(f"API: {api_url}")
 
     # If slug is completed or conflicts (different config), auto-bump.
-    api = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
+    api = ServerAPIClient(base_url=api_url, api_key=server_api_key)
     config_hash = compute_config_hash(config)
     try:
         resp = api.create_or_get_experiment(
@@ -180,7 +181,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
         api.close()
 
     if dashboard:
-        open_dashboard(api_url=api_url, slug=slug)
+        open_dashboard(api_url=api_url, slug=slug, api_key=server_api_key)
 
     click.echo()
 
@@ -188,7 +189,7 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
 
     runner = ExperimentRunner(
         api_url=api_url,
-        api_key=creds.server_api_key,
+        api_key=server_api_key,
         experiment_slug=slug,
         models=model_configs,
         config=config,
@@ -200,7 +201,8 @@ def _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, pub
             client_config,
             verbose,
             api_url,
-            creds.server_api_key,
+            server_api_key,
+            engine,
         ),
         publish_reasoning=publish_reasoning,
         betting_engine=engine,
@@ -230,12 +232,12 @@ def eval_run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publ
     _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose, strategy=strategy)
 
 
-_engine_holder: dict[str, object | None] = {}
+_engine_holder: dict = {}
 
 def _get_betting_engine(strategy_name: str = "default"):
     """Create or return the shared BettingEngine."""
-    if strategy_name in _engine_holder:
-        return _engine_holder[strategy_name]
+    if "engine" in _engine_holder:
+        return _engine_holder["engine"]
 
     try:
         from ai_prophet_core.betting import BettingEngine, LiveBettingSettings
@@ -245,7 +247,7 @@ def _get_betting_engine(strategy_name: str = "default"):
 
         if not settings.enabled:
             click.echo("[BETTING] Engine DISABLED (LIVE_BETTING_ENABLED=false)")
-            _engine_holder[strategy_name] = None
+            _engine_holder["engine"] = None
             return None
 
         db_engine = create_db_engine()
@@ -254,20 +256,20 @@ def _get_betting_engine(strategy_name: str = "default"):
         engine = BettingEngine(
             strategy=strategy,
             db_engine=db_engine,
-            paper=settings.paper,
+            dry_run=settings.dry_run,
             kalshi_config=settings.kalshi,
             enabled=settings.enabled,
         )
         click.echo(
             f"[BETTING] Engine ENABLED — strategy={engine.strategy.name}, "
-            f"paper={settings.paper}"
+            f"dry_run={settings.dry_run}"
         )
-        _engine_holder[strategy_name] = engine
+        _engine_holder["engine"] = engine
         return engine
     except Exception as e:
         click.echo(f"[BETTING] Engine FAILED to create: {type(e).__name__}: {e}", err=True)
         logger.warning("Betting engine unavailable: %s", e, exc_info=True)
-        _engine_holder[strategy_name] = None
+        _engine_holder["engine"] = None
         return None
 
 def _make_pipeline_builder(
@@ -276,8 +278,13 @@ def _make_pipeline_builder(
     verbose: bool,
     api_url: str,
     server_api_key: str | None,
+    betting_engine=None,
 ):
-    """Return a callable that builds an AgentPipeline for a participant config."""
+    """Return a callable that builds an AgentPipeline for a participant config.
+
+    When a betting engine is provided, every pipeline gets an ``on_forecast``
+    callback that feeds predictions into the engine for bet placement.
+    """
     def builder(participant_cfg: dict):
         model_spec = participant_cfg["model"]
         provider, model_name = _split_model_spec(model_spec)
@@ -312,6 +319,46 @@ def _make_pipeline_builder(
             "min_size_usd": client_config.pipeline.min_size_usd,
         }
 
+        # Wire betting engine as on_forecast callback for all participants
+        if betting_engine is not None:
+            from ai_prophet_core.betting.strategy import PortfolioSnapshot
+
+            def on_forecast_cb(
+                tick_ts, market_id, p_yes, yes_ask, no_ask, question,
+                cash=None, equity=None, total_pnl=None, positions=(),
+                _source=model_spec, _engine=betting_engine,
+            ):
+                portfolio = None
+                if cash is not None:
+                    from decimal import Decimal
+                    mkt_pos_shares = Decimal("0")
+                    mkt_pos_side = None
+                    for pos in positions:
+                        if pos.market_id == market_id:
+                            mkt_pos_shares = pos.shares
+                            mkt_pos_side = pos.side
+                            break
+                    portfolio = PortfolioSnapshot(
+                        cash=cash,
+                        equity=equity,
+                        total_pnl=total_pnl,
+                        position_count=len(positions),
+                        market_position_shares=mkt_pos_shares,
+                        market_position_side=mkt_pos_side,
+                    )
+                _engine.on_forecast(
+                    tick_ts=tick_ts,
+                    market_id=market_id,
+                    p_yes=p_yes,
+                    yes_ask=yes_ask,
+                    no_ask=no_ask,
+                    question=question,
+                    source=_source,
+                    portfolio=portfolio,
+                )
+
+            pipeline_config["on_forecast"] = on_forecast_cb
+
         pipeline = AgentPipeline(
             llm_client=llm_client,
             event_store=None,
@@ -333,7 +380,7 @@ def health(api_url, legacy_url):
     api_url = api_url or legacy_url or creds.server_url
 
     click.echo(f"Checking: {api_url}")
-    client = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
+    client = ServerAPIClient(api_url, api_key=creds.server_api_key)
     try:
         resp = client.health_check()
         click.echo(f"Status:  {resp.status}")
@@ -357,7 +404,7 @@ def progress(experiment_id, api_url, legacy_url):
     creds = _load_runtime_credentials()
     api_url = api_url or legacy_url or creds.server_url
 
-    client = ServerAPIClient(base_url=api_url, api_key=creds.server_api_key)
+    client = ServerAPIClient(api_url, api_key=creds.server_api_key)
     try:
         p = client.get_progress(experiment_id)
         click.echo(f"Experiment: {p.experiment_id}")
@@ -386,7 +433,7 @@ def dashboard(api_url, slug):
     api_url = api_url or creds.server_url
 
     click.echo("Trade Benchmark Dashboard")
-    open_dashboard(api_url=api_url, slug=slug or "")
+    open_dashboard(api_url=api_url, slug=slug or "", api_key=creds.server_api_key)
 
 
 def main():
