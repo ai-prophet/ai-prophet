@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-# Hosted Core API — default trade benchmark endpoint.
+# Hosted Core API -- default trade benchmark endpoint.
 DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
 _PROVIDER_ALIASES = {
     "google": "gemini",

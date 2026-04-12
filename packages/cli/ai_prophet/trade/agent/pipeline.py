@@ -310,10 +310,7 @@ class AgentPipeline:
                 )
 
         elif stage_name == "action":
-            # Log trade decisions and intents separately
-            # This enables independent analysis of forecasting vs risk management
             decisions = result.data.get("decisions", {})
-            result.data.get("intents", [])
 
             # Build market_id -> question lookup
             questions = {m.market_id: m.question for m in tick_ctx.candidates}

@@ -239,7 +239,7 @@ def _save_team_name_to_env(team_name: str) -> None:
                 env_path.write_text("".join(lines))
                 click.echo(f"Updated PA_TEAM_NAME={team_name} in .env")
                 return
-        # Not found — append
+        # Not found -- append
         text = env_path.read_text()
         if text and not text.endswith("\n"):
             text += "\n"
@@ -373,7 +373,7 @@ def predict(
             continue
 
     if not predictions:
-        raise click.ClickException("No predictions collected — nothing to submit.")
+        raise click.ClickException("No predictions collected -- nothing to submit.")
 
     submission = Submission(
         timestamp=datetime.now(UTC),

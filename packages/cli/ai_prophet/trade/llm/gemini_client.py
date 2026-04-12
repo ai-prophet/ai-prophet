@@ -313,8 +313,8 @@ class GeminiClient(LLMClient):
 
                 total_duration = time.monotonic() - call_start
                 logger.info(
-                    f"[GEMINI] generate OK in {total_duration:.1f}s — "
-                    f"tokens: {prompt_tokens}→{completion_tokens} "
+                    f"[GEMINI] generate OK in {total_duration:.1f}s -- "
+                    f"tokens: {prompt_tokens}->{completion_tokens} "
                     f"(total={total_tokens}), finish={finish_reason}"
                 )
                 self._log_response(llm_response)

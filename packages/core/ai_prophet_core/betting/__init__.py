@@ -1,4 +1,4 @@
-"""Betting module — pluggable strategy, exchange execution, and DB logging.
+"""Betting module - pluggable strategy, exchange execution, and DB logging.
 
 Quick-start::
 
@@ -40,7 +40,7 @@ from .strategy import (
 )
 
 __all__ = [
-    # Engine — main entry points
+    # Engine - main entry points
     "BettingEngine",   # make_trade() and trade_from_forecast() live here
     "BetResult",
     # Strategy

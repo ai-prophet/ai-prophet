@@ -1,6 +1,6 @@
 """Backward-compatible credentials module.
 
-Use ``ai_prophet.core.credentials`` as the canonical import path.
+Use ``ai_prophet.trade.core.credentials`` as the canonical import path.
 """
 
 from .credentials import DEFAULT_API_URL, Credentials, load_dotenv_file

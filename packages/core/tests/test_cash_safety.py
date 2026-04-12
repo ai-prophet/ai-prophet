@@ -1,11 +1,11 @@
-"""Cash safety tests — verify correct behaviour at zero / near-zero balances.
+"""Cash safety tests -- verify correct behaviour at zero / near-zero balances.
 
 Critical before going live with real money:
 1. Zero cash blocks BUY orders
 2. Partial cash sizes BUY down to what's affordable
 3. SELL works even with zero cash (returns cash, costs nothing)
 4. NET flip: sell proceeds are available for the subsequent BUY
-5. Strategy and engine agree — neither double-spends
+5. Strategy and engine agree -- neither double-spends
 6. Live mode uses adapter.get_balance(), not starting_cash
 """
 

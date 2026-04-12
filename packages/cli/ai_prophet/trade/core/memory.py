@@ -158,39 +158,19 @@ class Memory:
 
         return "\n".join(lines)
 
-    def get_last_review_decisions(self, tick_ts: datetime) -> list[dict]:
-        """Get review decisions from last tick.
-
-        Args:
-            tick_ts: Current tick timestamp
-
-        Returns:
-            List of review decision data
-        """
-        # Get previous completed tick
+    def get_last_review_decisions(self) -> list[dict]:
+        """Get review decisions from the most recently completed tick."""
         last_tick = self.event_store.get_last_completed_tick()
         if not last_tick:
             return []
-
-        # Get review decisions for that tick
         events = self.event_store.get_review_decisions(last_tick)
         return [event["payload"] for event in events]
 
-    def get_last_forecasts(self, tick_ts: datetime) -> list[dict]:
-        """Get forecasts from last tick.
-
-        Args:
-            tick_ts: Current tick timestamp
-
-        Returns:
-            List of forecast data
-        """
-        # Get previous completed tick
+    def get_last_forecasts(self) -> list[dict]:
+        """Get forecasts from the most recently completed tick."""
         last_tick = self.event_store.get_last_completed_tick()
         if not last_tick:
             return []
-
-        # Get forecasts for that tick
         events = self.event_store.get_forecasts(last_tick)
         return [event["payload"] for event in events]
 

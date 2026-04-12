@@ -2,11 +2,11 @@
 
 Three client types:
 
-- :class:`AnthropicClient` — Anthropic Messages API (Claude)
-- :class:`OpenAIClient` — OpenAI Responses API (GPT-5 family)
-- :class:`OpenAICompatibleClient` — OpenAI Chat Completions API
+- :class:`AnthropicClient` - Anthropic Messages API (Claude)
+- :class:`OpenAIClient` - OpenAI Responses API (GPT-5 family)
+- :class:`OpenAICompatibleClient` - OpenAI Chat Completions API
   (xAI, Together, Fireworks, Groq, Ollama, and any compatible provider)
-- :class:`GeminiClient` — Google Generative AI REST API
+- :class:`GeminiClient` - Google Generative AI REST API
 
 Use :func:`create_llm_client` to get the right client for a provider string.
 """
@@ -36,7 +36,7 @@ from .openai_compat_client import OpenAICompatibleClient
 logger = logging.getLogger(__name__)
 
 # Known providers that use the OpenAI Chat Completions API.
-# Unknown providers also route here — set {PROVIDER}_BASE_URL.
+# Unknown providers also route here -- set {PROVIDER}_BASE_URL.
 _OPENAI_COMPAT_BASE_URLS: dict[str, str] = {
     "xai": "https://api.x.ai/v1",
     "grok": "https://api.x.ai/v1",
@@ -171,7 +171,7 @@ def _resolve_base_url(provider: str, explicit: str | None) -> str:
         logger.info(f"Using {env_key}={env_url} for provider '{provider}'")
         return env_url
 
-    # 4. Fall back to OpenAI default — will fail with an auth error that
+    # 4. Fall back to OpenAI default -- will fail with an auth error that
     #    clearly tells the user something is misconfigured.
     logger.warning(
         f"Unknown provider '{provider}' with no base URL configured. "

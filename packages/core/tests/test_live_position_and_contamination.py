@@ -361,7 +361,7 @@ def test_default_strategy_skips_when_at_target(db_engine):
     )
 
     assert len(results) == 1
-    # Should skip — already at target
+    # Should skip -- already at target
     assert results[0].signal is None or results[0].order_placed is False
 
 
@@ -422,7 +422,7 @@ def test_multi_market_cash_decreases_between_orders(db_engine):
     """When processing multiple markets, cash should decrease as orders are placed."""
     engine = _make_engine(db_engine, starting_cash=20.0)
 
-    # Two markets, both want to buy — but only $20 total budget
+    # Two markets, both want to buy -- but only $20 total budget
     # Market A: p_yes=0.90, yes_ask=0.35 → edge 0.55 → 55 contracts @ $0.35 = $19.25
     # Market B: p_yes=0.80, yes_ask=0.35 → edge 0.45 → 45 contracts @ $0.35 = $15.75
     # Total would be $35, but only $20 available

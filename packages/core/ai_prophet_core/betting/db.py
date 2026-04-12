@@ -37,7 +37,7 @@ def create_db_engine(
         pool_size=pool_size,
         max_overflow=max_overflow,
         pool_pre_ping=True,
-        pool_recycle=300,           # 5 min — Supabase drops idle connections aggressively
+        pool_recycle=300,           # 5 min -- Supabase drops idle connections aggressively
         pool_timeout=30,            # fail after 30s waiting for a pool slot
         connect_args={
             "connect_timeout": 10,  # TCP connect timeout (seconds)
@@ -63,13 +63,13 @@ def get_session(engine: Engine):
 
     On OperationalError / DisconnectionError the failed session is discarded,
     the pool connection is invalidated, and a fresh session is created for a
-    single retry — all before yielding, so the @contextmanager contract
+    single retry -- all before yielding, so the @contextmanager contract
     (exactly one yield) is preserved.
     """
     factory = _get_factory(engine)
     session = factory()
     try:
-        # Test the connection before yielding — if it's dead, the retry
+        # Test the connection before yielding -- if it's dead, the retry
         # below creates a fresh session before the caller ever sees it.
         session.connection()
     except (OperationalError, DisconnectionError) as exc:

@@ -8,7 +8,6 @@ Usage:
 
 import logging
 import os
-import re
 import traceback
 from pathlib import Path
 
@@ -24,19 +23,10 @@ from ai_prophet.trade.core.credentials import (
 )
 from ai_prophet.trade.dashboard import open_dashboard
 from ai_prophet.trade.llm import create_llm_client
-from ai_prophet.trade.runner import ExperimentRunner, compute_config_hash
+from ai_prophet.trade.runner import ExperimentRunner, _bump_slug, compute_config_hash
 from ai_prophet.trade.search import SearchClient
 
 logger = logging.getLogger(__name__)
-
-
-def _bump_slug(slug: str) -> str:
-    """Increment version suffix: baseline_v01 → baseline_v02, foo → foo_v2."""
-    m = re.search(r'_v(\d+)$', slug)
-    if m:
-        n = int(m.group(1)) + 1
-        return slug[:m.start()] + f"_v{n:02d}"
-    return f"{slug}_v2"
 
 
 def _split_model_spec(model_spec: str) -> tuple[str, str]:
@@ -261,7 +251,7 @@ def _get_betting_engine(strategy_name: str = "default"):
             enabled=settings.enabled,
         )
         click.echo(
-            f"[BETTING] Engine ENABLED — strategy={engine.strategy.name}, "
+            f"[BETTING] Engine ENABLED -- strategy={engine.strategy.name}, "
             f"dry_run={settings.dry_run}"
         )
         _engine_holder["engine"] = engine

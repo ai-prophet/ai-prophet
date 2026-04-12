@@ -48,7 +48,7 @@ class SchemaLoader:
                 schema = json.loads(schema_text)
 
             # Validate schema itself once at load time (not per-validation).
-            # Pick validator based on declared draft — our schemas use 2020-12.
+            # Pick validator based on declared draft -- our schemas use 2020-12.
             validator_cls = jsonschema.validators.validator_for(schema)
             validator_cls.check_schema(schema)
 

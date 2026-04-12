@@ -479,7 +479,7 @@ class ExperimentRunner:
             result = pipeline.execute(
                 tick_ctx,
                 f"{exp_id}:{idx}",
-                publish_reasoning=True,
+                publish_reasoning=self.publish_reasoning,
             )
         finally:
             # Pipeline holds HTTP clients; close them deterministically.

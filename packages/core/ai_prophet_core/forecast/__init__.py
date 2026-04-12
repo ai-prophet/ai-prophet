@@ -1,4 +1,4 @@
-"""Forecast module — event retrieval, prediction schemas, and evaluation."""
+"""Forecast module - event retrieval, prediction schemas, and evaluation."""
 
 from .evaluate import load_actuals, load_submission, score
 from .kalshi_client import KalshiForecastClient

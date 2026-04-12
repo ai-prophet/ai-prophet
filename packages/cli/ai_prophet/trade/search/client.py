@@ -117,7 +117,7 @@ class SearchClient:
         if self._session and not self._session.closed:
             return self._session
 
-        # Keep connector pool small — this is a memory-constrained benchmark box.
+        # Keep connector pool small -- this is a memory-constrained benchmark box.
         # Size it to the configured concurrency with a small headroom.
         per_host = max(2, int(self.max_concurrent) + 1)
         total = max(4, per_host * 2)
@@ -246,7 +246,7 @@ class SearchClient:
                     response.raise_for_status()
 
                     # Read at most max_html_bytes to avoid ballooning RSS on
-                    # huge pages. Decode leniently — we only need "good enough"
+                    # huge pages. Decode leniently -- we only need "good enough"
                     # HTML for trafilatura.
                     raw = await response.content.read(self.max_html_bytes)
                     html = raw.decode("utf-8", errors="replace")
@@ -270,7 +270,7 @@ class SearchClient:
                 del html  # free the HTML buffer immediately
 
                 if text:
-                    # Truncate early — the prompt only uses ~1 000 chars.
+                    # Truncate early -- the prompt only uses ~1 000 chars.
                     text = text[:self.max_extract_chars]
                     logger.debug(f"Extracted {len(text)} chars from {url[:60]}...")
                     return text

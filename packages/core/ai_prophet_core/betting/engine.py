@@ -1,5 +1,5 @@
 """
-Betting engine — the main entry point for the betting module.
+Betting engine - the main entry point for the betting module.
 
 Takes probabilistic predictions as input, runs them through a pluggable
 :class:`~ai_prophet_core.betting.strategy.BettingStrategy`, places orders
@@ -118,9 +118,9 @@ class BettingEngine:
         forecasts: dict[str, float],
         market_prices: dict[str, tuple[float, float]],
         source: str = "",
-        portfolio: PortfolioSnapshot | None = None,  # noqa: ARG002 — kept for API compat; live DB state used instead
+        portfolio: PortfolioSnapshot | None = None,  # noqa: ARG002 -- kept for API compat; live DB state used instead
     ) -> list[BetResult]:
-        """Run the full predict → evaluate → place → log cycle.
+        """Run the full predict -> evaluate -> place -> log cycle.
 
         Args:
             tick_ts: Timestamp of the current tick.
@@ -166,7 +166,7 @@ class BettingEngine:
 
             # 2. Refresh portfolio from live DB state (not the stale snapshot
             #    from the caller) so the strategy always sees the authoritative
-            #    position for THIS market — prevents stale-delta over-buying.
+            #    position for THIS market -- prevents stale-delta over-buying.
             #    Falls back to caller's portfolio when no DB is configured.
             if self._engine is not None:
                 ticker = market_id[len("kalshi:"):] if market_id.startswith("kalshi:") else market_id
@@ -187,7 +187,7 @@ class BettingEngine:
 
             if signal is None:
                 logger.info(
-                    "[BETTING] %s on %s: p_yes=%.3f → SKIP",
+                    "[BETTING] %s on %s: p_yes=%.3f -> SKIP",
                     source, market_id, p_yes,
                 )
                 results.append(BetResult(market_id=market_id, signal=None, order_placed=False))
@@ -197,7 +197,7 @@ class BettingEngine:
             signal_id = self._save_signal(prediction_id, signal)
 
             logger.info(
-                "[BETTING] %s on %s: p_yes=%.3f → %s %.4f @ %.3f",
+                "[BETTING] %s on %s: p_yes=%.3f -> %s %.4f @ %.3f",
                 source, market_id, p_yes,
                 signal.side.upper(), signal.shares, signal.price,
             )
@@ -341,7 +341,7 @@ class BettingEngine:
         nothing is ever stale.
 
         For DRY_RUN mode: uses starting_cash as the fixed baseline (no API
-        call needed — DRY_RUN orders never affect the real Kalshi balance).
+        call needed -- DRY_RUN orders never affect the real Kalshi balance).
         For LIVE mode: fetches real balance from the adapter (Kalshi already
         deducts for real orders, so we use it directly without subtraction).
         """
@@ -364,7 +364,7 @@ class BettingEngine:
             capital_deployed, total_realized, _ = summarize_replayed_positions(positions)
 
             if self.paper:
-                # DRY_RUN: fixed virtual budget — no API call needed
+                # DRY_RUN: fixed virtual budget -- no API call needed
                 base = Decimal(str(self.starting_cash))
                 cash = base - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
             else:
@@ -453,7 +453,7 @@ class BettingEngine:
                         sell_result = adapter.submit_order(sell_req)
                         sell_status = sell_result.status.value
                         logger.info(
-                            "[BETTING] NET: sold %d %s on %s → %s",
+                            "[BETTING] NET: sold %d %s on %s -> %s",
                             held_count, held_side.upper(), ticker, sell_status,
                         )
                         self._save_order(
@@ -485,7 +485,7 @@ class BettingEngine:
                     # Continue to buy remaining on new side
                     action = "BUY"
                     effective_side = want_side.upper()
-                    # Refresh cash after the NET sell — proceeds are now persisted
+                    # Refresh cash after the NET sell -- proceeds are now persisted
                     # to DB and must be available for the subsequent BUY.
                     _, _, live_cash = self._live_ledger_state(ticker)
 
@@ -563,7 +563,7 @@ class BettingEngine:
             error = str(e)
 
         logger.info(
-            "[BETTING] Order %s: %s %s %s×%s @ %sc → %s (filled=%s @ %s)",
+            "[BETTING] Order %s: %s %s %sx%s @ %sc -> %s (filled=%s @ %s)",
             order_id[:8], action, effective_side, count, ticker,
             price_cents, status, filled_shares, fill_price,
         )

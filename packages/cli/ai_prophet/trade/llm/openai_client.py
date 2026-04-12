@@ -33,11 +33,7 @@ class OpenAIClient(LLMClient):
     - Uses text.verbosity for output length control
     - Tool calling uses function type with structured outputs
 
-    Supported models:
-    - gpt-5.2: Best for complex reasoning and agentic tasks
-    - gpt-5.2-pro: For tough problems requiring harder thinking
-    - gpt-5-mini: Cost-optimized reasoning
-    - gpt-5-nano: High-throughput simple tasks
+    Supported models: gpt-5.2, gpt-5.2-pro, gpt-5-mini, gpt-5-nano.
 
     Example:
         client = OpenAIClient("gpt-5.2", api_key="...")

@@ -82,7 +82,7 @@ def open_dashboard(api_url: str, slug: str = "", port: int = 8501, api_key: str 
 
 
 # ---------------------------------------------------------------------------
-# Self-contained HTML — hits core API directly via CORS
+# Self-contained HTML -- hits core API directly via CORS
 # ---------------------------------------------------------------------------
 
 _HTML = r"""<!DOCTYPE html>

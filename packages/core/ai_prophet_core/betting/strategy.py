@@ -163,7 +163,7 @@ class DefaultBettingStrategy(BettingStrategy):
                 current_contracts = float(port.market_position_shares)
                 desired_contracts = round(desired_shares * 100)
                 delta = max(0, desired_contracts - current_contracts) / 100.0
-                if delta < 0.005:  # less than 1 contract needed — already at target
+                if delta < 0.005:  # less than 1 contract needed -- already at target
                     return None
                 desired_shares = delta
 
@@ -182,8 +182,8 @@ class RebalancingStrategy(BettingStrategy):
 
         delta = target - current_position
 
-    Positive delta → buy YES (or sell NO via engine's NET logic).
-    Negative delta → buy NO (or sell YES via engine's NET logic).
+    Positive delta -> buy YES (or sell NO via engine's NET logic).
+    Negative delta -> buy NO (or sell YES via engine's NET logic).
 
     Using the real portfolio position instead of in-memory state means the
     strategy survives process restarts and handles partial fills correctly.
@@ -204,7 +204,7 @@ class RebalancingStrategy(BettingStrategy):
         port = self.portfolio
         if not port or not port.market_position_side or port.market_position_shares <= 0:
             return 0.0
-        shares = float(port.market_position_shares) / 100.0  # contracts → fractional
+        shares = float(port.market_position_shares) / 100.0  # contracts -> fractional
         if port.market_position_side.lower() == "yes":
             return shares
         else:
@@ -224,7 +224,7 @@ class RebalancingStrategy(BettingStrategy):
             return None
 
         # Within-spread filter: if prediction sits inside the bid-ask band,
-        # there is no edge — skip without updating state.
+        # there is no edge -- skip without updating state.
         lower_bound = 1.0 - no_ask
         upper_bound = yes_ask
         if lower_bound <= p_yes <= upper_bound:
@@ -247,19 +247,19 @@ class RebalancingStrategy(BettingStrategy):
             side = "yes"
             shares = delta
             price = yes_ask
-            # If we hold NO, engine will sell those first (NET flip) — no cash needed for that portion
+            # If we hold NO, engine will sell those first (NET flip) -- no cash needed for that portion
             sell_portion = min(shares, abs(current_pos)) if current_pos < 0 else 0.0
         else:
-            # Decrease YES exposure → buy NO (engine handles sell-first)
+            # Decrease YES exposure -> buy NO (engine handles sell-first)
             side = "no"
             shares = abs(delta)
             price = no_ask
-            # If we hold YES, engine will sell those first (NET flip) — no cash needed for that portion
+            # If we hold YES, engine will sell those first (NET flip) -- no cash needed for that portion
             sell_portion = min(shares, current_pos) if current_pos > 0 else 0.0
 
         buy_portion = shares - sell_portion
 
-        # Only cap the BUY portion by available cash — sells return cash, they cost nothing.
+        # Only cap the BUY portion by available cash -- sells return cash, they cost nothing.
         # Include expected sell proceeds so the buy isn't under-sized after a NET flip.
         port = self.portfolio
         if buy_portion > 0 and port is not None:
