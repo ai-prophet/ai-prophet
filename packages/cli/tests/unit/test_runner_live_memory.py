@@ -20,15 +20,13 @@ def test_submit_intents_logs_rejection_reasons(caplog):
         publish_reasoning=False,
     )
     runner.session.experiment_id = "exp-1"
-    runner.session.api = SimpleNamespace(
-        submit_trade_intents=lambda **_kwargs: SimpleNamespace(
-            accepted=2,
-            rejected=1,
-            fills=[],
-            rejections=[
-                SimpleNamespace(intent_id="intent-123", reason="insufficient liquidity")
-            ],
-        )
+    runner.session.submit_intents = lambda *_args, **_kwargs: SimpleNamespace(
+        accepted=2,
+        rejected=1,
+        fills=[],
+        rejections=[
+            SimpleNamespace(intent_id="intent-123", reason="insufficient liquidity")
+        ],
     )
 
     lease = TickLease(
@@ -52,7 +50,7 @@ def test_submit_intents_logs_rejection_reasons(caplog):
     assert "insufficient liquidity" in caplog.text
 
 
-def test_generate_plan_processes_forecasts_before_action_failure():
+def test_generate_plan_does_not_process_forecasts_on_action_failure():
     candidate_market = CandidateMarket.from_server_response(
         {
             "market_id": "kalshi:TEST-MARKET",
@@ -114,11 +112,5 @@ def test_generate_plan_processes_forecasts_before_action_failure():
     with pytest.raises(PipelineError, match="Stage 'action' failed"):
         runner._generate_plan(0, lease, tick_shared)
 
-    betting_engine.process_forecasts.assert_called_once()
-    call_kwargs = betting_engine.process_forecasts.call_args.kwargs
-    assert call_kwargs["tick_ts"] == datetime(2026, 3, 9, 12, 0, tzinfo=UTC)
-    assert call_kwargs["forecasts"] == {"kalshi:TEST-MARKET": 0.72}
-    assert call_kwargs["market_prices"]["kalshi:TEST-MARKET"][0] == 0.60
-    assert call_kwargs["market_prices"]["kalshi:TEST-MARKET"][1] == pytest.approx(0.45)
-    assert call_kwargs["source"] == "openai:gpt-5"
+    betting_engine.process_forecasts.assert_not_called()
 

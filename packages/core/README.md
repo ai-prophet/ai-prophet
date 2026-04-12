@@ -58,12 +58,15 @@ while True:
         time.sleep(lease.retry_after_sec or 15)
         continue
 
-    candidates = session.get_candidates(lease)
+    tick = session.load_candidates(lease)
+    lease = tick.lease
+    candidates = tick.candidates
     portfolio = session.get_portfolio(participant_idx=0)
 
     # Your agent logic here
-    intents = my_agent(candidates, portfolio)
+    plan_json, intents = my_agent(candidates, portfolio)
 
+    session.put_plan(lease, participant_idx=0, plan_json=plan_json)
     session.submit_intents(lease, participant_idx=0, intents=intents)
     session.finalize(lease, participant_idx=0)
     session.complete_tick(lease)
@@ -128,7 +131,7 @@ Tools: `health_check`, `create_experiment`, `add_participant`, `claim_tick`,
 | `KALSHI_PRIVATE_KEY_B64` | For live trading | Base64-encoded Kalshi private key |
 | `KALSHI_BASE_URL` | No | Override default Kalshi endpoint |
 | `LIVE_BETTING_ENABLED` | No | Enable betting engine in CLI |
-| `LIVE_BETTING_DRY_RUN` | No | Dry-run mode (default: true) |
+| `LIVE_BETTING_DRY_RUN` | No | Paper mode flag (default: true) |
 
 ## Development
 

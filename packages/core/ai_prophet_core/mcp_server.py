@@ -145,7 +145,7 @@ def get_progress(experiment_id: str) -> dict:
 
 @mcp.tool
 def claim_tick(experiment_id: str) -> dict:
-    """Claim the next available tick. Returns tick_id and snapshot_id.
+    """Claim the next available tick. Returns tick_id and candidate_set_id.
 
     If no tick is available, returns no_tick_available=true with a reason.
     If reason is "experiment_completed", the experiment is done.
@@ -155,23 +155,33 @@ def claim_tick(experiment_id: str) -> dict:
     """
     with _get_client() as api:
         resp = api.claim_tick(experiment_id, _lease_owner)
-        return _model_to_dict(resp)
+        result = {
+            "tick_id": resp.tick_id,
+            "candidate_set_id": resp.candidate_set_id,
+            "lease_expires_at": resp.lease_expires_at,
+            "reclaim_count": resp.reclaim_count,
+            "no_tick_available": resp.no_tick_available,
+            "retry_after_sec": resp.retry_after_sec,
+            "reason": resp.reason,
+        }
+        result = {key: value for key, value in result.items() if value is not None}
+        return result
 
 
 @mcp.tool
-def get_markets(tick_ts: str, snapshot_id: str | None = None) -> dict:
+def get_markets(tick_ts: str, candidate_set_id: str | None = None) -> dict:
     """Get candidate prediction markets for a tick.
 
     Returns up to 256 live markets with current bid/ask prices.
-    Use the tick_ts and snapshot_id from claim_tick.
+    Use the tick_ts and candidate_set_id from claim_tick.
 
     Args:
         tick_ts: ISO timestamp from claim_tick (e.g. "2026-03-16T09:30:00+00:00").
-        snapshot_id: Snapshot ID from claim_tick.
+        candidate_set_id: Candidate set ID from claim_tick.
     """
     with _get_client() as api:
         ts = datetime.fromisoformat(tick_ts)
-        resp = api.get_candidates(ts, snapshot_id)
+        resp = api.get_candidates(ts, candidate_set_id)
         markets = []
         for m in resp.markets:
             markets.append({
@@ -318,7 +328,7 @@ def get_current_markets() -> dict:
                 "volume_24h": m.quote.volume_24h,
             })
         return {
-            "snapshot_id": resp.snapshot_id,
+            "candidate_set_id": resp.candidate_set_id,
             "requested_as_of_ts": requested_as_of_ts,
             "data_as_of_ts": data_as_of_ts,
             "market_count": resp.market_count,

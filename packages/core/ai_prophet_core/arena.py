@@ -2,7 +2,7 @@
 
 Thin wrapper around ServerAPIClient that manages the tick lifecycle:
 create experiment, upsert participants, claim tick, fetch candidates,
-submit intents, finalize, complete tick.
+persist plans, submit intents, finalize, complete tick.
 
 Does NOT handle concurrency, timeouts, pipeline stages, memory,
 tracing, or any CLI-specific orchestration. Those belong in the CLI's
@@ -17,13 +17,14 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from .client import ServerAPIClient
 from .client_models import (
     CandidatesResponse,
     FillData,
     PortfolioResponse,
+    PutPlanResponse,
     RejectionData,
     TradeIntentRequest,
 )
@@ -42,7 +43,26 @@ class TickLease:
     def tick_ts(self) -> datetime | None:
         if not self.tick_id:
             return None
-        return datetime.fromisoformat(self.tick_id)
+        tick_ts = datetime.fromisoformat(self.tick_id)
+        if tick_ts.tzinfo is None:
+            tick_ts = tick_ts.replace(tzinfo=UTC)
+        return tick_ts
+
+    def with_candidate_set_id(self, candidate_set_id: str) -> TickLease:
+        return TickLease(
+            available=self.available,
+            tick_id=self.tick_id,
+            candidate_set_id=candidate_set_id,
+            reason=self.reason,
+            retry_after_sec=self.retry_after_sec,
+        )
+
+
+@dataclass(frozen=True)
+class TickCandidates:
+    """Candidates response bound to the authoritative candidate set id."""
+    lease: TickLease
+    candidates: CandidatesResponse
 
 
 @dataclass(frozen=True)
@@ -74,9 +94,12 @@ class BenchmarkSession:
             lease = session.claim_tick()
             if not lease.available:
                 break
-            candidates = session.get_candidates(lease)
+            tick = session.load_candidates(lease)
+            candidates = tick.candidates
+            lease = tick.lease
             portfolio = session.get_portfolio(participant_idx=0)
             # ... agent logic ...
+            session.put_plan(lease, participant_idx=0, plan_json={...})
             session.submit_intents(lease, participant_idx=0, intents=[...])
             session.finalize(lease, participant_idx=0)
             session.complete_tick(lease)
@@ -110,7 +133,7 @@ class BenchmarkSession:
         starting_cash: float = 10000.0,
     ):
         return self.api.upsert_participant(
-            self._require_experiment_id(),
+            self.require_experiment_id(),
             model=model,
             rep=rep,
             starting_cash=starting_cash,
@@ -118,7 +141,7 @@ class BenchmarkSession:
 
     def claim_tick(self, lease_sec: int = 600) -> TickLease:
         claim = self.api.claim_tick(
-            self._require_experiment_id(),
+            self.require_experiment_id(),
             self._lease_owner_id,
             lease_sec=lease_sec,
         )
@@ -135,16 +158,40 @@ class BenchmarkSession:
         )
 
     def get_candidates(self, lease: TickLease) -> CandidatesResponse:
-        tick_ts = lease.tick_ts
-        if tick_ts is None:
-            raise ValueError("TickLease has no tick_id")
-        return self.api.get_candidates(tick_ts, snapshot_id=lease.candidate_set_id)
+        return self.api.get_candidates(
+            self._require_tick_ts(lease),
+            candidate_set_id=lease.candidate_set_id,
+        )
+
+    def load_candidates(self, lease: TickLease) -> TickCandidates:
+        candidates = self.get_candidates(lease)
+        candidate_set_id = candidates.candidate_set_id
+        if not candidate_set_id:
+            raise RuntimeError("get_candidates returned no candidate_set_id")
+        return TickCandidates(
+            lease=lease.with_candidate_set_id(candidate_set_id),
+            candidates=candidates,
+        )
+
+    def put_plan(
+        self,
+        lease: TickLease,
+        participant_idx: int,
+        plan_json: dict,
+    ) -> PutPlanResponse:
+        return self.api.put_plan(
+            experiment_id=self.require_experiment_id(),
+            participant_idx=participant_idx,
+            tick_id=self._require_tick_id(lease),
+            candidate_set_id=self._require_candidate_set_id(lease),
+            plan_json=plan_json,
+        )
 
     def get_portfolio(self, participant_idx: int) -> PortfolioResponse | None:
-        return self.api.get_portfolio(self._require_experiment_id(), participant_idx)
+        return self.api.get_portfolio(self.require_experiment_id(), participant_idx)
 
     def get_progress(self):
-        return self.api.get_progress(self._require_experiment_id())
+        return self.api.get_progress(self.require_experiment_id())
 
     def submit_intents(
         self,
@@ -160,13 +207,9 @@ class BenchmarkSession:
         ``idempotency_key_fn(experiment_id, participant_idx, tick_id, index)``
         to override (e.g. for distributed runners).
         """
-        exp_id = self._require_experiment_id()
-        tick_id = lease.tick_id
-        if tick_id is None:
-            raise ValueError("TickLease has no tick_id")
-        candidate_set_id = lease.candidate_set_id
-        if not candidate_set_id:
-            raise ValueError("TickLease has no candidate_set_id")
+        exp_id = self.require_experiment_id()
+        tick_id = self._require_tick_id(lease)
+        candidate_set_id = self._require_candidate_set_id(lease)
 
         key_fn = idempotency_key_fn or _default_idempotency_key
         keyed_intents = []
@@ -206,7 +249,7 @@ class BenchmarkSession:
         if tick_id is None:
             raise ValueError("TickLease has no tick_id")
         self.api.finalize_participant(
-            self._require_experiment_id(),
+            self.require_experiment_id(),
             participant_idx,
             tick_id,
             status,
@@ -215,10 +258,7 @@ class BenchmarkSession:
         )
 
     def complete_tick(self, lease: TickLease) -> None:
-        tick_id = lease.tick_id
-        if tick_id is None:
-            raise ValueError("TickLease has no tick_id")
-        self.api.complete_tick(self._require_experiment_id(), tick_id)
+        self.api.complete_tick(self.require_experiment_id(), self._require_tick_id(lease))
 
     def close(self) -> None:
         self.api.close()
@@ -229,7 +269,25 @@ class BenchmarkSession:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def _require_experiment_id(self) -> str:
+    def require_experiment_id(self) -> str:
         if self.experiment_id is None:
             raise RuntimeError("BenchmarkSession not initialized: call create_experiment() first")
         return self.experiment_id
+
+    def _require_tick_id(self, lease: TickLease) -> str:
+        tick_id = lease.tick_id
+        if tick_id is None:
+            raise ValueError("TickLease has no tick_id")
+        return tick_id
+
+    def _require_tick_ts(self, lease: TickLease) -> datetime:
+        tick_ts = lease.tick_ts
+        if tick_ts is None:
+            raise ValueError("TickLease has no tick_id")
+        return tick_ts
+
+    def _require_candidate_set_id(self, lease: TickLease) -> str:
+        candidate_set_id = lease.candidate_set_id
+        if not candidate_set_id:
+            raise ValueError("TickLease has no candidate_set_id")
+        return candidate_set_id

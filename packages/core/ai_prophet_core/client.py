@@ -311,10 +311,10 @@ class ServerAPIClient:
         experiment_id: str,
         participant_idx: int,
         tick_id: str,
-        snapshot_id: str,
+        candidate_set_id: str,
         plan_json: dict,
     ) -> PutPlanResponse:
-        req = PlanRequest(snapshot_id=snapshot_id, plan_json=plan_json)
+        req = PlanRequest(snapshot_id=candidate_set_id, plan_json=plan_json)
         response = self._put(
             f"/experiments/{experiment_id}/participants/{participant_idx}"
             f"/ticks/{tick_id}/plan",
@@ -362,11 +362,11 @@ class ServerAPIClient:
     # --- Candidates -----------------------------------------------------------
 
     def get_candidates(
-        self, tick_ts: datetime, snapshot_id: str | None = None,
+        self, tick_ts: datetime, candidate_set_id: str | None = None,
     ) -> CandidatesResponse:
         params: dict = {"tick_ts": tick_ts.isoformat()}
-        if snapshot_id:
-            params["snapshot_id"] = snapshot_id
+        if candidate_set_id:
+            params["snapshot_id"] = candidate_set_id
         response = self._get("/candidates", params=params)
         return self._parse_response(response, CandidatesResponse)
 

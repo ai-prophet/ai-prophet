@@ -28,17 +28,6 @@ class _FakeMarket:
 def test_process_tick_timeout_ignores_late_finalize(monkeypatch):
     finalize_calls: list[tuple[int, str]] = []
 
-    api = SimpleNamespace(
-        get_candidates=lambda *_args, **_kwargs: SimpleNamespace(
-            markets=[_FakeMarket()],
-            data_asof_ts=datetime(2026, 3, 1, 11, 55, tzinfo=UTC),
-            candidate_set_id="snap-1",
-        ),
-        finalize_participant=lambda _exp_id, idx, _tick_id, status, **_kwargs: finalize_calls.append(
-            (idx, status)
-        ),
-    )
-
     runner = ExperimentRunner(
         api_url="http://example.com",
         api_key=None,
@@ -46,9 +35,19 @@ def test_process_tick_timeout_ignores_late_finalize(monkeypatch):
         models=[],
         build_pipeline=None,
     )
-    runner.session.api = api
     runner.session.experiment_id = "exp-1"
     runner.participants = {0: {"model": "openai:gpt-5", "rep": 0, "participant_idx": 0}}
+    runner.session.load_candidates = lambda lease: SimpleNamespace(
+        lease=lease,
+        candidates=SimpleNamespace(
+            markets=[_FakeMarket()],
+            data_asof_ts=datetime(2026, 3, 1, 11, 55, tzinfo=UTC),
+            candidate_set_id="snap-1",
+        ),
+    )
+    runner.session.finalize = lambda _lease, idx, status, **_kwargs: finalize_calls.append(
+        (idx, status)
+    )
 
     lease = TickLease(
         available=True,

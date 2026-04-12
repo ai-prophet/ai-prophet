@@ -17,6 +17,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -70,12 +71,11 @@ def _is_transient_api_error(exc: Exception) -> bool:
     return isinstance(exc, (APIServerError, APIConnectionError, APITimeoutError))
 
 
-def _parse_tick_id(tick_id: str) -> datetime:
-    """Parse wire-format ``tick_id`` into a timezone-aware datetime."""
-    tick_ts = datetime.fromisoformat(tick_id)
-    if tick_ts.tzinfo is None:
-        tick_ts = tick_ts.replace(tzinfo=UTC)
-    return tick_ts
+@dataclass(frozen=True)
+class GeneratedPlan:
+    plan_json: dict
+    reasoning: dict[str, Any] | None = None
+    forecasts: dict[str, dict[str, Any]] | None = None
 
 
 class ExperimentRunner:
@@ -257,20 +257,15 @@ class ExperimentRunner:
     def _process_tick(self, lease: TickLease) -> None:
         """Process all participants for one tick with budget enforcement."""
         tick_id = lease.tick_id
+        tick_ts = lease.tick_ts
         assert tick_id is not None
-        tick_ts = _parse_tick_id(tick_id)
+        assert tick_ts is not None
 
-        candidates_resp = self.session.get_candidates(lease)
-        candidate_set_id = candidates_resp.candidate_set_id
-        if not candidate_set_id:
-            raise RuntimeError("get_candidates returned no candidate_set_id")
-        bound_lease = TickLease(
-            available=lease.available,
-            tick_id=lease.tick_id,
-            candidate_set_id=candidate_set_id,
-            reason=lease.reason,
-            retry_after_sec=lease.retry_after_sec,
-        )
+        tick = self.session.load_candidates(lease)
+        bound_lease = tick.lease
+        candidates_resp = tick.candidates
+        candidate_set_id = bound_lease.candidate_set_id
+        assert candidate_set_id is not None
         candidate_markets = tuple(
             CandidateMarket.from_server_response(m.model_dump())
             for m in candidates_resp.markets
@@ -338,17 +333,14 @@ class ExperimentRunner:
             logger.info("Participant %s already timed out for tick %s; skipping", idx, tick_id)
             return
 
-        plan_json, generated_reasoning = self._generate_plan(idx, lease, tick_shared)
+        cfg = self.participants[idx]
+        generated = self._generate_plan(idx, lease, tick_shared)
         if self._is_timed_out(idx, tick_id):
             logger.info("Participant %s timed out after plan generation for tick %s", idx, tick_id)
             return
 
-        exp_id = self._require_experiment_id()
-        candidate_set_id = tick_shared["candidate_set_id"]
-        plan_resp = self.session.api.put_plan(
-            exp_id, idx, tick_id, candidate_set_id, plan_json=plan_json,
-        )
-        authoritative_plan = plan_resp.plan_json or plan_json
+        plan_resp = self.session.put_plan(lease, idx, generated.plan_json)
+        authoritative_plan = plan_resp.plan_json or generated.plan_json
         already_persisted = plan_resp.already_persisted
         if already_persisted:
             logger.info(f"Participant {idx}: reusing persisted plan for tick {tick_id}")
@@ -357,7 +349,7 @@ class ExperimentRunner:
             reasoning_for_memory = (
                 (authoritative_plan or {}).get("reasoning")
                 if already_persisted
-                else generated_reasoning
+                else generated.reasoning
             )
             if reasoning_for_memory:
                 try:
@@ -368,6 +360,14 @@ class ExperimentRunner:
                     )
                 except Exception as e:
                     logger.warning(f"Participant {idx}: local memory append failed (non-fatal): {e}")
+
+        if not already_persisted:
+            self._process_betting_forecasts(
+                tick_ts=tick_shared["tick_ts"],
+                candidate_markets=tick_shared["candidate_markets"],
+                forecasts=generated.forecasts,
+                source=cfg["model"],
+            )
 
         intents = authoritative_plan.get("intents", [])
         if intents:
@@ -383,7 +383,7 @@ class ExperimentRunner:
 
     def _generate_plan(
         self, idx: int, lease: TickLease, tick_shared: dict,
-    ) -> tuple[dict, dict[str, Any] | None]:
+    ) -> GeneratedPlan:
         """Run the agent pipeline and return a plan dict."""
         tick_id = lease.tick_id
         assert tick_id is not None
@@ -391,7 +391,7 @@ class ExperimentRunner:
         tick_ts: datetime = tick_shared["tick_ts"]
         candidate_markets: tuple[CandidateMarket, ...] = tick_shared["candidate_markets"]
         market_ids = [m.market_id for m in candidate_markets]
-        exp_id = self._require_experiment_id()
+        exp_id = self.session.require_experiment_id()
 
         cfg = self.participants[idx]
 
@@ -481,26 +481,12 @@ class ExperimentRunner:
                 f"{exp_id}:{idx}",
                 publish_reasoning=True,
             )
-        except Exception as exc:
-            self._process_betting_forecasts(
-                tick_ts=tick_ts,
-                candidate_markets=candidate_markets,
-                forecasts=getattr(exc, "forecasts", None),
-                source=cfg["model"],
-            )
-            raise
         finally:
             # Pipeline holds HTTP clients; close them deterministically.
             try:
                 pipeline.close()
             except Exception:
                 pass
-        self._process_betting_forecasts(
-            tick_ts=tick_ts,
-            candidate_markets=candidate_markets,
-            forecasts=result.forecasts,
-            source=cfg["model"],
-        )
 
         sorted_intents = prepare_intents(result.intents)
 
@@ -519,7 +505,11 @@ class ExperimentRunner:
                 payload=plan_json,
             )
 
-        return plan_json, result.reasoning
+        return GeneratedPlan(
+            plan_json=plan_json,
+            reasoning=result.reasoning,
+            forecasts=result.forecasts,
+        )
 
     def _submit_intents(
         self, idx: int, lease: TickLease, raw_intents: list[dict],
@@ -621,5 +611,3 @@ class ExperimentRunner:
         with self._timed_out_lock:
             self._timed_out = {entry for entry in self._timed_out if entry[1] != tick_id}
 
-    def _require_experiment_id(self) -> str:
-        return self.session._require_experiment_id()

@@ -101,19 +101,28 @@ def test_runner_smoke_executes_single_tick_end_to_end(tmp_path):
         captured[f"claim_{claim_calls}"] = lease_sec
         return next(leases)
 
-    def fake_get_candidates(_lease):
+    def fake_load_candidates(lease):
         return SimpleNamespace(
-            markets=[_FakeMarket()],
-            data_asof_ts=datetime(2026, 3, 9, 11, 55, tzinfo=UTC),
-            candidate_set_id="authoritative-snapshot",
+            lease=TickLease(
+                available=lease.available,
+                tick_id=lease.tick_id,
+                candidate_set_id="authoritative-snapshot",
+                reason=lease.reason,
+                retry_after_sec=lease.retry_after_sec,
+            ),
+            candidates=SimpleNamespace(
+                markets=[_FakeMarket()],
+                data_asof_ts=datetime(2026, 3, 9, 11, 55, tzinfo=UTC),
+                candidate_set_id="authoritative-snapshot",
+            ),
         )
 
-    def fake_put_plan(exp_id, idx, tick_id, candidate_set_id, plan_json):
+    def fake_put_plan(lease, idx, plan_json):
         captured["put_plan"] = {
-            "experiment_id": exp_id,
+            "experiment_id": runner.session.experiment_id,
             "participant_idx": idx,
-            "tick_id": tick_id,
-            "candidate_set_id": candidate_set_id,
+            "tick_id": lease.tick_id,
+            "candidate_set_id": lease.candidate_set_id,
             "plan_json": plan_json,
         }
         return SimpleNamespace(plan_json=plan_json, already_persisted=False)
@@ -151,13 +160,13 @@ def test_runner_smoke_executes_single_tick_end_to_end(tmp_path):
     runner.session.create_experiment = fake_create_experiment
     runner.session.upsert_participant = fake_upsert_participant
     runner.session.claim_tick = fake_claim_tick
-    runner.session.get_candidates = fake_get_candidates
+    runner.session.load_candidates = fake_load_candidates
     runner.session.get_portfolio = lambda _idx: None
+    runner.session.put_plan = fake_put_plan
     runner.session.submit_intents = fake_submit_intents
     runner.session.finalize = fake_finalize
     runner.session.complete_tick = fake_complete_tick
     runner.session.close = fake_close
-    runner.session.api = SimpleNamespace(put_plan=fake_put_plan)
 
     runner.run()
 

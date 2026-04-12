@@ -80,6 +80,58 @@ def test_claim_tick_returns_unavailable_lease():
     assert lease.reason == "experiment_completed"
 
 
+def test_load_candidates_binds_authoritative_candidate_set_id():
+    api = _mock_api()
+    api.get_candidates.return_value = SimpleNamespace(
+        tick_ts=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        data_asof_ts=datetime(2025, 12, 31, 23, 55, tzinfo=UTC),
+        candidate_set_id="snap-2",
+        market_count=0,
+        markets=[],
+    )
+
+    session = BenchmarkSession(api)
+    session.experiment_id = "exp-1"
+    tick = session.load_candidates(
+        TickLease(
+            available=True,
+            tick_id="2026-01-01T00:00:00+00:00",
+            candidate_set_id="snap-1",
+        )
+    )
+
+    api.get_candidates.assert_called_once_with(
+        datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        candidate_set_id="snap-1",
+    )
+    assert tick.lease.candidate_set_id == "snap-2"
+    assert tick.candidates.candidate_set_id == "snap-2"
+
+
+def test_put_plan_uses_bound_candidate_set_id():
+    api = _mock_api()
+    api.put_plan.return_value = SimpleNamespace(plan_json={"ok": True}, already_persisted=False)
+
+    session = BenchmarkSession(api)
+    session.experiment_id = "exp-1"
+    lease = TickLease(
+        available=True,
+        tick_id="2026-01-01T00:00:00+00:00",
+        candidate_set_id="snap-2",
+    )
+
+    resp = session.put_plan(lease, participant_idx=3, plan_json={"intents": []})
+
+    api.put_plan.assert_called_once_with(
+        experiment_id="exp-1",
+        participant_idx=3,
+        tick_id="2026-01-01T00:00:00+00:00",
+        candidate_set_id="snap-2",
+        plan_json={"intents": []},
+    )
+    assert resp.plan_json == {"ok": True}
+
+
 def test_submit_intents_builds_idempotency_keys():
     api = _mock_api()
     api.submit_trade_intents.return_value = SimpleNamespace(
@@ -173,7 +225,7 @@ def test_complete_tick_calls_api():
 def test_require_experiment_id_raises_before_init():
     session = BenchmarkSession(_mock_api())
     with pytest.raises(RuntimeError, match="not initialized"):
-        session._require_experiment_id()
+        session.require_experiment_id()
 
 
 def test_tick_lease_tick_ts_property():
