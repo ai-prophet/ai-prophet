@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-
 from ai_prophet_core.arena import BenchmarkSession, TickLease
 
 
@@ -174,7 +173,9 @@ def test_submit_intents_custom_key_fn():
         TradeIntentRequest(market_id="m1", action="BUY", side="YES", shares="100", idempotency_key=""),
     ]
 
-    custom_fn = lambda exp, idx, tick, i: f"custom:{exp}:{i}"
+    def custom_fn(exp, idx, tick, i):
+        return f"custom:{exp}:{i}"
+
     session.submit_intents(lease, participant_idx=0, intents=intents, idempotency_key_fn=custom_fn)
 
     call_args = api.submit_trade_intents.call_args

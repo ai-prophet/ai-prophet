@@ -12,18 +12,16 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
-from pathlib import Path
-
 import os
+from datetime import UTC, datetime
+from pathlib import Path
 
 import click
 import requests
-
 from ai_prophet_core.client import ServerAPIClient
 from ai_prophet_core.forecast.evaluate import load_actuals, load_submission, score
 from ai_prophet_core.forecast.kalshi_client import KalshiForecastClient
-from ai_prophet_core.forecast.retrieve import DEFAULT_CATEGORIES, select_events
+from ai_prophet_core.forecast.retrieve import select_events
 from ai_prophet_core.forecast.schemas import Prediction, Submission
 
 logger = logging.getLogger(__name__)
@@ -85,7 +83,7 @@ def retrieve(
 
     deadline_dt = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
     if deadline_dt.tzinfo is None:
-        deadline_dt = deadline_dt.replace(tzinfo=timezone.utc)
+        deadline_dt = deadline_dt.replace(tzinfo=UTC)
 
     cat_list = [c.strip() for c in categories.split(",")] if categories else None
 
@@ -317,7 +315,7 @@ def predict(
         try:
             mod = importlib.import_module(local)
         except ModuleNotFoundError as e:
-            raise click.ClickException(f"Could not import module '{local}': {e}")
+            raise click.ClickException(f"Could not import module '{local}': {e}") from e
         local_predict = getattr(mod, "predict", None)
         if not callable(local_predict):
             raise click.ClickException(
@@ -337,7 +335,7 @@ def predict(
 
     predictions: list[Prediction] = []
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     for event in events_data:
         market_ticker = event.get("market_ticker", "unknown")
@@ -378,7 +376,7 @@ def predict(
         raise click.ClickException("No predictions collected — nothing to submit.")
 
     submission = Submission(
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         predictions=predictions,
     )
 

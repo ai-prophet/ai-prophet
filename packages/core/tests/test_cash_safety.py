@@ -17,13 +17,12 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import create_engine
-
 from ai_prophet_core.betting.adapters.base import OrderStatus
 from ai_prophet_core.betting.db import get_session
 from ai_prophet_core.betting.db_schema import Base, BettingOrder, BettingPrediction, BettingSignal
 from ai_prophet_core.betting.engine import BettingEngine
 from ai_prophet_core.betting.strategy import RebalancingStrategy
+from sqlalchemy import create_engine
 
 TICK = datetime(2026, 3, 22, 12, 0, tzinfo=UTC)
 MARKET = "kalshi:KXTEST-CASH"
@@ -52,14 +51,16 @@ def _seed_order(db, ticker="KXTEST-CASH", side="yes", action="BUY",
             p_yes=0.7, yes_ask=price_cents / 100,
             no_ask=1 - price_cents / 100, created_at=now,
         )
-        session.add(pred); session.flush()
+        session.add(pred)
+        session.flush()
         sig = BettingSignal(
             instance_name=instance, prediction_id=pred.id,
             strategy_name="test", side=side,
             shares=count / 100, price=price_cents / 100,
             cost=count * price_cents / 10000, created_at=now,
         )
-        session.add(sig); session.flush()
+        session.add(sig)
+        session.flush()
         session.add(BettingOrder(
             instance_name=instance, signal_id=sig.id,
             order_id=f"seed-ord-{n}", ticker=ticker,

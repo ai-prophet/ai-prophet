@@ -64,7 +64,7 @@ class KalshiConfig:
     base_url: str = DEFAULT_KALSHI_BASE_URL
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "KalshiConfig":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> KalshiConfig:
         env_map = os.environ if env is None else env
         private_key_base64 = env_map.get(KALSHI_PRIVATE_KEY_B64_ENV, "")
         return cls(
@@ -89,7 +89,7 @@ class LiveBettingSettings:
         *,
         dotenv_path: str | None = None,
         load_default_dotenv: bool | None = None,
-    ) -> "LiveBettingSettings":
+    ) -> LiveBettingSettings:
         if env is None:
             resolved_dotenv_path = dotenv_path or os.getenv(LIVE_BETTING_DOTENV_PATH_ENV)
             should_load_default = (

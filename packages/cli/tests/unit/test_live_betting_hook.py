@@ -4,11 +4,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
-from sqlalchemy import create_engine
-
 from ai_prophet_core.betting.adapters.base import OrderStatus
 from ai_prophet_core.betting.engine import BettingEngine
 from ai_prophet_core.betting.strategy import BetSignal, BettingStrategy
+from sqlalchemy import create_engine
 
 
 def test_engine_processes_forecasts_and_places_orders():

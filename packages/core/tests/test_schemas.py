@@ -6,7 +6,7 @@ Note: Tests use the current schema format (v1):
 - review: batched format with schema_version
 """
 
-from ai_prophet_core.schemas import validate_schema, is_valid_schema, SchemaLoader
+from ai_prophet_core.schemas import SchemaLoader, is_valid_schema, validate_schema
 
 
 def test_validate_review_schema():
@@ -25,7 +25,7 @@ def test_validate_review_schema():
     }
     validate_schema("review", valid)  # Should not raise
     assert is_valid_schema("review", valid) is True
-    
+
     # schema_version is optional (default in Pydantic, not required in JSON schema)
     without_version = {
         "review": [
@@ -64,7 +64,7 @@ def test_validate_forecast_schema():
     }
     validate_schema("forecast", valid)
     assert is_valid_schema("forecast", valid) is True
-    
+
     # Invalid p_yes (out of range)
     invalid = {
         "schema_version": "v1",
@@ -85,7 +85,7 @@ def test_validate_trade_decision_schema():
     }
     validate_schema("trade_decision", valid)
     assert is_valid_schema("trade_decision", valid) is True
-    
+
     # Invalid (bad recommendation enum)
     invalid = {
         "schema_version": "v1",

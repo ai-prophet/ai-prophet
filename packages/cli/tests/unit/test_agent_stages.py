@@ -5,7 +5,6 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
-
 from ai_prophet.trade.agent.stages import ActionStage, SearchStage, StageResult
 from ai_prophet.trade.core.tick_context import CandidateMarket
 

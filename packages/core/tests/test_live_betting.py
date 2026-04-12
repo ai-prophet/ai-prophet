@@ -5,8 +5,6 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 import requests
-from sqlalchemy import create_engine
-
 from ai_prophet_core.betting.adapters.base import OrderRequest, OrderStatus
 from ai_prophet_core.betting.adapters.kalshi import KalshiAdapter
 from ai_prophet_core.betting.config import (
@@ -22,6 +20,7 @@ from ai_prophet_core.betting.strategy import (
     PortfolioSnapshot,
     RebalancingStrategy,
 )
+from sqlalchemy import create_engine
 
 
 def _make_order() -> OrderRequest:

@@ -4,10 +4,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from ai_prophet_core.arena import TickLease
-
 from ai_prophet.trade.agent.pipeline import PipelineResult
 from ai_prophet.trade.runner import ExperimentRunner
+from ai_prophet_core.arena import TickLease
 
 
 class _FakeMarket:

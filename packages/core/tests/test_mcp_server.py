@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-
 from ai_prophet_core import mcp_server
 
 

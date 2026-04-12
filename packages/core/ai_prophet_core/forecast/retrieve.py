@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .schemas import Event
@@ -69,13 +69,13 @@ def select_events(
         Flat list of selected Event objects.
     """
     if deadline.tzinfo is None:
-        deadline = deadline.replace(tzinfo=timezone.utc)
+        deadline = deadline.replace(tzinfo=UTC)
 
     cats = categories or DEFAULT_CATEGORIES
     selected: list[Event] = []
     seen_tickers: set[str] = set()
 
-    min_close_ts = int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
+    min_close_ts = int((datetime.now(UTC) + timedelta(hours=24)).timestamp())
     max_close_ts = int(deadline.timestamp())
 
     # Fetch all open markets closing between now+24h and the deadline

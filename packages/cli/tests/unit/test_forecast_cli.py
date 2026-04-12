@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from itertools import count
 
-from click.testing import CliRunner
-
 from ai_prophet.main import cli
+from click.testing import CliRunner
 
 
 def test_predict_skips_market_with_malformed_agent_response(monkeypatch, tmp_path):
     events_path = tmp_path / "events.json"
     output_path = tmp_path / "submission.json"
-    close_time = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     events_path.write_text(json.dumps([
         {
             "market_ticker": "TEST-BAD",

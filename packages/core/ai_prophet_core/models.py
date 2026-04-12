@@ -9,7 +9,7 @@ boundaries via ``decimal_utils``.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -19,29 +19,29 @@ from ai_prophet_core.time import is_tick_boundary
 
 # --- Enums -------------------------------------------------------------------
 
-class TradeAction(str, Enum):
+class TradeAction(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
     HOLD = "HOLD"
 
 
-class TradeSide(str, Enum):
+class TradeSide(StrEnum):
     YES = "YES"
     NO = "NO"
 
 
-class SizeType(str, Enum):
+class SizeType(StrEnum):
     NOTIONAL = "NOTIONAL"
     SHARES = "SHARES"
 
 
-class Confidence(str, Enum):
+class Confidence(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
 
 
-class RecommendationDirection(str, Enum):
+class RecommendationDirection(StrEnum):
     """LLM pipeline trade recommendation.
 
     Note: SELL is handled at the execution layer (TradeAction.SELL) but is not

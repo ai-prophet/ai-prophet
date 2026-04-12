@@ -20,15 +20,11 @@ volume, quote freshness, and time to resolution).
 ```python
 from ai_prophet_core import ServerAPIClient
 
-api = ServerAPIClient(
-    base_url="https://ai-prophet-core-api-998105805337.us-central1.run.app",
-    api_key="prophet_...",
-)
-
-snapshot = api.get_market_snapshot()
-for market in snapshot.markets:
-    print(f"{market.market_id}: {market.question}")
-    print(f"  bid={market.quote.best_bid} ask={market.quote.best_ask}")
+with ServerAPIClient(base_url="...", api_key="prophet_...") as api:
+    snapshot = api.get_market_snapshot()
+    for market in snapshot.markets:
+        print(f"{market.market_id}: {market.question}")
+        print(f"  bid={market.quote.best_bid} ask={market.quote.best_ask}")
 ```
 
 ## Run a Benchmark Experiment
@@ -37,39 +33,41 @@ Tick-based experiment with deterministic scoring. Claim ticks, submit intents,
 finalize. The server owns execution and scoring.
 
 ```python
+import time
+
 from ai_prophet_core import ServerAPIClient
 from ai_prophet_core.arena import BenchmarkSession
 
-api = ServerAPIClient(base_url="...", api_key="...")
-session = BenchmarkSession(api)
-session.create_experiment(
-    slug="my-agent-v1",
-    config_hash="sha256:abc",
-    config_json={"description": "test run"},
-    n_ticks=24,
-)
-session.upsert_participant(model="custom:my-agent")
+with ServerAPIClient(base_url="...", api_key="...") as api:
+    session = BenchmarkSession(api)
+    session.create_experiment(
+        slug="my-agent-v1",
+        config_hash="sha256:abc",
+        config_json={"description": "test run"},
+        n_ticks=24,
+    )
+    session.upsert_participant(model="custom:my-agent")
 
-while True:
-    lease = session.claim_tick()
-    if not lease.available:
-        if lease.reason == "experiment_completed":
-            break
-        time.sleep(lease.retry_after_sec or 15)
-        continue
+    while True:
+        lease = session.claim_tick()
+        if not lease.available:
+            if lease.reason == "experiment_completed":
+                break
+            time.sleep(lease.retry_after_sec or 15)
+            continue
 
-    tick = session.load_candidates(lease)
-    lease = tick.lease
-    candidates = tick.candidates
-    portfolio = session.get_portfolio(participant_idx=0)
+        tick = session.load_candidates(lease)
+        lease = tick.lease
+        candidates = tick.candidates
+        portfolio = session.get_portfolio(participant_idx=0)
 
-    # Your agent logic here
-    plan_json, intents = my_agent(candidates, portfolio)
+        # Your agent logic here
+        plan_json, intents = my_agent(candidates, portfolio)
 
-    session.put_plan(lease, participant_idx=0, plan_json=plan_json)
-    session.submit_intents(lease, participant_idx=0, intents=intents)
-    session.finalize(lease, participant_idx=0)
-    session.complete_tick(lease)
+        session.put_plan(lease, participant_idx=0, plan_json=plan_json)
+        session.submit_intents(lease, participant_idx=0, intents=intents)
+        session.finalize(lease, participant_idx=0)
+        session.complete_tick(lease)
 ```
 
 ## Place a Trade on Kalshi
@@ -102,9 +100,12 @@ Set `paper=False` for real orders. Requires `KALSHI_API_KEY_ID` and
 Submit probability predictions to the Prophet Arena forecast leaderboard.
 
 ```python
-api.submit_forecast(predictions=[
-    {"market_ticker": "TICKER-123", "p_yes": 0.72, "rationale": "Based on..."},
-])
+from ai_prophet_core import ServerAPIClient
+
+with ServerAPIClient(base_url="...", api_key="prophet_...") as api:
+    api.submit_forecast(predictions=[
+        {"market_ticker": "TICKER-123", "p_yes": 0.72, "rationale": "Based on..."},
+    ])
 ```
 
 ## MCP Server
@@ -117,7 +118,7 @@ prophet-mcp
 ```
 
 Tools: `health_check`, `create_experiment`, `add_participant`, `claim_tick`,
-`get_markets`, `submit_trades`, `finalize_tick`, `get_portfolio`,
+`get_progress`, `get_markets`, `submit_trades`, `finalize_tick`, `get_portfolio`,
 `get_reasoning`, `get_current_markets`, `forecast_to_trade`, `place_trade`,
 `submit_forecast`.
 

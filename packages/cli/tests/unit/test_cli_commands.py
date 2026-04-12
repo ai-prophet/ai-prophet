@@ -1,11 +1,10 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from click.testing import CliRunner
-
 from ai_prophet.main import cli
 from ai_prophet.trade.core.config import ClientConfig
 from ai_prophet.trade.core.credentials import Credentials
+from click.testing import CliRunner
 
 
 def test_root_help_lists_top_level_commands():

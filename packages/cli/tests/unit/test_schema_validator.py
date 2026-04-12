@@ -2,7 +2,6 @@
 
 import jsonschema
 import pytest
-
 from ai_prophet.trade.agent.validator import SchemaValidator
 
 

@@ -4,9 +4,8 @@ import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from ai_prophet_core.arena import TickLease
-
 from ai_prophet.trade.runner import ExperimentRunner
+from ai_prophet_core.arena import TickLease
 
 
 class _FakeMarket:

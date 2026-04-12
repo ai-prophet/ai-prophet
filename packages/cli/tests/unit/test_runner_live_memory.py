@@ -4,11 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from ai_prophet_core.arena import TickLease
-
 from ai_prophet.trade.agent.pipeline import PipelineError
 from ai_prophet.trade.core.tick_context import CandidateMarket
 from ai_prophet.trade.runner import ExperimentRunner
+from ai_prophet_core.arena import TickLease
 
 
 def test_submit_intents_logs_rejection_reasons(caplog):

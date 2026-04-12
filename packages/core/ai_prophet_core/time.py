@@ -4,7 +4,7 @@ All tick operations use UTC boundaries derived from TICK_INTERVAL_SECONDS
 in the ruleset. Currently 15-minute ticks (900s).
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ai_prophet_core.ruleset import TICK_INTERVAL_SECONDS
 
@@ -17,9 +17,9 @@ def normalize_tick(dt: datetime) -> datetime:
         datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc)
     """
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     else:
-        dt = dt.astimezone(timezone.utc)
+        dt = dt.astimezone(UTC)
 
     tick_minutes = TICK_INTERVAL_SECONDS // 60
     tick_boundary_minute = (dt.minute // tick_minutes) * tick_minutes
@@ -41,7 +41,7 @@ def is_tick_boundary(dt: datetime) -> bool:
 
 def get_current_tick() -> datetime:
     """Get current tick boundary (floor of now)."""
-    return normalize_tick(datetime.now(timezone.utc))
+    return normalize_tick(datetime.now(UTC))
 
 
 def get_next_tick(dt: datetime) -> datetime:

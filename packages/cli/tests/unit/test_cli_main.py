@@ -1,8 +1,7 @@
 import click
 import pytest
-
-from ai_prophet.trade.main import _validate_model_credentials
 from ai_prophet.trade.core.credentials import Credentials
+from ai_prophet.trade.main import _validate_model_credentials
 
 
 def test_validate_model_credentials_accepts_generic_provider_env(monkeypatch):

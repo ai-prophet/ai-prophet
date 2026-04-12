@@ -7,6 +7,7 @@ Thanks for contributing to `ai-prophet`.
 ```bash
 python -m pip install -e packages/core
 python -m pip install -e "packages/cli[dev]"
+pre-commit install
 ```
 
 ## Local Checks
@@ -14,9 +15,12 @@ python -m pip install -e "packages/cli[dev]"
 Run before opening a PR:
 
 ```bash
+ruff check --config packages/cli/pyproject.toml packages/core packages/cli
 pytest packages/core/tests
 pytest packages/cli/tests
 ```
+
+The pre-commit hook runs Ruff on staged Python files under `packages/core` and `packages/cli`.
 
 ## Releases
 

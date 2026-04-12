@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from ai_prophet.trade.core.database import ClientDatabase
 from ai_prophet.trade.core.event_store import EventStore, EventType, TickState
 

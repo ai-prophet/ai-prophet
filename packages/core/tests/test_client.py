@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-
 from ai_prophet_core.client import APIConnectionError, APIValidationError, ServerAPIClient
 
 

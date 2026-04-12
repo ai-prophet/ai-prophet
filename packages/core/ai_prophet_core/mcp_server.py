@@ -8,7 +8,6 @@ on prediction markets through natural language.
 from __future__ import annotations
 
 import atexit
-import json
 import os
 import uuid
 from datetime import datetime

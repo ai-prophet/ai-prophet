@@ -9,8 +9,8 @@ Validates:
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import Mock
@@ -22,16 +22,14 @@ from sqlalchemy import create_engine
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "services"))
 
 from ai_prophet_core.betting.adapters.base import OrderStatus
-from ai_prophet_core.betting.db_schema import Base, BettingOrder, BettingPrediction, BettingSignal
 from ai_prophet_core.betting.db import get_session
+from ai_prophet_core.betting.db_schema import Base, BettingOrder, BettingPrediction, BettingSignal
 from ai_prophet_core.betting.engine import BettingEngine
 from ai_prophet_core.betting.strategy import (
-    BetSignal,
     DefaultBettingStrategy,
     PortfolioSnapshot,
     RebalancingStrategy,
 )
-
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
@@ -384,7 +382,7 @@ def test_paper_cash_uses_starting_cash(db_engine):
     # starting_cash=500, capital_deployed = 10 * 0.50 = $5.00
     # cash = 500 - 5 = $495 (approximately)
     assert float(cash) > 400, f"Expected ~$495 but got ${float(cash)}"
-    assert float(cash) < 500, f"Cash should be < starting_cash due to deployed capital"
+    assert float(cash) < 500, "Cash should be < starting_cash due to deployed capital"
     # Critically: should NOT be 0 or negative (which would happen if get_balance() was used
     # and returned $0 for a DRY_RUN account)
 

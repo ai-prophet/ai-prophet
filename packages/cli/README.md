@@ -5,8 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ai-prophet/ai-prophet/blob/main/LICENSE)
 
 The `prophet` CLI is the entrypoint for the AI Prophet ecosystem.
-Today, the primary shipped namespace is `prophet trade`, which runs the
-Prophet Arena trade benchmark.
+
+It currently exposes two public namespaces:
+
+- `prophet trade` for Prophet Arena trade benchmark runs
+- `prophet forecast` for forecast retrieval, registration, prediction, submission, and leaderboard access
 
 ## Installation
 
@@ -70,14 +73,51 @@ prophet trade eval run [OPTIONS]
   --publish-reasoning     Persist per-stage reasoning in plan_json
   --dashboard             Open local dashboard alongside the run
   --api-url URL           Core API URL (default: hosted Core API)
+  --strategy TEXT         Betting strategy: default | rebalancing
   -v, --verbose           Verbose output
 
-prophet trade              # Show trade subcommand help
-prophet trade health       # Check API connectivity
-prophet trade progress <id>   # Show experiment progress
-prophet trade dashboard    # Open local results dashboard
-prophet forecast           # Placeholder namespace; not implemented yet
+prophet trade                         # Show trade subcommand help
+prophet trade health                  # Check API connectivity
+prophet trade progress <experiment_id>  # Show experiment progress
+prophet trade dashboard               # Open local results dashboard
+
+prophet forecast                      # Show forecast subcommand help
+prophet forecast retrieve ...         # Build an event slate from Kalshi
+prophet forecast events ...           # List server-backed forecast events
+prophet forecast register ...         # Register a team and optional endpoint
+prophet forecast predict ...          # Produce a submission locally or via HTTP
+prophet forecast submit ...           # Submit predictions to the server
+prophet forecast leaderboard          # View the forecast leaderboard
+prophet forecast evaluate ...         # Score a submission locally
 ```
+
+## Forecast Workflow
+
+```bash
+# Option A: fetch the current forecast slate from the server
+prophet forecast events -o events.json
+
+# Option B: build a daily slate directly from Kalshi
+prophet forecast retrieve --deadline 2026-03-15T23:59:59Z -o events.json
+
+# Register a team and optional hosted prediction endpoint
+prophet forecast register \
+  --team-name my-team \
+  --endpoint-url https://example.com/predict
+
+# Produce predictions from a local module or HTTP endpoint
+prophet forecast predict \
+  --events events.json \
+  --local ai_prophet.forecast.example_agent
+
+# Submit the resulting file and inspect the leaderboard
+prophet forecast submit --submission submission.json
+prophet forecast leaderboard
+```
+
+`events`, `register`, `submit`, and `leaderboard` talk to the Prophet Arena
+forecast API and require `PA_SERVER_API_KEY`. `retrieve`, `predict`, and
+`evaluate` can run locally.
 
 ## Supported LLM Providers
 

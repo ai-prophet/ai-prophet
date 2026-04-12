@@ -18,11 +18,13 @@ LLM benchmark client and SDK for Prophet Arena prediction-market evaluation.
 ```bash
 python -m pip install -e packages/core
 python -m pip install -e "packages/cli[dev]"
+pre-commit install
 ```
 
-## Test
+## Checks
 
 ```bash
+ruff check --config packages/cli/pyproject.toml packages/core packages/cli
 pytest packages/core/tests
 pytest packages/cli/tests
 ```

@@ -7,7 +7,6 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-
 from ai_prophet.trade.core.database import ClientDatabase
 from ai_prophet.trade.core.event_store import EventStore, TickState
 from ai_prophet.trade.core.tick_context import TickContext

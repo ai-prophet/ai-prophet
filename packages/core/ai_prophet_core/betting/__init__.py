@@ -19,14 +19,25 @@ Quick-start::
 from .config import (
     DEFAULT_KALSHI_BASE_URL,
     KALSHI_BASE_URL,
+    MAX_SPREAD,
     KalshiConfig,
     LiveBettingSettings,
-    MAX_SPREAD,
     load_live_betting_dotenv,
 )
 from .engine import BetResult, BettingEngine
-from .position_replay import InventoryPosition, normalize_order, replay_orders_by_ticker, summarize_replayed_positions
-from .strategy import BetSignal, BettingStrategy, DefaultBettingStrategy, PortfolioSnapshot, RebalancingStrategy
+from .position_replay import (
+    InventoryPosition,
+    normalize_order,
+    replay_orders_by_ticker,
+    summarize_replayed_positions,
+)
+from .strategy import (
+    BetSignal,
+    BettingStrategy,
+    DefaultBettingStrategy,
+    PortfolioSnapshot,
+    RebalancingStrategy,
+)
 
 __all__ = [
     # Engine — main entry points

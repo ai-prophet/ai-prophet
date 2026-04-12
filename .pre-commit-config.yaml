@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: python -m ruff check --config packages/cli/pyproject.toml
+        language: system
+        types_or:
+          - python
+        files: ^packages/(core|cli)/.*\.py$
