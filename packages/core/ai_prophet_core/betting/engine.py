@@ -445,10 +445,19 @@ class BettingEngine:
                 cash = base - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
             else:
                 # LIVE: real balance from Kalshi already accounts for real orders
+                # Fall back to ledger-based cash if API call fails.
+                ledger_cash = Decimal(str(self.starting_cash)) - Decimal(str(capital_deployed)) + Decimal(str(total_realized))
                 try:
                     cash = self._get_adapter().get_balance()
-                except Exception:
-                    cash = Decimal("0")
+                    if cash <= 0 and ledger_cash > 0:
+                        logger.warning(
+                            "[BETTING] Kalshi returned $%.2f balance but ledger says $%.2f for %s — using ledger",
+                            cash, ledger_cash, ticker,
+                        )
+                        cash = ledger_cash
+                except Exception as e:
+                    logger.error("[BETTING] Failed to fetch Kalshi balance for %s: %s — using ledger ($%.2f)", ticker, e, ledger_cash)
+                    cash = ledger_cash
 
             # Enhancement: In LIVE mode, ALWAYS use Kalshi as the source of truth
             if not self.dry_run:
