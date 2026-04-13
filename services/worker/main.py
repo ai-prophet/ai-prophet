@@ -1159,6 +1159,8 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
 
         logger.debug("Page %d: %d candidates so far, fetching more...", pages_scanned, len(candidates))
 
+    # Rank by 24h volume so we prioritize liquid, actively-traded markets
+    candidates.sort(key=lambda m: m.get("volume_24h", 0), reverse=True)
     markets = candidates[:max_markets]
 
     logger.info(
@@ -1669,6 +1671,34 @@ def run_cycle(args) -> None:
         | get_traded_tickers(db_engine, INSTANCE_NAME)
         | live_position_tickers
     )
+
+    # Cap sticky tickers to max_active: always keep tickers with live positions,
+    # then fill remaining slots with the rest (no guaranteed order).
+    if len(tracked_tickers) > max_active:
+        non_position_tickers = tracked_tickers - live_position_tickers
+        keep_count = max(0, max_active - len(live_position_tickers))
+        # Keep only a subset of non-position tickers
+        kept_non_position = set(list(non_position_tickers)[:keep_count])
+        dropped = non_position_tickers - kept_non_position
+        tracked_tickers = live_position_tickers | kept_non_position
+        logger.info(
+            "Capped sticky tickers from %d to %d (dropped %d without positions)",
+            len(dropped) + len(tracked_tickers), len(tracked_tickers), len(dropped),
+        )
+        # Clean up dropped markets from DB so they don't reappear next cycle
+        if db_engine is not None and dropped:
+            try:
+                from ai_prophet_core.betting.db import get_session
+                from db_models import TradingMarket
+                with get_session(db_engine) as session:
+                    session.query(TradingMarket).filter(
+                        TradingMarket.instance_name == INSTANCE_NAME,
+                        TradingMarket.ticker.in_(dropped),
+                    ).delete(synchronize_session=False)
+                logger.info("Purged %d excess tracked markets from DB", len(dropped))
+            except Exception as e:
+                logger.warning("Failed to purge excess tracked markets: %s", e)
+
     sticky_markets: list[dict] = []
 
     if tracked_tickers:
