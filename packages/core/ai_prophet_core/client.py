@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
 
 # Pinned default. Override via PA_SERVER_URL env var.
-DEFAULT_API_URL = "https://ai-prophet-core-api-998105805337.us-central1.run.app"
+DEFAULT_API_URL = "https://api.aiprophet.dev"
 
 
 class APIError(Exception):
