@@ -31,7 +31,7 @@ class BettingPrediction(Base):
     __tablename__ = "betting_predictions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     tick_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     market_id: Mapped[str] = mapped_column(String(255), nullable=False)
     source: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -54,7 +54,7 @@ class BettingSignal(Base):
     __tablename__ = "betting_signals"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     prediction_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("betting_predictions.id"), nullable=False
     )
@@ -78,7 +78,7 @@ class BettingOrder(Base):
     __tablename__ = "betting_orders"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="Haifeng")
+    instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
     signal_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("betting_signals.id"), nullable=False
     )

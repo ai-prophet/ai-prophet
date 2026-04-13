@@ -86,7 +86,7 @@ class BettingEngine:
         kalshi_config: KalshiConfig | None = None,
         enabled: bool = True,
         max_markets_per_tick: int = MAX_MARKETS_PER_TICK,
-        instance_name: str = "Haifeng",
+        instance_name: str = "default",
         starting_cash: float = 10000.0,
     ) -> None:
         self.strategy = strategy or DefaultBettingStrategy()
