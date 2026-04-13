@@ -209,7 +209,7 @@ def submit_trades(
     """Submit trade intents for a tick.
 
     Each trade is a dict with: market_id, action (BUY/SELL), side (YES/NO),
-    amount (dollar amount as string, e.g. "100").
+    shares (number of contracts as string, e.g. "10").
 
     Trades fill at the snapshot's best bid/ask. Rejected trades are returned
     with a reason (e.g. constraint violation).
@@ -219,7 +219,7 @@ def submit_trades(
         participant_idx: From add_participant.
         tick_id: From claim_tick.
         candidate_set_id: From get_markets.
-        trades: List of trade dicts. Each needs: market_id, action, side, amount.
+        trades: List of trade dicts. Each needs: market_id, action, side, shares.
     """
     intents = []
     for i, t in enumerate(trades):
@@ -227,7 +227,7 @@ def submit_trades(
             market_id=t["market_id"],
             action=t["action"],
             side=t["side"],
-            shares=str(t.get("amount", t.get("shares", "100"))),
+            shares=str(t.get("shares", t.get("amount", "100"))),
             idempotency_key=f"{experiment_id}:{participant_idx}:{tick_id}:{i}",
         ))
 

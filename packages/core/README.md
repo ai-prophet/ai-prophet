@@ -70,7 +70,10 @@ with ServerAPIClient(base_url="...", api_key="...") as api:
         session.complete_tick(lease)
 ```
 
-## Place a Trade on Kalshi
+## Place a Trade on Kalshi (Beta)
+
+> **Beta.** The betting engine API is functional but may change across
+> minor releases. Pin to a specific version if you depend on it.
 
 Direct trade execution. Routes to paper (simulated fill) or live
 Kalshi based on the `paper` flag.

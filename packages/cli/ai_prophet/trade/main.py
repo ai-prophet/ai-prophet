@@ -222,12 +222,21 @@ def eval_run(models, slug, replicates, max_ticks, starting_cash, trace_dir, publ
     _run_impl(models, slug, replicates, max_ticks, starting_cash, trace_dir, publish_reasoning, dashboard, api_url, verbose, strategy=strategy)
 
 
-_engine_holder: dict = {}
+_engine_holder: dict[str, object | None] = {}
+
 
 def _get_betting_engine(strategy_name: str = "default"):
-    """Create or return the shared BettingEngine."""
-    if "engine" in _engine_holder:
-        return _engine_holder["engine"]
+    """Create or return the shared BettingEngine.
+
+    If called again with a different strategy_name, the cached engine is
+    replaced so callers always get the strategy they asked for.
+    """
+    cached = _engine_holder.get("engine")
+    cached_strategy = _engine_holder.get("strategy_name")
+    if cached is not None and cached_strategy == strategy_name:
+        return cached
+    if cached is None and "engine" in _engine_holder and cached_strategy == strategy_name:
+        return None
 
     try:
         from ai_prophet_core.betting import BettingEngine, LiveBettingSettings
@@ -238,6 +247,7 @@ def _get_betting_engine(strategy_name: str = "default"):
         if not settings.enabled:
             click.echo("[BETTING] Engine DISABLED (LIVE_BETTING_ENABLED=false)")
             _engine_holder["engine"] = None
+            _engine_holder["strategy_name"] = strategy_name
             return None
 
         db_engine = create_db_engine()
@@ -251,15 +261,17 @@ def _get_betting_engine(strategy_name: str = "default"):
             enabled=settings.enabled,
         )
         click.echo(
-            f"[BETTING] Engine ENABLED -- strategy={engine.strategy.name}, "
-            f"dry_run={settings.dry_run}"
+            f"[BETTING] Engine ENABLED (strategy={engine.strategy.name}, "
+            f"dry_run={settings.dry_run})"
         )
         _engine_holder["engine"] = engine
+        _engine_holder["strategy_name"] = strategy_name
         return engine
     except Exception as e:
         click.echo(f"[BETTING] Engine FAILED to create: {type(e).__name__}: {e}", err=True)
         logger.warning("Betting engine unavailable: %s", e, exc_info=True)
         _engine_holder["engine"] = None
+        _engine_holder["strategy_name"] = strategy_name
         return None
 
 def _make_pipeline_builder(

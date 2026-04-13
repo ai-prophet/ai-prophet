@@ -351,7 +351,7 @@ class SearchClient:
 
         # Combine results with texts
         enriched_results: list[dict[str, Any]] = []
-        for result, text in zip(results, texts, strict=False):
+        for result, text in zip(results, texts, strict=True):
             if text:
                 result["text"] = text
                 enriched_results.append(result)
