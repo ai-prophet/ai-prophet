@@ -19,7 +19,7 @@ The below sections will be organized by **steps**. You should clearly understand
 As `ai-prophet` is under active development, make sure that you compare the local skill version against the latest on GitHub: 
 
 ```
-curl -s https://raw.githubusercontent.com/ai-prophet/ai-prophet/main/skills/ai-prophet-setup/SKILL.md | head -5
+curl -s https://raw.githubusercontent.com/ai-prophet/ai-prophet/refs/heads/feat/agent-skills/skills/ai-prophet-setup/SKILL.md | head -5
 ```
 
 Check the `version:` field. If the remote version is higher than the local version:
