@@ -823,6 +823,44 @@ def purge_expired_tracked_markets(
         return 0
 
 
+def drop_tracked_market(db_engine, ticker: str, instance_name: str = INSTANCE_NAME) -> bool:
+    """Delete a single tracked market row (only if no open position)."""
+    if db_engine is None or not ticker:
+        return False
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import TradingMarket, TradingPosition
+
+        market_id = f"kalshi:{ticker}"
+        with get_session(db_engine) as session:
+            has_pos = (
+                session.query(TradingPosition)
+                .filter(
+                    TradingPosition.instance_name == instance_name,
+                    TradingPosition.market_id == market_id,
+                    TradingPosition.quantity > 1e-9,
+                )
+                .first()
+            )
+            if has_pos:
+                return False
+            row = (
+                session.query(TradingMarket)
+                .filter(
+                    TradingMarket.instance_name == instance_name,
+                    TradingMarket.market_id == market_id,
+                )
+                .first()
+            )
+            if row is None:
+                return False
+            session.delete(row)
+        return True
+    except Exception as e:
+        logger.warning("Failed to drop tracked market %s for %s: %s", ticker, instance_name, e)
+        return False
+
+
 def get_live_position_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
     """Return tickers that still have a live synced Kalshi position."""
     if db_engine is None:
@@ -1795,9 +1833,11 @@ def run_cycle(args) -> None:
                     try:
                         close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
                         if close_dt < sticky_close_min or close_dt > sticky_close_max:
-                            logger.debug(
-                                "Sticky market %s outside 2-14d window (closes %s); skipping analysis",
+                            dropped = drop_tracked_market(db_engine, ticker, INSTANCE_NAME)
+                            logger.info(
+                                "Sticky market %s outside 2-14d window (closes %s); %s",
                                 ticker, close_time_str,
+                                "dropped from tracking" if dropped else "skipping analysis",
                             )
                             continue
                     except (ValueError, AttributeError):
