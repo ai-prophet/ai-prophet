@@ -27,7 +27,7 @@ import { UnifiedMarketTable } from "@/components/UnifiedMarketTable";
 import { ModelCalibration } from "@/components/ModelCalibration";
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const REFRESH_INTERVAL = 10_000;
+const REFRESH_INTERVAL = 30_000;
 const DISPLAY_CUTOFF_MS = new Date("2026-03-24T00:00:00-05:00").getTime();
 
 const MODEL_META: Record<string, { label: string; color: string }> = {
@@ -319,7 +319,7 @@ export default function ModelDetailPage() {
 
     try {
       const [t, m, posData, h, al] = await Promise.all([
-        apiClient.getTrades(500),
+        apiClient.getTrades(100),
         apiClient.getMarkets(200),
         apiClient.getPositions(200),
         apiClient.getHealth(),
