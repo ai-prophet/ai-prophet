@@ -1758,6 +1758,8 @@ def run_cycle(args) -> None:
                 logger.warning("Failed to purge excess tracked markets: %s", e)
 
     sticky_markets: list[dict] = []
+    sticky_close_min = datetime.now(UTC) + timedelta(days=2)
+    sticky_close_max = datetime.now(UTC) + timedelta(days=14)
 
     if tracked_tickers:
         logger.info("Re-fetching %d sticky markets: %s", len(tracked_tickers), tracked_tickers)
@@ -1786,6 +1788,20 @@ def run_cycle(args) -> None:
                     if db_engine is not None:
                         _mark_market_resolved(db_engine, adapter, ticker)
                     continue
+                # Skip analysis if market is outside the 2-14 day trading window.
+                # Markets with open positions bypass this so we can still exit.
+                close_time_str = mkt.get("close_time")
+                if close_time_str and not keep_for_display:
+                    try:
+                        close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                        if close_dt < sticky_close_min or close_dt > sticky_close_max:
+                            logger.debug(
+                                "Sticky market %s outside 2-14d window (closes %s); skipping analysis",
+                                ticker, close_time_str,
+                            )
+                            continue
+                    except (ValueError, AttributeError):
+                        pass
                 sticky_markets.append(mkt)
             else:
                 lifecycle_market = fetch_market_lifecycle_by_ticker(adapter, ticker)
@@ -1886,22 +1902,28 @@ def run_cycle(args) -> None:
 
     markets_to_analyze: list[dict] = []  # enriched market dicts
 
-    # Pre-load latest prediction prices per market for price-movement check
-    # (single query instead of per-market to avoid DB pool exhaustion)
+    # Pre-load latest FILL prices per market for price-movement check
+    # (the 10¢ gate is measured against the last time we actually traded,
+    # not the last time we forecasted — so markets we never traded can always
+    # be re-analyzed, and markets we did trade throttle until price moves).
     last_pred_prices: dict[str, tuple[float, float]] = {}
     if db_engine is not None:
         try:
             from sqlalchemy import text as sa_text
             with db_engine.connect() as conn:
                 result = conn.execute(sa_text("""
-                    SELECT DISTINCT ON (market_id) market_id, yes_ask, no_ask
-                    FROM betting_predictions
+                    SELECT DISTINCT ON (ticker) ticker, side, fill_price
+                    FROM betting_orders
                     WHERE instance_name = :instance
-                    ORDER BY market_id, created_at DESC
+                      AND status IN ('FILLED','DRY_RUN','SETTLED')
+                      AND fill_price IS NOT NULL
+                    ORDER BY ticker, created_at DESC
                 """), {"instance": INSTANCE_NAME})
                 for row in result:
-                    last_pred_prices[row[0]] = (float(row[1]), float(row[2]))
-            logger.info("Loaded %d latest prediction prices for price-movement filter", len(last_pred_prices))
+                    ticker, side, fill_price = row[0], str(row[1] or "").lower(), float(row[2])
+                    fill_yes = fill_price if side == "yes" else 1.0 - fill_price
+                    last_pred_prices[f"kalshi:{ticker}"] = (fill_yes, 1.0 - fill_yes)
+            logger.info("Loaded %d latest fill prices for price-movement filter", len(last_pred_prices))
         except Exception as e:
             logger.warning("Failed to pre-load prediction prices: %s", e)
 
@@ -1999,7 +2021,7 @@ def run_cycle(args) -> None:
             if max_dev < MIN_PRICE_MOVEMENT:
                 logger.info(
                     "Skipping LLM for %s: price unchanged (%.1f¢ < %.0f¢ threshold). "
-                    "Last forecast: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
+                    "Last fill: YES %.3f, NO %.3f → Current: YES %.3f, NO %.3f",
                     ticker, max_dev * 100, MIN_PRICE_MOVEMENT * 100,
                     last_yes, last_no, yes_ask, no_ask,
                 )
@@ -2009,7 +2031,7 @@ def run_cycle(args) -> None:
                     market_id,
                     yes_ask=yes_ask,
                     no_ask=no_ask,
-                    reason=f"Skipped because the market price moved only {max_dev*100:.1f}c since last forecast (need {MIN_PRICE_MOVEMENT*100:.0f}c).",
+                    reason=f"Skipped because the market price moved only {max_dev*100:.1f}c since last fill (need {MIN_PRICE_MOVEMENT*100:.0f}c).",
                     instance_name=INSTANCE_NAME,
                 )
                 all_market_prices[market_id] = (yes_ask, no_ask)
