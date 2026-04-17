@@ -1031,14 +1031,15 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
     """Fetch active binary markets from Kalshi via the events endpoint.
 
     Uses /trade-api/v2/events with nested markets.  Paginates through all
-    pages, collects candidates closing within 3 days, then returns the first
+    pages, collects candidates closing in 2-14 days, then returns the first
     ``max_markets`` that pass the discovery filters.
 
     Markets with prices outside the 90/10 band are excluded from discovery.
     """
     base_url = adapter._base_url
     path = "/trade-api/v2/events"
-    cutoff = datetime.now(UTC) + timedelta(days=3)
+    cutoff = datetime.now(UTC) + timedelta(days=14)
+    min_cutoff = datetime.now(UTC) + timedelta(days=2)
 
     candidates: list[dict] = []
     seen_tickers: set[str] = set()
@@ -1095,12 +1096,12 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
                 if status not in ("open", "active"):
                     continue
 
-                # Only trade markets closing within 15 days
+                # Only trade markets closing in 2-14 days
                 close_time_str = mkt.get("close_time")
                 if close_time_str:
                     try:
                         close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-                        if close_dt > cutoff:
+                        if close_dt > cutoff or close_dt < min_cutoff:
                             continue
                     except (ValueError, AttributeError):
                         pass

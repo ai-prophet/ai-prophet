@@ -585,17 +585,24 @@ def reconcile_positions_with_kalshi(
         signed_qty = row.quantity if (row.contract or "").lower() == "yes" else -row.quantity
         snapshot_positions[ticker] = int(round(signed_qty))
 
-    # Compare
+    # Compare — skip resolved markets (Kalshi=0 and DB!=0 means the market
+    # settled and contracts were removed; this is normal, not a real drift).
     drifts = {}
     all_tickers = set(snapshot_positions.keys()) | set(kalshi_positions.keys())
 
     for ticker in all_tickers:
         db_qty = snapshot_positions.get(ticker, 0)
-
-        # Get Kalshi position
         kalshi_qty = kalshi_positions.get(ticker, 0)
 
-        # Check drift
+        # If Kalshi shows 0 but DB has a position, the market likely resolved.
+        # Skip these to avoid noisy false-positive drift alerts.
+        if kalshi_qty == 0 and db_qty != 0 and ticker not in kalshi_positions:
+            logger.info(
+                "[ORDER_MGMT] Skipping resolved market %s: DB=%d, Kalshi=0 (not in active positions)",
+                ticker, db_qty,
+            )
+            continue
+
         drift = abs(db_qty - kalshi_qty)
         if drift > tolerance_contracts:
             drifts[ticker] = (db_qty, kalshi_qty)
