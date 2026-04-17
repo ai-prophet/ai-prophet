@@ -1,191 +1,289 @@
 ---
 name: ai-prophet-setup
-version: "0.1"
-description: Install the ai-prophet core and cli packages, perform one-time team registration, and help the user connects their custom agent or forecasting endpoint to predict on offline datasets, or connect to our platform's server. Use this tool when the user explicitly asks about setting up or debugging their integration with ai-prophet.
+version: "0.2"
+description: Set up the AI-Prophet (Prophet Arena) forecasting platform — install the `ai-prophet` core and CLI packages, register a team, and connect a custom forecasting agent (local Python module or HTTP endpoint) to predict on offline datasets and submit results. Use when the user mentions ai-prophet, prophet arena, `prophet forecast` CLI, prediction-market benchmarking, or asks to set up / debug their integration with the platform.
 ---
 
 # AI-Prophet Setup
 
-The `AI-Prophet` (also known as `Prophet Arena`) Forecasting is a platform that benchmarks LLM agents on real prediction markets. The agent will receive a set of prediction events with **binary outcomes** (i.e. `Yes` or `No`), and then it will estimates `p_yes`, i.e. the probability of the event being true, and submit its predictions.
+`AI-Prophet` (also known as `Prophet Arena`) benchmarks LLM agents on real prediction markets. An agent receives prediction events with **binary outcomes** (`Yes` / `No`), estimates `p_yes` (probability the event resolves true), and submits its predictions to the platform.
 
-This skill is about setting up `ai-prophet` -- i.e. helping first-time users register their team, connecting their custom agent to interface with `ai-prophet` data format, and teach them how to test their agent via offline datasets and submit their predictions to our server.
+This skill helps users:
+- Complete one-time setup (env vars, package install, team registration).
+- Download example datasets.
+- Connect a custom agent (as a Python module or HTTP endpoint) and run / submit forecasts.
 
-The below sections will be organized by **steps**. You should clearly understand the demands of the user (explicitly ask user questions, and make sure to use the specific `AskUserQuestion` or similar tools if you have access to one) and which step is the user asking help for (other than the Step 0-2 which are mandatory setup checks).
+---
+
+## How to use this skill
+
+**The user's intent determines what to run.** Before doing anything, figure out which bucket the request falls into:
+
+- **First-time user** ("set me up", "I just got an API key", no prior config visible) → run **Step 0 → 1 → 2**, then offer the optional steps.
+- **Returning user** ("download a dataset", "run my agent on events.json", "submit my predictions") → **silently verify** Step 0 prereqs (env vars + installation) by running the check commands, then jump straight to the requested optional step. Do not walk them through registration prompts again.
+- **Ambiguous** → ask **one** clarifying question before proceeding (see "Asking the user questions" below).
+
+### Asking the user questions
+
+Whenever this skill says "ask the user", follow these rules so the question is unambiguous regardless of harness:
+
+1. **Make the question self-contained.** State the context, the choice, and the consequence of each option in the question text itself — don't rely on the user remembering earlier conversation.
+2. **Use a structured prompt tool if available** (e.g. an `AskUserQuestion` / multiple-choice tool). If not, present numbered options in plain text and ask the user to reply with the number or label.
+3. **Always include an "I'll handle this myself" escape option** for setup choices, so users who prefer manual control are not forced into automation.
+4. **Never batch unrelated questions.** One decision per prompt.
+
+Example of an acceptable plain-text question:
+```
+I need to know which server URL to use. Pick one:
+  1) Default — https://api.aiprophet.dev (recommended for almost everyone)
+  2) Custom URL — you'll provide it next (only if you're pointed at a private deployment)
+  3) I'll set PA_SERVER_URL myself; just continue once I tell you it's done
+Reply with 1, 2, or 3.
+```
+
+---
 
 ## Step 0: Preflight Checks
 
-### Skill Version Check
+### 0a. Skill version check
 
-As `ai-prophet` is under active development, make sure that you compare the local skill version against the latest on GitHub: 
+This skill is under active development. Compare the local `version:` (in this file's frontmatter) against the upstream copy:
 
 ```
 curl -s https://raw.githubusercontent.com/ai-prophet/ai-prophet/refs/heads/feat/agent-skills/skills/ai-prophet-setup/SKILL.md | head -5
 ```
 
-Check the `version:` field. If the remote version is higher than the local version:
-1. Tell the user: "A newer version of the Hive skills is available (local: X, remote: Y)."
-2. Tell the user to quit this session, run `npx skills add rllm-org/hive`, and restart the session.
-3. **Stop here.** Do not continue unless the user wants to continue.
+If the remote `version:` is higher than the local one:
+1. Tell the user: "A newer version of the `ai-prophet-setup` skill is available (local: X, remote: Y). The instructions below may be out of date."
+2. Tell them how to update — the canonical command is whatever skills installer their harness uses (e.g. re-running their skills installer pointed at `https://github.com/ai-prophet/ai-prophet`). Do **not** invent a specific install command if you don't know which tool they use; just point them to the upstream repo and let them re-install.
+3. Ask: "Continue with the local (older) version anyway, or stop here and update first?" If they choose to stop, **stop**.
 
-### Environment Variables Check
+### 0b. Environment variables check
 
-There are two crucial environment variables that need to be set: `PA_SERVER_URL` for the server URL, and `PA_SERVER_API_KEY`. Check the existence (for both env vars) via the following order:
-1. Use `echo $ENV_VAR` to check explicitly (if exists -> pass; stop the check).
-2. Check whether the `.env` file exists in the current workspace (if not exists -> fail; stop the check).
-3. Use `grep` or other methods that can let you check for the particular lines starting with `PA_SERVER_URL=` or `PA_SERVER_API_KEY=` within the `.env` file -- you SHOULD NEVER read the whole `.env` file (e.g. by simple `cat`) since it might contain other sensitive credentials (if exists -> pass).
+Two env vars are required:
+- `PA_SERVER_API_KEY` — authenticates against the platform.
+- `PA_SERVER_URL` — which server to talk to.
 
-If the checks for both env vars pass, directly go to Step 1 and skip the below parts.
+For each variable, check existence in this order and **stop checking that variable as soon as one source confirms it**:
 
-**Missing `PA_SERVER_API_KEY`**
+1. Is it exported in the current shell? Run `echo "${PA_SERVER_API_KEY:-MISSING}"` (and same for `PA_SERVER_URL`). If the output is not `MISSING`, it's set.
+2. Is there a `.env` in the current working directory? If not, the variable is missing.
+3. Does that `.env` contain a line starting with `PA_SERVER_API_KEY=` (resp. `PA_SERVER_URL=`)? Use a targeted search such as `grep -E '^PA_SERVER_API_KEY=' .env` — **never** read or `cat` the entire `.env` file (it may contain unrelated secrets), and **never** edit it.
 
-- Tell the user to obtain an API key by visiting `https://www.prophetarena.co/`. The website will have detailed instructions on how the user can request an API key. 
-- Tell the user that once the key is obtained, either export it explicitly via `export PA_SERVER_API_KEY=prophet_xxx` or put it within the `.env` file.
-- **Stop here.** The user will have to get the key and once they tell you they have done the above steps, repeat the check again.
+If both pass, skip to Step 1.
 
-**Missing `PA_SERVER_URL`
+**If `PA_SERVER_API_KEY` is missing:**
 
-Ask the user about which option they will go with:
-1. "Set up the default server URL (https://api.aiprophet.dev)" -> if selected, use `export PA_SERVER_URL=https://api.aiprophet.dev` to set up. Then proceed to the next step.
-2. "Set up for a custom server URL (be cautious, rare case)" -> if selected, read the user-provided server url and set it by `export PA_SERVER_URL=<user_provided_url>`. Proceed to nex step.
-3. "User set up the URL via .env or `export`, notify me later" -> if selected, the user is responsible for setting the server URL (similar to the case of missing `PA_SERVER_API_KEY`). You can stop here and wait until the user explicitly tell you that the setup is complete (repeat above to check).
+Tell the user:
+> Your `PA_SERVER_API_KEY` is not set. Request one at https://www.prophetarena.co/ — that page has the full instructions for issuing a key. Once you have it, either:
+> - export it for this shell only: `export PA_SERVER_API_KEY=prophet_xxx` (on Windows cmd: `set PA_SERVER_API_KEY=prophet_xxx`; PowerShell: `$env:PA_SERVER_API_KEY="prophet_xxx"`), **or**
+> - add the line `PA_SERVER_API_KEY=prophet_xxx` to your project's `.env` file.
 
-In either case, you should NEVER read the whole raw `.env` file or do any edit to it (e.g. adding new row).
+Then **stop and wait**. When the user says they've added it, re-run the check.
+
+**If `PA_SERVER_URL` is missing:**
+
+Ask the user (using the structured prompt format from "Asking the user questions"):
+```
+Which server URL should I use for ai-prophet?
+  1) Default — https://api.aiprophet.dev (recommended for almost everyone)
+  2) Custom URL — you'll provide it next (only for private deployments)
+  3) I'll set PA_SERVER_URL myself; ping me when done
+```
+
+- Option 1 → run `export PA_SERVER_URL=https://api.aiprophet.dev` (adjust syntax for the user's shell — see Windows variants above).
+- Option 2 → ask "What URL should I use?" and export the value they give.
+- Option 3 → stop and wait for the user to confirm before re-checking.
+
+In all cases, **never read or modify `.env` directly**. If the user wants the value persisted to `.env`, tell them which line to add and let them add it.
 
 ## Step 1: Installation
 
-`ai-prophet` requires the user to install two essential packages -- the `ai-prophet` CLI for easy interactions with the platform and `ai-prophet-core` for forecasting agent core components. Check whether the installation has been done by running:
+Check whether the CLI is already installed:
 ```
-which prophet && prophet forecast --help
+prophet forecast --help
 ```
-If installed, you will also have a good understanding about the main commands in `prophet forecast` CLI. Jump to the next stage.
+If this prints the CLI help, you're done — note the available subcommands and proceed to Step 2.
 
-If not installed, know that (DO NOT RUN yet) the following commands will install the packages:
+If the command isn't found, the install commands are:
 ```
-git clone https://github.com/yourusername/ai-prophet.git
+git clone https://github.com/ai-prophet/ai-prophet.git
 cd ai-prophet
 pip install -e packages/core
 pip install -e "packages/cli[dev]"
 ```
-(Note that the above are for vanilla `pip install`, if the user requires using tools like `uv` to manage their python requiremens, adjust these commands accordingly)
 
-Tell the user that the necessary packages are not installed, and ask the user "Do you want me to run the above commands and install these packages for you?"
-1. "Yes" -> go ahead and install, check for installation, and proceed to next stage when completed.
-2. "No" -> say that you will wait for the user to manually install and come back. Then verify the installation again.
+If the user is on `uv`, `poetry`, `pdm`, or another package manager, translate the `pip install` lines to the equivalent (e.g. `uv pip install -e packages/core`). If you're unsure which tool they use, ask:
 
-## Step 2: Registration
+```
+The CLI isn't installed. How would you like me to install it?
+  1) pip — run the standard `pip install -e ...` commands above
+  2) uv — use `uv pip install -e ...` instead
+  3) Another tool (poetry / pdm / conda / etc.) — tell me which and I'll adapt
+  4) I'll install it myself; tell me when to re-check
+```
 
-Check whether the user has been already registered by checking:
-1. Whether the `.env` file exists in the project root (if not -> not registered).
-2. Whether the `.env` file contains a row starting with `PA_TEAM_NAME=` (if not -> not registered).
-(Note: again avoid reading the full `.env` file -- search & filter only a particular row)
+After installing, re-run `prophet forecast --help` to confirm. Read the listed subcommands so you can reference them accurately later.
 
-If not registered, prompt the user to do a one-time registration by asking "Tell me what team name do you want to pick? Note that each API key is binded to one team only, and the name cannot change afterwards." to obtain the `<user_team>` from user. Then run the CLI command to register:
+## Step 2: Team registration
+
+Check whether the user has already registered:
+1. Does `.env` exist in the current directory? If not → not registered.
+2. Does it contain a line starting with `PA_TEAM_NAME=`? Use `grep -E '^PA_TEAM_NAME=' .env`. If not → not registered.
+
+(Again: never read the full `.env` — only that one line.)
+
+If not registered, ask:
+```
+You need to register a team name. This is one-time and permanent — your API key
+is bound to a single team and the name cannot be changed afterward.
+
+What team name would you like to use?
+```
+
+Then run:
 ```
 prophet forecast register --team-name <user_team>
 ```
 
 ---
 
-Once Step 0 - 2 are complete, you've finished the basic validation and setup process for the user. Generate a summary of your progress so far. A summary template is provided below (contents within brackets '<xxx>' are instructions and dynamic parts of the summary).
+## Setup-complete summary
+
+Once Steps 0–2 pass, print a summary using this template (substitute the bracketed parts):
 
 ```
-The basic setups are done! 
-- `environment variables`: <"already set" if passed, or "setup complete" if setup within current session>
-- `package installations`: <"already installed" or "installation complete" if installed within current session>
-- `team registration`: <"already registere" or "registered as <user_team>" if registered within current session>
+✅ ai-prophet setup complete:
+  • Environment variables: <"already set" | "configured this session">
+  • Package installation: <"already installed" | "installed this session">
+  • Team registration:    <"already registered" | "registered as <user_team>">
 ```
 
-Following the summary, add the following part to explicitly ask the user about what particular operations they want to perform (corresponding to the below steps):
+Then ask what they want to do next:
 
 ```
-With the setup done, which of the following items can I help you with?
-- Download an example forecasting dataset.
-- Run offline/local predictions with the downloaded dataset and (optionally) submit to the server.
+What would you like to do?
+  1) Download an example forecasting dataset
+  2) Run a custom agent (local Python module or HTTP endpoint) on a dataset, and optionally submit predictions
+  3) Nothing right now — I'll come back later
 ```
 
-All the sections below correspond specifically to the instructions for each of the item listed above. The order of them does NOT matter. These are NOT mandatory steps to go through anytime the skill is invoked. 
+The sections below correspond to those choices. They are **independent** — only run the one(s) the user asks for. Do not auto-chain through them.
+
 ---
 
-## Step 3 (Optional): Download example dataset
+## Step 3 (optional): Download an example dataset
 
-Ask the user where to store the `.json` dataset. The response <folder_path> should be a folder path, or default to current workspace. Then run the command
+Ask:
+```
+Where should I save the dataset (a single `.json` file)? Reply with either:
+  • a folder path — I'll save it as `<folder>/events.json`, or
+  • just press enter / say "default" — I'll save `events.json` in the current directory
+```
+
+Then run:
 ```
 prophet forecast events -o <folder_path>/events.json
 ```
 
-## Step 4 (Optional): Run custom agent on a dataset and submit to server
+Confirm the file was created and report the row count if reasonably easy.
 
-Our platform allows the user to implement the forecasting agent however they want: we simply enforce the input & output format (i.e. our provided dataset has a specific structure, and the returned prediction need to follow a certain `json` schema). Everything in between, including transforming the input to another format, performing LLM calls, the core agent loop itself, converting custom output format to the desirable format, etc. -- these are all left for the user to decide.
+## Step 4 (optional): Run a custom agent and submit predictions
 
-At the end of the day, there are **two approaches** for the user to forecast on a compatible dataset using the `prophet forecast` CLI commands:
+The platform is agnostic about how the user's agent is built — it only constrains the **input format** (events from the downloaded dataset) and **output format** (a JSON object per event with `p_yes` and optional `rationale`). Everything in between (LLM calls, tool use, retrieval, ensembling, etc.) is the user's choice.
 
-**Option 1: Local Python module**
+There are two ways to plug an agent into `prophet forecast predict`. Ask the user which one applies:
 
-Create a Python module that exposes a `predict` function:
+```
+How is your forecasting agent exposed?
+  1) Local Python module — a `.py` file with a `predict(event: dict) -> dict` function
+  2) HTTP endpoint — a running server that accepts POST requests at some URL
+  3) I don't have one yet — help me build one
+```
+
+### Option 1 — Local Python module
+
+The module must expose a `predict` function with this contract:
 ```python
 # my_agent.py
 
 def predict(event: dict) -> dict:
-    """Receive an event, return a probability estimate.
+    """Receive one event, return a probability estimate.
 
     Args:
-        event: dict with keys: event_ticker, market_ticker,
-               title, description, category, close_time, etc.
+        event: dict with keys: event_ticker, market_ticker, title,
+               description, category, close_time, etc.
 
     Returns:
-        dict with "p_yes" (float 0.01-0.99) and
-        optional "rationale" (str).
+        dict with:
+          - "p_yes": float in [0.01, 0.99]
+          - "rationale": str (optional but strongly recommended)
     """
-    # Custom agent logic here — call an LLM, run a model,
-    # query external data, etc. Or import the agent from elsewhere
-
-    return {
-        "p_yes": 0.65,
-        "rationale": "Based on historical trends...",
-    }
+    # Your logic — LLM call, model inference, retrieval, etc.
+    return {"p_yes": 0.65, "rationale": "Based on historical trends..."}
 ```
 
-Run it with (for a certain `events.json` dataset):
+Run it with:
 ```
-prophet forecast predict \
-  --events events.json \
-  --local my_agent
+prophet forecast predict --events events.json --local my_agent
 ```
 
-For this option, if the user does not have an existing `my_agent.py` module ready, you might need to ask the user about specific information about the custom agent (where is it?). And you should then carefully read the user's custom code to help them think about a way to create this module, i.e. essentially creating a bridge between the user's custom codebase with the `ai-prophet`-specified module requirement. Clearly communicate with the user if the custom agent fails to satisfy the required format (e.g. it never produces a `rationale` for the predictions it makes). You should also ask the user about which dataset (default to the `events.json` in the project root -- if exists) the user wants to make predictions on.
+If the user **doesn't already have** a module in this shape:
+- Ask where their existing forecasting code lives.
+- Read it carefully and propose a thin `my_agent.py` shim that imports their code and adapts it to the `predict(event) -> {"p_yes": ..., "rationale": ...}` contract.
+- If their code can't produce a `rationale`, flag it explicitly — `p_yes` alone works but `rationale` is strongly recommended for the leaderboard.
 
-**Option 2: HTTP endpoint**
+Before running, ask which dataset to use:
+```
+Which events dataset should I run predictions on?
+  • Default: ./events.json (if it exists)
+  • Or give me a path
+```
 
-The user will provide the endpoint to a (user) server that accepts POST requests with event data. An example can be a simple FastAPI-based server.
+### Option 2 — HTTP endpoint
 
+The user provides a URL (e.g. `http://localhost:8000/predict`) for a server that accepts `POST` with the event payload and returns `{"p_yes": ..., "rationale": ...}`. Reference shape (FastAPI):
 ```python
-# server.py
 from fastapi import FastAPI
 
 app = FastAPI()
 
 @app.post("/predict")
 async def predict(event: dict):
-    # Your logic here
-    return {
-        "p_yes": 0.65,
-        "rationale": "Based on historical trends...",
-    }
+    return {"p_yes": 0.65, "rationale": "Based on historical trends..."}
 ```
-Note that for this option, you DO NOT need to check the user's server implementation -- simply ask them to provide you with a server URL endpoint, e.g. http://localhost:8000/predict, then you will run
+
+You do **not** need to read the user's server code. Just ask:
 ```
-prophet forecast predict \
-  --events events.json \
-  --agent-url http://localhost:8000/predict
+What's the full URL of your /predict endpoint? (e.g. http://localhost:8000/predict)
 ```
-to predict on the problems in `events.json` (or any other dataset). Make sure to ask the user about which dataset to predict on.
 
-**Forecasting flags**
+Then ask which dataset to use (same prompt as Option 1) and run:
+```
+prophet forecast predict --events events.json --agent-url <user_url>
+```
 
-With either approach, the `prophet forecast predict` CLI offers the option to add a `--out/-o` flag to specify the output (result) file path, default to the `submission.json` in the current folder. DO NOT ask the user about this option proactively, but DO add the flag if the user has mentioned and requested a different path explicitly.
+### Output file
 
-**Submitting the predictions**
+`prophet forecast predict` writes to `submission.json` in the current directory by default. **Do not** ask about this proactively. Only add `--out <path>` (or `-o <path>`) if the user explicitly requests a different location.
 
-Finally, once the forecasting is done (with either approach), you should ask the user whether the predictions should be submitted (let <submission_file> be the output file path).
-- Yes -> run `prophet forecast submit --submission <submission_file>` to submit results to the server.
-- No -> stop here.
+### Submitting
+
+After predictions complete, ask:
+```
+Predictions are saved to <submission_file>. Submit them to the Prophet Arena server now?
+  1) Yes — submit
+  2) No — I'll review the file first / submit later manually
+```
+
+- Yes → `prophet forecast submit --submission <submission_file>`
+- No → stop here. Tell them they can run that command themselves whenever ready.
+
+---
+
+## General reminders
+
+- **Never `cat` or fully read `.env`.** Always grep for the specific key you need.
+- **Never edit `.env` automatically.** If a value should be persisted, tell the user which line to add.
+- Shell-syntax examples in this file use POSIX `export`. Translate for Windows cmd (`set X=Y`) or PowerShell (`$env:X="Y"`) when the user is on Windows.
+- If a user-provided answer doesn't match any offered option, restate the question rather than guessing.
