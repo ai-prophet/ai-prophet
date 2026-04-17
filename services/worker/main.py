@@ -773,6 +773,56 @@ def purge_excluded_tracked_markets(db_engine, instance_name: str = INSTANCE_NAME
         return 0
 
 
+def purge_expired_tracked_markets(
+    db_engine,
+    instance_name: str = INSTANCE_NAME,
+    grace_hours: int = 24,
+) -> int:
+    """Delete tracked markets whose expiration has passed (keeps markets with open positions)."""
+    if db_engine is None:
+        return 0
+    try:
+        from ai_prophet_core.betting.db import get_session
+        from db_models import TradingMarket, TradingPosition
+
+        cutoff = datetime.now(UTC) - timedelta(hours=grace_hours)
+        with get_session(db_engine) as session:
+            protected_market_ids = {
+                market_id
+                for (market_id,) in (
+                    session.query(TradingPosition.market_id)
+                    .filter(
+                        TradingPosition.instance_name == instance_name,
+                        TradingPosition.quantity > 1e-9,
+                    )
+                    .all()
+                )
+                if market_id
+            }
+            rows = (
+                session.query(TradingMarket)
+                .filter(
+                    TradingMarket.instance_name == instance_name,
+                    TradingMarket.expiration.isnot(None),
+                    TradingMarket.expiration < cutoff,
+                )
+                .all()
+            )
+            removable = [row for row in rows if row.market_id not in protected_market_ids]
+            for row in removable:
+                session.delete(row)
+            removed = len(removable)
+        if removed:
+            logger.info(
+                "Removed %d expired tracked markets for %s (cutoff=%s)",
+                removed, instance_name, cutoff.isoformat(),
+            )
+        return removed
+    except Exception as e:
+        logger.warning("Failed to purge expired tracked markets for %s: %s", instance_name, e)
+        return 0
+
+
 def get_live_position_tickers(db_engine, instance_name: str = INSTANCE_NAME) -> set[str]:
     """Return tickers that still have a live synced Kalshi position."""
     if db_engine is None:
@@ -1666,10 +1716,17 @@ def run_cycle(args) -> None:
             f"Removed {purged_markets} excluded tracked markets before discovery",
             instance_name=INSTANCE_NAME,
         )
+    purged_expired = purge_expired_tracked_markets(db_engine, INSTANCE_NAME)
+    if purged_expired and db_engine is not None:
+        log_system_event(
+            db_engine,
+            "INFO",
+            f"Removed {purged_expired} expired tracked markets before discovery",
+            instance_name=INSTANCE_NAME,
+        )
     live_position_tickers = get_live_position_tickers(db_engine, INSTANCE_NAME)
     tracked_tickers = (
         get_tracked_tickers(db_engine, INSTANCE_NAME)
-        | get_traded_tickers(db_engine, INSTANCE_NAME)
         | live_position_tickers
     )
 
