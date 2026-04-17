@@ -317,24 +317,9 @@ export default function ModelDetailPage() {
     activeRequestRef.current = requestId;
     setRefreshing(true);
 
-    try {
-      const [t, m, posData, h, al] = await Promise.all([
-        apiClient.getTrades(100),
-        apiClient.getMarkets(200),
-        apiClient.getPositions(200),
-        apiClient.getHealth(),
-        apiClient.getAlerts(),
-      ]);
-      if (activeRequestRef.current !== requestId) return;
-      const displayTrades = filterTradesForDisplay(t);
-
-      setTrades(displayTrades);
-      setMarkets(m);
-      setPositions(posData.positions);
-      setHealth(h);
-      setAlerts(al.alerts);
-      setError("");
-      setLoading(false);
+    const stillCurrent = () => activeRequestRef.current === requestId;
+    const stamp = () => {
+      if (!stillCurrent()) return;
       setLastUpdate(
         new Date().toLocaleTimeString("en-US", {
           hour: "2-digit",
@@ -343,26 +328,66 @@ export default function ModelDetailPage() {
           hour12: false,
         })
       );
+    };
 
-      const [pnlData, l, an, resolved] = await Promise.all([
-        apiClient.getPnL(),
-        apiClient.getSystemLogs(40),
-        apiClient.getAnalyticsSummary(),
-        apiClient.getResolvedMarkets(),
-      ]);
-      if (activeRequestRef.current !== requestId) return;
+    // Fire every request in parallel and update state independently so the
+    // UI paints as each response arrives instead of waiting on the slowest.
+    const tasks: Promise<unknown>[] = [
+      apiClient.getTrades(100).then((t) => {
+        if (!stillCurrent()) return;
+        setTrades(filterTradesForDisplay(t));
+        setLoading(false);
+        stamp();
+      }),
+      apiClient.getMarkets(200).then((m) => {
+        if (!stillCurrent()) return;
+        setMarkets(m);
+        setLoading(false);
+        stamp();
+      }),
+      apiClient.getPositions(200).then((p) => {
+        if (!stillCurrent()) return;
+        setPositions(p.positions);
+        setLoading(false);
+        stamp();
+      }),
+      apiClient.getHealth().then((h) => {
+        if (!stillCurrent()) return;
+        setHealth(h);
+        setLoading(false);
+      }),
+      apiClient.getAlerts().then((a) => {
+        if (!stillCurrent()) return;
+        setAlerts(a.alerts);
+      }),
+      apiClient.getPnL().then((d) => {
+        if (!stillCurrent()) return;
+        setPnl(filterPnlForDisplay(d));
+      }),
+      apiClient.getSystemLogs(40).then((l) => {
+        if (!stillCurrent()) return;
+        setLogs(l);
+      }),
+      apiClient.getAnalyticsSummary().then((an) => {
+        if (!stillCurrent()) return;
+        setAnalytics(an);
+      }),
+      apiClient.getResolvedMarkets().then((r) => {
+        if (!stillCurrent()) return;
+        setResolvedMarkets(r);
+      }),
+    ].map((p) =>
+      p.catch((e) => {
+        if (!stillCurrent()) return;
+        const message = e instanceof Error ? e.message : "Failed to fetch data";
+        setError(`${meta.label}: ${message}`);
+      })
+    );
 
-      setPnl(filterPnlForDisplay(pnlData));
-      setLogs(l);
-      setAnalytics(an);
-      setResolvedMarkets(resolved);
-    } catch (e) {
-      if (activeRequestRef.current !== requestId) return;
-      const message = e instanceof Error ? e.message : "Failed to fetch data";
-      setError(`${meta.label}: ${message}`);
+    setError("");
+    await Promise.allSettled(tasks);
+    if (stillCurrent()) {
       setLoading(false);
-    } finally {
-      if (activeRequestRef.current !== requestId) return;
       setRefreshing(false);
     }
   }, [apiClient, meta.label]);
