@@ -845,6 +845,12 @@ def _build_pred_by_signal(
 
 
 @app.get("/health")
+def health_liveness() -> dict[str, Any]:
+    """Cheap liveness probe for Render. No DB, no external calls."""
+    return {"ok": True}
+
+
+@app.get("/health/deep")
 def health(instance_name: str | None = Query(None)) -> dict[str, Any]:
     """System health: DB status, last worker heartbeat, trading mode."""
     resolved_instance = _instance_name(instance_name)

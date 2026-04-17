@@ -1179,7 +1179,7 @@ export function createApiClient(baseUrl: string, instanceName?: string) {
       if (model) url += `&model=${encodeURIComponent(model)}`;
       return fetchJSON<PnLData>(normalizedBaseUrl, buildPath(url));
     },
-    getHealth: () => fetchJSON<HealthData>(normalizedBaseUrl, buildPath("/health")),
+    getHealth: () => fetchJSON<HealthData>(normalizedBaseUrl, buildPath("/health/deep")),
     getModelRuns: (limit = 100) =>
       fetchJSON<ModelRun[]>(normalizedBaseUrl, buildPath(`/model-runs?limit=${limit}`)),
     getMarketModelRuns: (marketId: string, limit = 200) =>
