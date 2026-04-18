@@ -90,6 +90,37 @@ def test_default_strategy_skip_wide_spread():
     assert signal is None
 
 
+def test_default_strategy_no_side_uses_correct_edge_on_overround():
+    # Regression: prior code used (1 - yes_ask) as NO price on the NO branch,
+    # which is wrong when yes_ask + no_ask ≠ 1 (overround / dutch book).
+    # ask_sum = 1.02 (within MAX_SPREAD=1.03). p_yes=0.30 → no_edge = 0.70 - 0.47 = 0.23.
+    strategy = DefaultBettingStrategy()
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.30, yes_ask=0.55, no_ask=0.47)
+    assert signal is not None
+    assert signal.side == "no"
+    assert abs(signal.shares - 0.23) < 1e-9
+    assert abs(signal.price - 0.47) < 1e-9
+
+
+def test_default_strategy_no_side_uses_correct_edge_on_underround():
+    # ask_sum = 0.95 (above 0.90 floor). p_yes=0.30 → no_edge = 0.70 - 0.40 = 0.30.
+    strategy = DefaultBettingStrategy()
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.30, yes_ask=0.55, no_ask=0.40)
+    assert signal is not None
+    assert signal.side == "no"
+    assert abs(signal.shares - 0.30) < 1e-9
+
+
+def test_default_strategy_picks_larger_edge_side():
+    # Both sides positive edge. yes_edge = 0.48 - 0.46 = 0.02, no_edge = 0.52 - 0.46 = 0.06.
+    # Strategy should pick NO (larger edge).
+    strategy = DefaultBettingStrategy()
+    signal = strategy.evaluate("kalshi:TEST", p_yes=0.48, yes_ask=0.46, no_ask=0.46)
+    assert signal is not None
+    assert signal.side == "no"
+    assert abs(signal.shares - 0.06) < 1e-9
+
+
 def test_custom_strategy():
     class AlwaysBetYes(BettingStrategy):
         name = "always-yes"
