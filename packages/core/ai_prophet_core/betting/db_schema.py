@@ -79,9 +79,9 @@ class BettingOrder(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     instance_name: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
-    signal_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("betting_signals.id"), nullable=False
-    )
+    signal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("betting_signals.id"), nullable=True
+    )  # nullable: make_trade() calls bypass strategy and have no signal row
     order_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     ticker: Mapped[str] = mapped_column(String(255), nullable=False)
     action: Mapped[str] = mapped_column(String(8), nullable=False, default="BUY")

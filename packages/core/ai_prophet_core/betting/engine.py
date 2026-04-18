@@ -473,6 +473,19 @@ class BettingEngine:
                         logger.error("[BETTING] NET sell failed: %s", e)
                         sell_status = "ERROR"
 
+                    # BUG 13: if the SELL failed the old position is still open
+                    # and the exchange holds cash that was never returned. Proceeding
+                    # to BUY the new side over-commits cash and leaves the DB ledger
+                    # inconsistent with the exchange state — every subsequent tick
+                    # will compute the wrong _live_ledger_state.
+                    if sell_status == "ERROR":
+                        return BetResult(
+                            market_id=market_id,
+                            signal=signal,
+                            order_placed=False,
+                            error="NET sell failed; BUY aborted to avoid position over-commitment",
+                        )
+
                     count = count - held_count
                     if count <= 0:
                         return BetResult(
@@ -714,8 +727,11 @@ class BettingEngine:
         exchange_order_id: str | None,
         action: str = "BUY",
     ) -> None:
-        if self._engine is None or signal_id is None:
+        if self._engine is None:
             return
+        # signal_id may be None for make_trade() calls that bypass strategy
+        # evaluation. We still persist the order for audit trail; the FK column
+        # is now nullable so this is a valid row.
 
         from .db import get_session
         from .db_schema import BettingOrder
