@@ -823,6 +823,26 @@ def purge_expired_tracked_markets(
         return 0
 
 
+def _effective_close_time(mkt: dict) -> datetime | None:
+    """Return the earliest of close_time and expected_expiration_time.
+
+    Kalshi sports/event markets set close_time to the outer settlement
+    deadline (often 2+ weeks out) while the actual event resolves in hours
+    via expected_expiration_time / occurrence_datetime. We must trade
+    against the sooner of the two so the 2-day guard is meaningful.
+    """
+    candidates: list[datetime] = []
+    for key in ("close_time", "expected_expiration_time", "occurrence_datetime"):
+        raw = mkt.get(key)
+        if not raw:
+            continue
+        try:
+            candidates.append(datetime.fromisoformat(str(raw).replace("Z", "+00:00")))
+        except (ValueError, AttributeError):
+            continue
+    return min(candidates) if candidates else None
+
+
 def drop_tracked_market(db_engine, ticker: str, instance_name: str = INSTANCE_NAME) -> bool:
     """Delete a single tracked market row (only if no open position)."""
     if db_engine is None or not ticker:
@@ -1184,15 +1204,14 @@ def fetch_kalshi_markets(adapter, max_markets: int = 10, max_pages: int | None =
                 if status not in ("open", "active"):
                     continue
 
-                # Only trade markets closing in 2-14 days
-                close_time_str = mkt.get("close_time")
-                if close_time_str:
-                    try:
-                        close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-                        if close_dt > cutoff or close_dt < min_cutoff:
-                            continue
-                    except (ValueError, AttributeError):
-                        pass
+                # Only trade markets closing in 2-14 days.
+                # Use the earliest of close_time and expected_expiration_time so
+                # sports markets (can_close_early=True) are evaluated against the
+                # real event time, not the outer settlement deadline.
+                effective_close = _effective_close_time(mkt)
+                if effective_close is not None:
+                    if effective_close > cutoff or effective_close < min_cutoff:
+                        continue
 
                 ticker = mkt.get("ticker", "")
                 if not ticker or ticker in seen_tickers:
@@ -1828,20 +1847,16 @@ def run_cycle(args) -> None:
                     continue
                 # Skip analysis if market is outside the 2-14 day trading window.
                 # Markets with open positions bypass this so we can still exit.
-                close_time_str = mkt.get("close_time")
-                if close_time_str and not keep_for_display:
-                    try:
-                        close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-                        if close_dt < sticky_close_min or close_dt > sticky_close_max:
-                            dropped = drop_tracked_market(db_engine, ticker, INSTANCE_NAME)
-                            logger.info(
-                                "Sticky market %s outside 2-14d window (closes %s); %s",
-                                ticker, close_time_str,
-                                "dropped from tracking" if dropped else "skipping analysis",
-                            )
-                            continue
-                    except (ValueError, AttributeError):
-                        pass
+                effective_close = _effective_close_time(mkt)
+                if effective_close is not None and not keep_for_display:
+                    if effective_close < sticky_close_min or effective_close > sticky_close_max:
+                        dropped = drop_tracked_market(db_engine, ticker, INSTANCE_NAME)
+                        logger.info(
+                            "Sticky market %s outside 2-14d window (effective close %s); %s",
+                            ticker, effective_close.isoformat(),
+                            "dropped from tracking" if dropped else "skipping analysis",
+                        )
+                        continue
                 sticky_markets.append(mkt)
             else:
                 lifecycle_market = fetch_market_lifecycle_by_ticker(adapter, ticker)
