@@ -25,14 +25,20 @@ from ai_prophet_core.forecast.schemas import Prediction, Submission
 logger = logging.getLogger(__name__)
 
 
+def _normalize_probability(value: object) -> float:
+    """Accept decimal probabilities and whole-percent probabilities."""
+    probability = float(value)
+    if 1 < probability <= 100:
+        probability = probability / 100
+    return probability
+
+
 def _setup_logging(verbose: bool = False):
     from dotenv import load_dotenv
 
     load_dotenv()
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @click.group(name="forecast", invoke_without_command=True)
@@ -110,12 +116,9 @@ def retrieve(
         raise click.ClickException(str(exc)) from exc
 
     out_path = Path(output)
-    out_path.write_text(
-        json.dumps([e.model_dump(mode="json") for e in events], indent=2)
-    )
+    out_path.write_text(json.dumps([e.model_dump(mode="json") for e in events], indent=2))
     click.echo(
-        f"Retrieved {len(events)} events from "
-        f"{dataset_name}/{selected_release} → {out_path}"
+        f"Retrieved {len(events)} events from " f"{dataset_name}/{selected_release} → {out_path}"
     )
 
 
@@ -168,9 +171,7 @@ def events(
 
     if output:
         out_path = Path(output)
-        out_path.write_text(
-            json.dumps([e.model_dump(mode="json") for e in event_list], indent=2)
-        )
+        out_path.write_text(json.dumps([e.model_dump(mode="json") for e in event_list], indent=2))
         click.echo(f"{len(event_list)} events → {out_path}")
     else:
         click.echo(f"{'Ticker':<40}{'Category':<18}{'Close Time':<22}Title")
@@ -342,9 +343,7 @@ def predict(
         filter_set = set(ticker)
         events_data = [e for e in events_data if e.get("market_ticker") in filter_set]
         if not events_data:
-            raise click.ClickException(
-                f"No events matched ticker(s): {', '.join(ticker)}"
-            )
+            raise click.ClickException(f"No events matched ticker(s): {', '.join(ticker)}")
         click.echo(f"Filtered to {len(events_data)} event(s)")
 
     predictions: list[Prediction] = []
@@ -372,7 +371,7 @@ def predict(
                 resp.raise_for_status()
                 result = resp.json()
 
-            p_yes = float(result["p_yes"])
+            p_yes = _normalize_probability(result["p_yes"])
             predictions.append(
                 Prediction(
                     market_ticker=market_ticker,
@@ -434,9 +433,7 @@ def _resolve_server(server_url: str | None, api_key: str | None) -> tuple[str, s
     url = server_url or os.environ.get("PA_SERVER_URL", DEFAULT_API_URL)
     key = api_key or os.environ.get("PA_SERVER_API_KEY")
     if not key:
-        raise click.ClickException(
-            "API key required: use --api-key or set PA_SERVER_API_KEY"
-        )
+        raise click.ClickException("API key required: use --api-key or set PA_SERVER_API_KEY")
     return url, key
 
 
