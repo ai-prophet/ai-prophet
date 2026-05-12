@@ -345,6 +345,44 @@ def test_parse_order_pending_returns_pending():
     assert result.filled_shares == Decimal("0")
 
 
+def test_parse_filled_order_uses_exchange_fill_count_fp():
+    """Filled orders should use the exchange-reported filled count."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {
+        "order": {
+            "status": "executed",
+            "order_id": "ex-789",
+            "fill_count_fp": "1.50",
+            "avg_price": 40,
+        }
+    }
+
+    result = adapter._parse_order_response(_make_order(), data)
+
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_shares == Decimal("1.50")
+    assert result.notional == Decimal("0.600")
+
+
+def test_parse_filled_order_preserves_zero_exchange_fill_count():
+    """A reported zero fill count should not fall back to the request size."""
+    adapter = KalshiAdapter(api_key_id="id", private_key_base64="key", dry_run=False)
+    data = {
+        "order": {
+            "status": "executed",
+            "order_id": "ex-zero",
+            "fill_count": 0,
+            "avg_price": 40,
+        }
+    }
+
+    result = adapter._parse_order_response(_make_order(), data)
+
+    assert result.status == OrderStatus.FILLED
+    assert result.filled_shares == Decimal("0")
+    assert result.notional == Decimal("0.00")
+
+
 def test_poll_order_fills_after_retries(monkeypatch):
     """Engine should poll pending orders and detect fill."""
     engine = BettingEngine(db_engine=None, paper=False, enabled=True)

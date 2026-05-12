@@ -27,6 +27,13 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 
+def _first_present(data: dict[str, Any], keys: tuple[str, ...], default: Any) -> Any:
+    for key in keys:
+        if key in data and data[key] is not None:
+            return data[key]
+    return default
+
+
 class KalshiAdapter(ExchangeAdapter):
     """Routes orders to Kalshi's v2 API."""
 
@@ -325,7 +332,11 @@ class KalshiAdapter(ExchangeAdapter):
             status = OrderStatus.REJECTED
 
         if status == OrderStatus.FILLED:
-            filled_count = order_data.get("place_count", int(request.shares))
+            filled_count = _first_present(
+                order_data,
+                ("fill_count_fp", "fill_count", "place_count"),
+                int(request.shares),
+            )
             avg_price_cents = order_data.get(
                 "avg_price", int(round(float(request.limit_price) * 100))
             )
