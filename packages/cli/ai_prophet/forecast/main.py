@@ -19,6 +19,7 @@ from pathlib import Path
 import click
 import requests
 from ai_prophet_core.client import ServerAPIClient
+from ai_prophet_core.forecast.capture import append_snapshots_jsonl, capture_snapshots
 from ai_prophet_core.forecast.evaluate import load_actuals, load_submission, score
 from ai_prophet_core.forecast.kalshi_client import KalshiForecastClient
 from ai_prophet_core.forecast.retrieve import select_events
@@ -103,6 +104,85 @@ def retrieve(
         json.dumps([e.model_dump(mode="json") for e in events], indent=2)
     )
     click.echo(f"Selected {len(events)} events → {out_path}")
+
+
+@cli.command(name="capture")
+@click.option(
+    "--output",
+    "-o",
+    default="snapshots.jsonl",
+    show_default=True,
+    help="Output JSONL file (appended to; repeatedly running grows the fixture).",
+)
+@click.option(
+    "--min-hours",
+    type=int,
+    default=24,
+    show_default=True,
+    help="Minimum hours-from-now until market close.",
+)
+@click.option(
+    "--max-hours",
+    type=int,
+    default=168,
+    show_default=True,
+    help="Maximum hours-from-now until market close.",
+)
+@click.option(
+    "--top-per-category",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Snapshot this many top-volume markets per category.",
+)
+@click.option(
+    "--categories",
+    default=None,
+    help="Comma-separated category list (defaults to all categories Kalshi returns).",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def capture(
+    output: str,
+    min_hours: int,
+    max_hours: int,
+    top_per_category: int,
+    categories: str | None,
+    verbose: bool,
+) -> None:
+    """Snapshot currently-open Kalshi markets for backtest-fixture building.
+
+    Designed to be run periodically (e.g., daily via cron) over an eval
+    window. Each invocation appends fresh snapshots to the output JSONL.
+    A separate resolver step (not yet shipped; see issue tracker) walks
+    the file later, looks up each market's outcome on Kalshi, and emits
+    a (snapshot, outcome) fixture for backtest evaluation.
+
+    Why this exists separately from `retrieve`: `retrieve` strips the
+    book state from the events list to fit the forecasting submission
+    contract. Backtests need full book state (bid, ask, sizes, volume)
+    at capture time.
+    """
+    _setup_logging(verbose)
+
+    cat_list = [c.strip() for c in categories.split(",")] if categories else None
+    client = KalshiForecastClient()
+    try:
+        snapshots = capture_snapshots(
+            client,
+            close_window_hours=(min_hours, max_hours),
+            top_per_category=top_per_category,
+            categories=cat_list,
+        )
+    finally:
+        client.close()
+
+    n_written = append_snapshots_jsonl(snapshots, output)
+    seen_cats = sorted({s["event"]["category"] for s in snapshots})
+    click.echo(
+        f"Captured {n_written} snapshots across {len(seen_cats)} categories → {output}"
+    )
+    if seen_cats:
+        click.echo(f"Categories: {', '.join(seen_cats)}")
 
 
 @cli.command(name="events")
