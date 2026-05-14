@@ -19,6 +19,13 @@ from pathlib import Path
 import click
 import requests
 from ai_prophet_core.client import ServerAPIClient
+from ai_prophet_core.forecast.benchmark import (
+    BenchmarkReport,
+    format_json,
+    format_text,
+    load_fixture,
+    run_benchmark,
+)
 from ai_prophet_core.forecast.evaluate import load_actuals, load_submission, score
 from ai_prophet_core.forecast.kalshi_client import KalshiForecastClient
 from ai_prophet_core.forecast.retrieve import select_events
@@ -383,6 +390,149 @@ def predict(
     out_path = Path(output)
     out_path.write_text(submission.model_dump_json(indent=2))
     click.echo(f"\nSubmission ({len(predictions)} predictions) → {out_path}")
+
+
+@cli.command(name="benchmark")
+@click.option(
+    "--fixture",
+    required=True,
+    type=click.Path(exists=True),
+    help="JSONL fixture: each line {event, result, ...}.",
+)
+@click.option(
+    "--agent-local",
+    default=None,
+    help="Module:attr (default attr=predict) for the agent. Same convention as --local on predict.",
+)
+@click.option(
+    "--agent-url",
+    default=None,
+    help="HTTP URL for the agent's /predict endpoint.",
+)
+@click.option(
+    "--baseline",
+    default=None,
+    help="Module:attr of a baseline agent for delta comparison (optional).",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    show_default=True,
+)
+@click.option(
+    "--worst",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Show this many worst-Brier rows in the report.",
+)
+@click.option(
+    "--n-bins",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Number of calibration buckets.",
+)
+@click.option(
+    "--timeout",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Per-event HTTP timeout (seconds) when using --agent-url.",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def benchmark(
+    fixture: str,
+    agent_local: str | None,
+    agent_url: str | None,
+    baseline: str | None,
+    fmt: str,
+    worst: int,
+    n_bins: int,
+    timeout: int,
+    verbose: bool,
+) -> None:
+    """Score a forecast agent against a resolved-markets fixture.
+
+    Reports overall Brier, category breakdown, calibration buckets, and
+    worst-Brier rows. Optional --baseline runs a second agent for delta
+    comparison.
+
+    Examples:
+
+        # Score a local agent
+        prophet forecast benchmark --fixture snapshots.jsonl \\
+            --agent-local my_agent
+
+        # Score an HTTP agent vs. the canonical example baseline
+        prophet forecast benchmark --fixture snapshots.jsonl \\
+            --agent-url http://localhost:8000/predict \\
+            --baseline ai_prophet.forecast.example_agent
+
+        # JSON output for CI / further processing
+        prophet forecast benchmark --fixture snapshots.jsonl \\
+            --agent-local my_agent --format json
+    """
+    _setup_logging(verbose)
+
+    if not agent_local and not agent_url:
+        raise click.ClickException("Provide --agent-local or --agent-url.")
+    if agent_local and agent_url:
+        raise click.ClickException("Use --agent-local or --agent-url, not both.")
+
+    agent_fn = _load_agent(agent_local, agent_url, timeout)
+    baseline_fn = _load_agent(baseline, None, timeout) if baseline else None
+
+    entries = load_fixture(fixture)
+    if not entries:
+        raise click.ClickException(f"No valid (event, result) rows in {fixture}.")
+
+    report = run_benchmark(
+        agent_fn,
+        entries,
+        baseline_fn=baseline_fn,
+        n_bins=n_bins,
+        worst_n=worst,
+    )
+
+    if fmt == "json":
+        click.echo(format_json(report))
+    else:
+        click.echo(format_text(report, show_worst=worst))
+
+
+def _load_agent(
+    local_path: str | None,
+    url: str | None,
+    timeout: int,
+):
+    """Resolve an agent reference into a callable (event: dict) -> dict."""
+    if local_path:
+        import importlib
+
+        mod_name, _, attr = local_path.partition(":")
+        if not attr:
+            attr = "predict"
+        try:
+            mod = importlib.import_module(mod_name)
+        except ModuleNotFoundError as e:
+            raise click.ClickException(f"Could not import {mod_name!r}: {e}") from e
+        fn = getattr(mod, attr, None)
+        if not callable(fn):
+            raise click.ClickException(f"{local_path!r}: {attr!r} is not callable")
+        return fn
+
+    if url:
+        def _http_agent(event: dict) -> dict:
+            resp = requests.post(url, json=event, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+
+        return _http_agent
+
+    raise click.ClickException("Internal error: no agent path provided.")
 
 
 @cli.command(name="evaluate")
