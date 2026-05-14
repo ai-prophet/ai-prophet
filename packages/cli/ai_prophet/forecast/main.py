@@ -19,6 +19,12 @@ from pathlib import Path
 import click
 import requests
 from ai_prophet_core.client import ServerAPIClient
+from ai_prophet_core.forecast.calibrate import (
+    apply_calibration,
+    fit_calibration,
+    load_calibration,
+    save_calibration,
+)
 from ai_prophet_core.forecast.evaluate import load_actuals, load_submission, score
 from ai_prophet_core.forecast.kalshi_client import KalshiForecastClient
 from ai_prophet_core.forecast.retrieve import select_events
@@ -383,6 +389,118 @@ def predict(
     out_path = Path(output)
     out_path.write_text(submission.model_dump_json(indent=2))
     click.echo(f"\nSubmission ({len(predictions)} predictions) → {out_path}")
+
+
+@cli.group(name="calibrate")
+def calibrate() -> None:
+    """Fit and apply post-hoc calibration corrections to forecast submissions."""
+
+
+@calibrate.command(name="fit")
+@click.option(
+    "--submission",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to the submission to fit calibration from.",
+)
+@click.option(
+    "--actuals",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to actuals JSON (resolved outcomes).",
+)
+@click.option(
+    "--output",
+    "-o",
+    default="calibration.json",
+    show_default=True,
+    help="Output path for the fitted calibration table.",
+)
+@click.option(
+    "--n-bins",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Number of equal-width probability buckets.",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def calibrate_fit(
+    submission: str, actuals: str, output: str, n_bins: int, verbose: bool
+) -> None:
+    """Fit a binned calibration table from (submission, actuals).
+
+    Prints the bucket-by-bucket calibration table and saves it for use
+    with `calibrate apply`. Buckets where |mean_p - mean_actual| > 0.10
+    are flagged as systematic bias.
+    """
+    _setup_logging(verbose)
+
+    sub = load_submission(submission)
+    act = load_actuals(actuals)
+    table = fit_calibration(sub.predictions, act, n_bins=n_bins)
+    save_calibration(table, output)
+
+    click.echo(f"{'Bucket':<14}{'N':>5}{'mean_p':>9}{'mean_actual':>13}{'  bias':<10}")
+    click.echo("-" * 55)
+    for b in table:
+        bias = b["mean_actual"] - b["mean_p"]
+        flag = "  ← BIAS" if abs(bias) > 0.10 else ""
+        click.echo(
+            f"  [{b['bucket_lo']:.2f}-{b['bucket_hi']:.2f})"
+            f"{b['n']:>5}{b['mean_p']:>9.3f}{b['mean_actual']:>13.3f}"
+            f"{bias:>+8.3f}{flag}"
+        )
+    click.echo(f"\nCalibration table → {output}")
+
+
+@calibrate.command(name="apply")
+@click.option(
+    "--submission",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to the submission to correct.",
+)
+@click.option(
+    "--calibration",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to a calibration table produced by `calibrate fit`.",
+)
+@click.option(
+    "--output",
+    "-o",
+    default="submission-calibrated.json",
+    show_default=True,
+    help="Output path for the corrected submission.",
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def calibrate_apply(
+    submission: str, calibration: str, output: str, verbose: bool
+) -> None:
+    """Apply a fitted calibration table to a submission.
+
+    Predictions falling in each bucket are replaced by that bucket's
+    observed actual-yes-rate. Buckets with no data pass through
+    unchanged.
+    """
+    _setup_logging(verbose)
+
+    sub = load_submission(submission)
+    table = load_calibration(calibration)
+
+    new_preds = []
+    for p in sub.predictions:
+        new_p = apply_calibration(p.p_yes, table)
+        new_preds.append(
+            Prediction(
+                market_ticker=p.market_ticker,
+                p_yes=new_p,
+                rationale=(p.rationale or "") + f" [calibrated from {p.p_yes:.3f}]",
+            )
+        )
+    new_sub = Submission(timestamp=sub.timestamp, predictions=new_preds)
+    Path(output).write_text(new_sub.model_dump_json(indent=2))
+    click.echo(f"Calibrated submission ({len(new_preds)} predictions) → {output}")
 
 
 @cli.command(name="evaluate")
