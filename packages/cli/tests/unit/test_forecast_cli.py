@@ -13,16 +13,20 @@ def test_predict_skips_market_with_malformed_agent_response(monkeypatch, tmp_pat
     events_path = tmp_path / "events.json"
     output_path = tmp_path / "submission.json"
     close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-    events_path.write_text(json.dumps([
-        {
-            "market_ticker": "TEST-BAD",
-            "close_time": close_time,
-        },
-        {
-            "market_ticker": "TEST-GOOD",
-            "close_time": close_time,
-        },
-    ]))
+    events_path.write_text(
+        json.dumps(
+            [
+                {
+                    "market_ticker": "TEST-BAD",
+                    "close_time": close_time,
+                },
+                {
+                    "market_ticker": "TEST-GOOD",
+                    "close_time": close_time,
+                },
+            ]
+        )
+    )
 
     responses = [
         {"rationale": "missing probability"},
@@ -71,12 +75,16 @@ def test_predict_accepts_probability_distribution_response(monkeypatch, tmp_path
     events_path = tmp_path / "events.json"
     output_path = tmp_path / "submission.json"
     close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-    events_path.write_text(json.dumps([
-        {
-            "market_ticker": "TEST-MULTI",
-            "close_time": close_time,
-        },
-    ]))
+    events_path.write_text(
+        json.dumps(
+            [
+                {
+                    "market_ticker": "TEST-MULTI",
+                    "close_time": close_time,
+                },
+            ]
+        )
+    )
 
     class FakeResponse:
         def raise_for_status(self):
@@ -183,3 +191,52 @@ def test_forecast_submit_command_is_not_available():
 
     assert result.exit_code != 0
     assert "No such command 'submit'" in result.output
+
+
+def test_evaluate_accepts_resolved_event_list_actuals(tmp_path):
+    submission_path = tmp_path / "submission.json"
+    actuals_path = tmp_path / "resolved-events.json"
+    submission_path.write_text(
+        json.dumps(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "predictions": [
+                    {"market_ticker": "YES-WON", "p_yes": 0.8},
+                    {"market_ticker": "YES-LOST", "p_yes": 0.3},
+                ],
+            }
+        )
+    )
+    actuals_path.write_text(
+        json.dumps(
+            [
+                {
+                    "market_ticker": "YES-WON",
+                    "outcomes": ["Yes", "No"],
+                    "resolved_outcome": {"value": ["Yes"]},
+                },
+                {
+                    "market_ticker": "YES-LOST",
+                    "outcomes": ["Team A", "Team B"],
+                    "resolved_outcome": {"value": ["Team B"]},
+                },
+            ]
+        )
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "forecast",
+            "evaluate",
+            "--submission",
+            str(submission_path),
+            "--actuals",
+            str(actuals_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Predictions: 2" in result.output
+    assert "Matched: 2" in result.output
+    assert "Brier Score: 0.065" in result.output

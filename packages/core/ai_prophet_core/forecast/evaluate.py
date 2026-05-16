@@ -18,12 +18,49 @@ def load_submission(path: str | Path) -> Submission:
 def load_actuals(path: str | Path) -> dict[str, Any]:
     """Load actual outcomes.
 
-    Expected format: {"market_ticker": resolved_value, ...}. Binary forecasts
-    accept 1.0/0.0 or Yes/No-style labels. Probability-distribution forecasts
-    accept labels, lists, or resolved_outcome-style {"value": [...]} payloads.
+    Supported formats:
+    - ``{"market_ticker": resolved_value, ...}``. Binary forecasts accept
+      1.0/0.0 or Yes/No-style labels. Probability-distribution forecasts accept
+      labels, lists, or resolved_outcome-style {"value": [...]} payloads.
+    - An event list produced by ``prophet forecast retrieve --include-resolved``.
+      Binary forecasts score the first listed outcome as YES, while probability
+      distributions score against the resolved market label.
     """
     data = json.loads(Path(path).read_text())
-    return {str(k): v for k, v in data.items()}
+    if isinstance(data, dict):
+        return {str(k): v for k, v in data.items()}
+    if isinstance(data, list):
+        return _actuals_from_events(data)
+    raise ValueError("actuals must be a ticker mapping or a list of resolved events")
+
+
+def _actuals_from_events(events: list[Any]) -> dict[str, dict[str, Any]]:
+    """Map resolved event objects by ticker while preserving outcome context."""
+    actuals: dict[str, dict[str, Any]] = {}
+    for index, event in enumerate(events, start=1):
+        if not isinstance(event, dict):
+            raise ValueError(f"event at index {index} must be an object")
+
+        market_ticker = str(event.get("market_ticker") or "").strip()
+        if not market_ticker:
+            raise ValueError(f"event at index {index} is missing market_ticker")
+
+        resolved = event.get("resolved_outcome")
+        if not isinstance(resolved, dict):
+            continue
+        resolved_values = resolved.get("value")
+        if not isinstance(resolved_values, list):
+            continue
+
+        outcomes = event.get("outcomes")
+        if not isinstance(outcomes, list) or len(outcomes) < 2:
+            continue
+
+        actuals[market_ticker] = {
+            "outcomes": [str(outcome) for outcome in outcomes],
+            "resolved_outcome": {"value": [str(value) for value in resolved_values]},
+        }
+    return actuals
 
 
 def score(predictions: list[Prediction], actuals: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +104,8 @@ def _prediction_brier(prediction: Prediction, actual: Any) -> float:
 
 
 def _actual_market(actual: Any) -> str:
+    if isinstance(actual, dict) and "resolved_outcome" in actual:
+        return _actual_market(actual["resolved_outcome"])
     if isinstance(actual, dict) and "value" in actual:
         return _actual_market(actual["value"])
     if isinstance(actual, list):
@@ -77,6 +116,13 @@ def _actual_market(actual: Any) -> str:
 
 
 def _actual_binary(actual: Any) -> float:
+    if isinstance(actual, dict) and "resolved_outcome" in actual:
+        outcomes = actual.get("outcomes")
+        if not isinstance(outcomes, list) or not outcomes:
+            raise ValueError("Resolved event actual is missing outcomes")
+        resolved = actual["resolved_outcome"]
+        resolved_market = _actual_market(resolved)
+        return 1.0 if resolved_market == str(outcomes[0]) else 0.0
     if isinstance(actual, dict) and "value" in actual:
         return _actual_binary(actual["value"])
     if isinstance(actual, list):
@@ -92,4 +138,8 @@ def _actual_binary(actual: Any) -> float:
         return 1.0
     if normalized in {"0", "false", "no", "n"}:
         return 0.0
+    try:
+        return float(normalized)
+    except ValueError:
+        pass
     raise ValueError(f"Cannot convert actual outcome {actual!r} to binary")

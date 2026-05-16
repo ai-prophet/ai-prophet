@@ -48,6 +48,15 @@ Each invocation writes a JSON array of `Event` objects (the `Event`
 pydantic model in `ai_prophet_core.forecast.schemas`) — the same shape
 `prophet forecast predict` consumes.
 
+You can also use `resolved.json` directly as the actuals file when
+scoring local predictions:
+
+```bash
+prophet forecast evaluate \
+    --submission predictions.json \
+    --actuals resolved.json
+```
+
 ## The event shape
 
 `prophet forecast retrieve` normalizes the raw registry rows into the
