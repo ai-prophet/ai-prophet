@@ -13,16 +13,20 @@ def test_predict_skips_market_with_malformed_agent_response(monkeypatch, tmp_pat
     events_path = tmp_path / "events.json"
     output_path = tmp_path / "submission.json"
     close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-    events_path.write_text(json.dumps([
-        {
-            "market_ticker": "TEST-BAD",
-            "close_time": close_time,
-        },
-        {
-            "market_ticker": "TEST-GOOD",
-            "close_time": close_time,
-        },
-    ]))
+    events_path.write_text(
+        json.dumps(
+            [
+                {
+                    "market_ticker": "TEST-BAD",
+                    "close_time": close_time,
+                },
+                {
+                    "market_ticker": "TEST-GOOD",
+                    "close_time": close_time,
+                },
+            ]
+        )
+    )
 
     responses = [
         {"rationale": "missing probability"},
@@ -106,6 +110,54 @@ def test_retrieve_defaults_to_dataset_source(monkeypatch, tmp_path):
     payload = json.loads(output_path.read_text())
     assert payload[0]["market_ticker"] == "task-001"
     assert payload[0]["outcomes"] == ["Yes", "No"]
+
+
+def test_predict_accepts_whole_percent_probability(monkeypatch, tmp_path):
+    events_path = tmp_path / "events.json"
+    output_path = tmp_path / "submission.json"
+    close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    events_path.write_text(
+        json.dumps(
+            [
+                {
+                    "market_ticker": "TEST-PERCENT",
+                    "close_time": close_time,
+                }
+            ]
+        )
+    )
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"p_yes": 72, "rationale": "percent-style agent output"}
+
+    def fake_post(*_args, **_kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("ai_prophet.forecast.main.requests.post", fake_post)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "forecast",
+            "predict",
+            "--events",
+            str(events_path),
+            "--agent-url",
+            "http://agent.test/predict",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "TEST-PERCENT: p_yes=0.720" in result.output
+
+    submission = json.loads(output_path.read_text())
+    assert submission["predictions"][0]["p_yes"] == 0.72
 
 
 def test_retrieve_rejects_kalshi_source_flag():
