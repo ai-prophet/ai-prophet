@@ -451,6 +451,19 @@ def predict_endpoint(event: EventRequest) -> PredictionResponse:
     return forecast(event)
 
 
+# Defensive aliases: some submission flows POST to the root or to /forecast
+# without a /predict suffix. Route them to the same handler so a missing path
+# segment doesn't 405.
+@app.post("/", response_model=PredictionResponse)
+def predict_root(event: EventRequest) -> PredictionResponse:
+    return predict_endpoint(event)
+
+
+@app.post("/forecast", response_model=PredictionResponse)
+def predict_forecast_alias(event: EventRequest) -> PredictionResponse:
+    return predict_endpoint(event)
+
+
 def main() -> None:
     uvicorn.run(
         "main:app",
