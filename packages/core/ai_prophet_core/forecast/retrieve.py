@@ -92,10 +92,21 @@ def select_events(
         if et and cat:
             event_cat_map[et] = cat
 
-    # Group markets by category (looked up via event_ticker)
+    # Group markets by category. The bulk /events feed doesn't always contain
+    # every event_ticker referenced by /markets (observed live: high-volume
+    # markets like KXTRUMPPHOTO-26MAY16 weren't in the first 1000 paginated
+    # /events results), so when the bulk map misses we fall back to a per-
+    # event lookup. Results are cached into event_cat_map.
     markets_by_cat: dict[str, list[dict]] = {}
     for m in all_markets:
-        cat = event_cat_map.get(m.get("event_ticker", ""), "")
+        event_ticker = m.get("event_ticker", "")
+        cat = event_cat_map.get(event_ticker, "")
+        if not cat and event_ticker:
+            ev_dict = client.get_event(event_ticker)
+            if ev_dict:
+                cat = ev_dict.get("category", "")
+                if cat:
+                    event_cat_map[event_ticker] = cat
         if cat:
             markets_by_cat.setdefault(cat, []).append(m)
 

@@ -188,5 +188,21 @@ class KalshiForecastClient:
             logger.error("KalshiForecastClient: failed to fetch market %s - %s", ticker, e)
             return None
 
+    def get_event(self, event_ticker: str) -> dict[str, Any] | None:
+        """Fetch a single event by ticker. GET /trade-api/v2/events/{event_ticker}"""
+        path = f"/trade-api/v2/events/{event_ticker}"
+        headers = self._sign_request("GET", path)
+        try:
+            resp = self._session.get(
+                self._base_url + path,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            return resp.json().get("event", resp.json())
+        except requests.exceptions.RequestException as e:
+            logger.error("KalshiForecastClient: failed to fetch event %s - %s", event_ticker, e)
+            return None
+
     def close(self) -> None:
         self._session.close()
