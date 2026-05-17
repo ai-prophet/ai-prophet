@@ -40,17 +40,24 @@ app = FastAPI(title="Prophet Arena Forecast Agent (Opus 4.7)")
 # ---------------------------------------------------------------------------
 
 class EventRequest(BaseModel):
+    """Accepts both the ai_prophet_core.forecast.Event shape (outcomes) and the
+    ProphetArena-Engine EventDB shape (markets). Every field except a label
+    list is optional so we never reject a payload over missing context.
+    """
+
     model_config = ConfigDict(extra="allow")
 
-    event_ticker: str
-    market_ticker: str
-    title: str
+    event_ticker: str | None = None
+    market_ticker: str | None = None
+    title: str | None = None
     subtitle: str | None = None
     description: str | None = None
-    category: str
+    category: str | None = None
     rules: str | None = None
-    close_time: str
+    close_time: str | None = None
+    # Canonical outcome list — try both common names.
     outcomes: list[str] | None = None
+    markets: list[str] | None = None
 
 
 class MarketProbability(BaseModel):
@@ -96,9 +103,23 @@ def _get_kalshi() -> KalshiForecastClient:
 
 
 def _event_markets(event: EventRequest) -> list[str]:
+    """Return the candidate outcome labels in priority order:
+    explicit `outcomes`, then `markets` (ProphetArena name), then any
+    extra-allowed alias the platform may attach, then a single binary
+    fallback using market_ticker.
+    """
     if event.outcomes:
-        return list(event.outcomes)
-    return [event.market_ticker]
+        return [str(o) for o in event.outcomes if o]
+    if event.markets:
+        return [str(m) for m in event.markets if m]
+    extras = event.model_dump()
+    for alias in ("outcome_labels", "market_names", "candidates"):
+        v = extras.get(alias)
+        if isinstance(v, list) and v:
+            return [str(x) for x in v if x]
+    if event.market_ticker:
+        return [event.market_ticker]
+    return ["YES"]
 
 
 # ---------------------------------------------------------------------------
@@ -137,21 +158,26 @@ def fetch_market_stats(event: EventRequest) -> dict[str, float]:
     """
     if not KALSHI_ENABLED:
         return {}
+    if not event.event_ticker and not event.market_ticker:
+        return {}
 
     try:
         client = _get_kalshi()
         snapshot: dict[str, float] = {}
 
-        markets = client.get_markets(event_ticker=event.event_ticker, status="open")
-        for m in markets:
-            label = _outcome_label_for_market(m)
-            prob = _price_to_probability(m)
-            if label and prob is not None:
-                snapshot[label] = round(prob, 4)
+        if event.event_ticker:
+            markets = client.get_markets(event_ticker=event.event_ticker, status="open")
+            for m in markets:
+                label = _outcome_label_for_market(m)
+                prob = _price_to_probability(m)
+                if label and prob is not None:
+                    snapshot[label] = round(prob, 4)
 
         if snapshot:
             return snapshot
 
+        if not event.market_ticker:
+            return {}
         single = client.get_market(event.market_ticker)
         if single:
             prob = _price_to_probability(single)
@@ -161,7 +187,7 @@ def fetch_market_stats(event: EventRequest) -> dict[str, float]:
                 return {"YES": prob, "NO": round(1.0 - prob, 4)}
         return {}
     except Exception as exc:  # never let Kalshi failures break the forecast
-        logger.warning("Kalshi snapshot failed for %s: %s", event.market_ticker, exc)
+        logger.warning("Kalshi snapshot failed for %s: %s", event.market_ticker or event.event_ticker, exc)
         return {}
 
 
@@ -235,15 +261,19 @@ def _build_task_prompt(event_title: str, market_names: list[str]) -> str:
 
 def _build_user_prompt(event: EventRequest, market_stats: dict[str, float]) -> str:
     """Port of PredictionPrompts.create_user_prompt + event context."""
-    parts: list[str] = []
-    parts.append("EVENT CONTEXT:")
-    parts.append(f"  Event ticker: {event.event_ticker}")
-    parts.append(f"  Market ticker: {event.market_ticker}")
-    parts.append(f"  Title: {event.title}")
+    parts: list[str] = ["EVENT CONTEXT:"]
+    if event.event_ticker:
+        parts.append(f"  Event ticker: {event.event_ticker}")
+    if event.market_ticker:
+        parts.append(f"  Market ticker: {event.market_ticker}")
+    if event.title:
+        parts.append(f"  Title: {event.title}")
     if event.subtitle:
         parts.append(f"  Subtitle: {event.subtitle}")
-    parts.append(f"  Category: {event.category}")
-    parts.append(f"  Closes (UTC): {event.close_time}")
+    if event.category:
+        parts.append(f"  Category: {event.category}")
+    if event.close_time:
+        parts.append(f"  Closes (UTC): {event.close_time}")
     if event.description:
         parts.append(f"\nDescription:\n{event.description}")
     if event.rules:
@@ -252,7 +282,7 @@ def _build_user_prompt(event: EventRequest, market_stats: dict[str, float]) -> s
     # Forward any extra fields the platform attaches.
     known = {
         "event_ticker", "market_ticker", "title", "subtitle", "description",
-        "category", "rules", "close_time", "outcomes",
+        "category", "rules", "close_time", "outcomes", "markets",
     }
     extras = {
         k: v for k, v in event.model_dump().items()
@@ -376,12 +406,12 @@ def forecast(event: EventRequest) -> PredictionResponse:
     market_stats = fetch_market_stats(event)
     logger.info(
         "predict %s outcomes=%d kalshi_stats=%d",
-        event.market_ticker,
+        event.market_ticker or event.event_ticker or "<no-ticker>",
         len(markets),
         len(market_stats),
     )
 
-    task_prompt = _build_task_prompt(event.title, markets)
+    task_prompt = _build_task_prompt(event.title or "the event", markets)
     user_prompt = _build_user_prompt(event, market_stats)
     combined = f"{user_prompt}\n\n{task_prompt}"
 
@@ -414,7 +444,7 @@ def forecast(event: EventRequest) -> PredictionResponse:
         probabilities = _normalize_probabilities(raw, markets)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         logger.warning(
-            "%s: parse failure (%s); raw=%r", event.market_ticker, exc, text[:500]
+            "%s: parse failure (%s); raw=%r", event.market_ticker or event.event_ticker, exc, text[:500]
         )
         return _uniform_fallback(markets, f"parse failure: {exc}")
 
@@ -448,7 +478,11 @@ def health() -> dict[str, str]:
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict_endpoint(event: EventRequest) -> PredictionResponse:
-    logger.info("predict %s: %s", event.market_ticker, event.title)
+    logger.info(
+        "predict %s: %s",
+        event.market_ticker or event.event_ticker or "<no-ticker>",
+        event.title or "<no-title>",
+    )
     return forecast(event)
 
 
