@@ -534,6 +534,269 @@ def leaderboard(server_url: str | None, api_key: str | None, verbose: bool) -> N
         )
 
 
+@cli.command(name="monitor")
+@click.option(
+    "--agent-url",
+    default=None,
+    help="Agent endpoint URL. When given, GET <url>/health is checked.",
+)
+@click.option(
+    "--submission",
+    default=None,
+    type=click.Path(exists=False),
+    help=(
+        "Path to a recent submission file (output of `prophet forecast "
+        "predict -o ...`). When given, summary stats and uniform-fallback "
+        "rate are reported."
+    ),
+)
+@click.option(
+    "--calibration-gcs-uri",
+    default=None,
+    help=(
+        "gs://bucket/path/to/calibration.json. Default: CALIBRATION_GCS_URI "
+        "env var. When given, the object's update timestamp is checked "
+        "against --stale-hours."
+    ),
+)
+@click.option(
+    "--stale-hours",
+    type=float,
+    default=36.0,
+    show_default=True,
+    help=(
+        "Calibration object age (hours) above which the check fails. The "
+        "default 36h leaves room for a nightly refit job that ran ~yesterday."
+    ),
+)
+@click.option(
+    "--timeout",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="HTTP timeout (seconds) for the agent /health probe.",
+)
+@click.option(
+    "--uniform-fallback-marker",
+    default="uniform",
+    show_default=True,
+    help=(
+        "Substring (case-insensitive) in a prediction's rationale that "
+        "marks it as a uniform/no-signal fallback. Used to compute the "
+        "healthy-signal rate. Set to empty to skip this check."
+    ),
+)
+@click.option(
+    "--min-healthy-rate",
+    type=float,
+    default=0.98,
+    show_default=True,
+    help=(
+        "Minimum healthy-signal rate (1 - fallback_rate) on the submission "
+        "below which the check fails."
+    ),
+)
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+def monitor(
+    agent_url: str | None,
+    submission: str | None,
+    calibration_gcs_uri: str | None,
+    stale_hours: float,
+    timeout: float,
+    uniform_fallback_marker: str,
+    min_healthy_rate: float,
+    verbose: bool,
+) -> None:
+    """Run an eval-window health check on your forecasting agent.
+
+    Surfaces the three operational risks that compound over a multi-day
+    evaluation window:
+
+    \b
+      * Endpoint reachability (does your agent answer?).
+      * Calibration table freshness (is the daily refit job still
+        running, if you have one?).
+      * Healthy-signal rate in recent predictions (are you serving
+        real forecasts or silently falling back to a uniform prior?).
+
+    All three checks are optional; only the ones whose inputs are
+    configured will run. Exit status is 0 when all configured checks
+    pass and 1 when any fail, so this command can be wired into a cron
+    or launchd job to page you on regression during the eval.
+    """
+    _setup_logging(verbose)
+    overall_ok = True
+    ran_anything = False
+
+    # 1. Endpoint health.
+    if agent_url:
+        ran_anything = True
+        health_url = agent_url.rstrip("/")
+        # Allow either the bare base URL or the /predict URL; auto-derive /health.
+        if health_url.endswith("/predict"):
+            health_url = health_url.rsplit("/", 1)[0] + "/health"
+        elif not health_url.endswith("/health"):
+            health_url = health_url + "/health"
+        try:
+            resp = requests.get(health_url, timeout=timeout)
+            if resp.status_code == 200:
+                click.echo(
+                    f"[✓] endpoint: GET {health_url} → 200 "
+                    f"({resp.elapsed.total_seconds():.2f}s)"
+                )
+            else:
+                overall_ok = False
+                click.echo(
+                    f"[✗] endpoint: GET {health_url} → {resp.status_code}"
+                )
+        except requests.RequestException as exc:
+            overall_ok = False
+            click.echo(f"[✗] endpoint: GET {health_url} failed — {exc}")
+
+    # 2. Calibration freshness (env-var fallback for the URI).
+    cal_uri = calibration_gcs_uri or os.environ.get("CALIBRATION_GCS_URI")
+    if cal_uri:
+        ran_anything = True
+        ok, msg = _check_calibration_freshness(cal_uri, stale_hours=stale_hours)
+        marker = "[✓]" if ok else "[✗]"
+        click.echo(f"{marker} calibration: {msg}")
+        overall_ok &= ok
+
+    # 3. Submission completeness.
+    if submission:
+        ran_anything = True
+        ok, msg = _check_submission_health(
+            Path(submission),
+            uniform_fallback_marker=uniform_fallback_marker.lower().strip(),
+            min_healthy_rate=min_healthy_rate,
+        )
+        marker = "[✓]" if ok else "[✗]"
+        click.echo(f"{marker} submission: {msg}")
+        overall_ok &= ok
+
+    if not ran_anything:
+        click.echo(
+            "monitor: no checks configured. Provide at least one of "
+            "--agent-url, --submission, or --calibration-gcs-uri "
+            "(or set CALIBRATION_GCS_URI)."
+        )
+        return
+
+    click.echo("")
+    click.echo("OVERALL: " + ("✓ HEALTHY" if overall_ok else "✗ ATTENTION NEEDED"))
+    if not overall_ok:
+        raise SystemExit(1)
+
+
+def _check_calibration_freshness(
+    gcs_uri: str, *, stale_hours: float
+) -> tuple[bool, str]:
+    """Report (ok, message) for a calibration GCS object's age.
+
+    Tries google-cloud-storage first; falls back to `gcloud storage ls`
+    parsing so the check works for teams with `gcloud` installed but no
+    `google-cloud-storage` pip package in their environment.
+    """
+    if not gcs_uri.startswith("gs://"):
+        return False, f"invalid GCS URI: {gcs_uri}"
+    rest = gcs_uri[len("gs://"):]
+    bucket_name, _, object_name = rest.partition("/")
+    if not bucket_name or not object_name:
+        return False, f"unparseable GCS URI: {gcs_uri}"
+
+    try:
+        from google.cloud import storage  # type: ignore
+
+        client = storage.Client()
+        blob = client.bucket(bucket_name).get_blob(object_name)
+        if blob is None:
+            return True, (
+                f"no calibration object yet at {gcs_uri} "
+                f"(expected pre-eval or first refit)"
+            )
+        updated = blob.updated
+        age_h = (datetime.now(UTC) - updated).total_seconds() / 3600.0
+        ok = age_h <= stale_hours
+        return ok, (
+            f"object updated {age_h:.1f}h ago"
+            + ("" if ok else f" (> {stale_hours}h threshold)")
+        )
+    except ImportError:
+        return _check_calibration_via_gcloud(gcs_uri, stale_hours=stale_hours)
+    except Exception as exc:  # network / auth
+        return False, f"GCS check raised: {exc}"
+
+
+def _check_calibration_via_gcloud(
+    gcs_uri: str, *, stale_hours: float
+) -> tuple[bool, str]:
+    """Parse `gcloud storage ls --long <uri>` for object age."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["gcloud", "storage", "ls", "--long", gcs_uri],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f"gcloud unavailable: {exc}"
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        if "matched no objects" in stderr.lower():
+            return True, f"no calibration object yet at {gcs_uri}"
+        return False, f"gcloud failed: {stderr[:160]}"
+    lines = [ln.strip() for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    if not lines:
+        return False, "empty gcloud ls output"
+    parts = lines[0].split()
+    if len(parts) < 2:
+        return False, f"unparseable: {lines[0][:120]}"
+    try:
+        ts = datetime.fromisoformat(parts[1].replace("Z", "+00:00"))
+    except ValueError:
+        return False, f"unparseable timestamp: {parts[1]}"
+    age_h = (datetime.now(UTC) - ts).total_seconds() / 3600.0
+    ok = age_h <= stale_hours
+    return ok, (
+        f"object updated {age_h:.1f}h ago"
+        + ("" if ok else f" (> {stale_hours}h threshold)")
+    )
+
+
+def _check_submission_health(
+    path: Path,
+    *,
+    uniform_fallback_marker: str,
+    min_healthy_rate: float,
+) -> tuple[bool, str]:
+    """Inspect a submission file's prediction count + uniform-fallback rate."""
+    if not path.exists():
+        return False, f"submission file not found: {path}"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"unreadable: {exc}"
+    predictions = data.get("predictions") if isinstance(data, dict) else None
+    if not predictions:
+        return False, "no predictions in file"
+    total = len(predictions)
+    if not uniform_fallback_marker:
+        return True, f"{total} predictions"
+    fallback = 0
+    for pred in predictions:
+        rationale = (pred.get("rationale") or "").lower()
+        if uniform_fallback_marker in rationale:
+            fallback += 1
+    healthy_rate = 1.0 - (fallback / total)
+    ok = healthy_rate >= min_healthy_rate
+    return ok, (
+        f"{total} predictions, {fallback} match '{uniform_fallback_marker}' "
+        f"(healthy-signal rate {healthy_rate:.1%}, threshold {min_healthy_rate:.0%})"
+    )
+
+
 def main() -> None:
     cli()
 
