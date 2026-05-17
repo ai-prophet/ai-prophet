@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from .config import MAX_SPREAD
+from .config import MAX_SPREAD, MIN_EDGE
+
+WITHIN_SPREAD_BUFFER = 0.02
+MIN_RELIABLE_SPREAD = 0.90
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ class BettingStrategy(ABC):
 
     name: str = "base"
     _portfolio: PortfolioSnapshot | None = None
+    last_skip_reason: str | None = None
 
     @property
     def portfolio(self) -> PortfolioSnapshot | None:
@@ -107,6 +111,32 @@ class BettingStrategy(ABC):
         ...
 
 
+def _is_tradeable_spread(spread: float, max_spread: float) -> bool:
+    return MIN_RELIABLE_SPREAD <= spread <= max_spread
+
+
+def _within_spread_bounds(p_yes: float, yes_ask: float, no_ask: float) -> tuple[bool, float, float]:
+    lower_bound = max(0.0, 1.0 - no_ask - WITHIN_SPREAD_BUFFER)
+    upper_bound = min(1.0, yes_ask + WITHIN_SPREAD_BUFFER)
+    return lower_bound <= p_yes <= upper_bound, lower_bound, upper_bound
+
+
+def _build_signal_metadata(
+    p_yes: float,
+    yes_ask: float,
+    no_ask: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "edge": p_yes - yes_ask,
+        "p_yes": p_yes,
+        "yes_ask": yes_ask,
+        "no_ask": no_ask,
+    }
+    metadata.update(extra)
+    return metadata
+
+
 class DefaultBettingStrategy(BettingStrategy):
     """Average-return-neutral strategy (the built-in default).
 
@@ -129,19 +159,22 @@ class DefaultBettingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
+        self.last_skip_reason = None
         spread = yes_ask + no_ask
-        if spread > self.max_spread:
-            return None
-        # Skip crossed/invalid markets (spread < 1 means prices are unreliable)
-        if spread < 0.90:
+        if not _is_tradeable_spread(spread, self.max_spread):
+            self.last_skip_reason = f"Spread too wide ({spread:.2f} > {self.max_spread:.2f})"
             return None
 
-        lower_bound = 1.0 - no_ask
-        upper_bound = yes_ask
-        if lower_bound <= p_yes <= upper_bound:
+        within_spread, _lower_bound, _upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
+        if within_spread:
+            self.last_skip_reason = "No edge - within spread"
             return None
 
         diff = p_yes - yes_ask
+
+        if abs(diff) < MIN_EDGE:
+            self.last_skip_reason = f"Edge too small ({abs(diff):.3f} < {MIN_EDGE:.2f})"
+            return None
 
         if diff > 0:
             desired_shares = p_yes - yes_ask
@@ -152,6 +185,7 @@ class DefaultBettingStrategy(BettingStrategy):
             price = no_ask
             side = "no"
         else:
+            self.last_skip_reason = "No edge - zero diff"
             return None
 
         # Subtract same-side holdings so we only buy the delta needed to reach
@@ -163,13 +197,19 @@ class DefaultBettingStrategy(BettingStrategy):
                 current_contracts = float(port.market_position_shares)
                 desired_contracts = round(desired_shares * 100)
                 delta = max(0, desired_contracts - current_contracts) / 100.0
-                if delta < 0.005:  # less than 1 contract needed -- already at target
+                if delta < 0.005:  # less than 1 contract needed — already at target
                     return None
                 desired_shares = delta
 
         cost = desired_shares * price
 
-        return BetSignal(side=side, shares=desired_shares, price=price, cost=cost)
+        return BetSignal(
+            side=side,
+            shares=desired_shares,
+            price=price,
+            cost=cost,
+            metadata=_build_signal_metadata(p_yes, yes_ask, no_ask),
+        )
 
 
 class RebalancingStrategy(BettingStrategy):
@@ -182,11 +222,14 @@ class RebalancingStrategy(BettingStrategy):
 
         delta = target - current_position
 
-    Positive delta -> buy YES (or sell NO via engine's NET logic).
-    Negative delta -> buy NO (or sell YES via engine's NET logic).
+    Positive delta → buy YES (or sell NO via engine's NET logic).
+    Negative delta → buy NO (or sell YES via engine's NET logic).
 
     Using the real portfolio position instead of in-memory state means the
     strategy survives process restarts and handles partial fills correctly.
+
+    IMPORTANT: The strategy only considers FILLED orders when calculating current position.
+    Pending orders are cancelled before placing new orders to prevent double-ordering.
     """
 
     name = "rebalancing"
@@ -200,11 +243,13 @@ class RebalancingStrategy(BettingStrategy):
 
         Positive = holding YES contracts, negative = holding NO contracts.
         Uses fractional shares (0-1 scale) matching target units.
+
+        NOTE: Only counts FILLED positions, not pending orders.
         """
         port = self.portfolio
         if not port or not port.market_position_side or port.market_position_shares <= 0:
             return 0.0
-        shares = float(port.market_position_shares) / 100.0  # contracts -> fractional
+        shares = float(port.market_position_shares) / 100.0  # contracts → fractional
         if port.market_position_side.lower() == "yes":
             return shares
         else:
@@ -217,24 +262,55 @@ class RebalancingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
+        self.last_skip_reason = None
         spread = yes_ask + no_ask
-        if spread > self.max_spread:
-            return None
-        if spread < 0.90:
+        if not _is_tradeable_spread(spread, self.max_spread):
+            self.last_skip_reason = f"Spread too wide ({spread:.2f} > {self.max_spread:.2f})"
             return None
 
-        # Within-spread filter: if prediction sits inside the bid-ask band,
-        # there is no edge -- skip without updating state.
-        lower_bound = 1.0 - no_ask
-        upper_bound = yes_ask
-        if lower_bound <= p_yes <= upper_bound:
+        # If the model sits inside the widened market band, there is no
+        # directional edge. Stay flat if we have no position; otherwise
+        # flatten the existing position completely.
+        current_pos = self._current_position_yes_equiv()
+        within_spread, lower_bound, upper_bound = _within_spread_bounds(p_yes, yes_ask, no_ask)
+        if within_spread:
+            if abs(current_pos) < self.min_trade:
+                self.last_skip_reason = "No edge - within spread"
+                return None
+
+            side = "no" if current_pos > 0 else "yes"
+            shares = abs(current_pos)
+            price = no_ask if current_pos > 0 else yes_ask
+            return BetSignal(
+                side=side,
+                shares=shares,
+                price=price,
+                cost=shares * price,
+                metadata=_build_signal_metadata(
+                    p_yes,
+                    yes_ask,
+                    no_ask,
+                    target=0.0,
+                    current_pos=round(current_pos, 6),
+                    delta=round(-current_pos, 6),
+                    sell_portion=round(abs(current_pos), 6),
+                    buy_portion=0.0,
+                    flatten_reason="WITHIN_SPREAD",
+                    lower_bound=round(lower_bound, 6),
+                    upper_bound=round(upper_bound, 6),
+                ),
+            )
+
+        # Hard min-edge floor: ignore micro-edges that get eaten by fees.
+        # Within-spread (flatten) was handled above, so this only gates new
+        # entries and rebalances when |p_yes - yes_ask| < MIN_EDGE.
+        edge = abs(p_yes - yes_ask)
+        if edge < MIN_EDGE:
+            self.last_skip_reason = f"Edge too small ({edge:.3f} < {MIN_EDGE:.2f})"
             return None
 
         # Target position in YES-equivalent fractional units: p - q
         target = p_yes - yes_ask
-
-        # Actual current position from portfolio (set by engine)
-        current_pos = self._current_position_yes_equiv()
 
         # Delta to reach target
         delta = target - current_pos
@@ -247,19 +323,19 @@ class RebalancingStrategy(BettingStrategy):
             side = "yes"
             shares = delta
             price = yes_ask
-            # If we hold NO, engine will sell those first (NET flip) -- no cash needed for that portion
+            # If we hold NO, engine will sell those first (NET flip) — no cash needed for that portion
             sell_portion = min(shares, abs(current_pos)) if current_pos < 0 else 0.0
         else:
-            # Decrease YES exposure -> buy NO (engine handles sell-first)
+            # Decrease YES exposure → buy NO (engine handles sell-first)
             side = "no"
             shares = abs(delta)
             price = no_ask
-            # If we hold YES, engine will sell those first (NET flip) -- no cash needed for that portion
+            # If we hold YES, engine will sell those first (NET flip) — no cash needed for that portion
             sell_portion = min(shares, current_pos) if current_pos > 0 else 0.0
 
         buy_portion = shares - sell_portion
 
-        # Only cap the BUY portion by available cash -- sells return cash, they cost nothing.
+        # Only cap the BUY portion by available cash — sells return cash, they cost nothing.
         # Include expected sell proceeds so the buy isn't under-sized after a NET flip.
         port = self.portfolio
         if buy_portion > 0 and port is not None:
@@ -285,11 +361,14 @@ class RebalancingStrategy(BettingStrategy):
             shares=shares,
             price=price,
             cost=cost,
-            metadata={
-                "target": round(target, 6),
-                "current_pos": round(current_pos, 6),
-                "delta": round(delta, 6),
-                "sell_portion": round(sell_portion, 6),
-                "buy_portion": round(buy_portion, 6),
-            },
+            metadata=_build_signal_metadata(
+                p_yes,
+                yes_ask,
+                no_ask,
+                target=round(target, 6),
+                current_pos=round(current_pos, 6),
+                delta=round(delta, 6),
+                sell_portion=round(sell_portion, 6),
+                buy_portion=round(buy_portion, 6),
+            ),
         )

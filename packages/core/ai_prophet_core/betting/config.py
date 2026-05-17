@@ -16,8 +16,14 @@ from ai_prophet_core.kalshi_config import (
 )
 
 MAX_SPREAD = 1.03
+MAX_ORDER_COST = 50.0
 
-MAX_MARKETS_PER_TICK = 10
+# Minimum |p_yes - yes_ask| edge required to generate any trade signal.
+# Trades with smaller edges get eaten by per-fill fees (~$0.01-0.02/share).
+MIN_EDGE = 0.02
+
+# Maximum number of markets to place orders on per tick.
+MAX_MARKETS_PER_TICK = 50
 
 KALSHI_BASE_URL = DEFAULT_KALSHI_BASE_URL
 

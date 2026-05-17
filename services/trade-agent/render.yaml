@@ -1,0 +1,45 @@
+# Render Blueprint — Trade Agent (main + anri-trading strategy)
+# https://docs.render.com/blueprint-spec
+#
+# Long-lived Render worker that runs `prophet trade eval run` against the
+# Prophet Arena server. The server is authoritative for ticks, candidate
+# markets, positions, and cash — this worker is just a stateless client
+# that:
+#   1. Claims tick leases via ServerAPIClient
+#   2. Runs ai_prophet.trade.agent.pipeline.AgentPipeline.execute()
+#      (REVIEW → SEARCH → FORECAST → ACTION) on Claude Opus 4.7
+#   3. Submits trade intents back to the server
+#
+# Trading strategy = anri-trading's rebalancing strategy ported into
+# packages/core/ai_prophet_core/betting/{config,strategy}.py:
+#   - MIN_EDGE=0.02 floor
+#   - MIN_RELIABLE_SPREAD=0.90
+#   - WITHIN_SPREAD_BUFFER=0.02
+#   - MAX_ORDER_COST=50, MAX_MARKETS_PER_TICK=50
+#   - last_skip_reason diagnostics
+#
+# Required secrets (sync: false below):
+#   ANTHROPIC_API_KEY  — for Claude
+#   PA_SERVER_URL      — Prophet Arena server (default ai_prophet_core.DEFAULT_API_URL if omitted)
+#   PA_SERVER_API_KEY  — server API key
+
+services:
+  - type: worker
+    name: trade-agent
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: .
+    buildCommand: pip install --no-cache-dir -e packages/core && pip install --no-cache-dir -e packages/cli
+    startCommand: prophet trade eval run -m anthropic:claude-opus-4-7 --slug trade-agent --strategy rebalancing
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PA_SERVER_URL
+        sync: false
+      - key: PA_SERVER_API_KEY
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
