@@ -68,9 +68,10 @@ class PredictionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 DEFAULT_MODEL = os.environ.get("FORECAST_MODEL", "claude-opus-4-7")
-DEFAULT_MAX_TOKENS = int(os.environ.get("FORECAST_MAX_TOKENS", "3000"))
-DEFAULT_WEB_SEARCH_MAX_USES = int(os.environ.get("FORECAST_WEB_SEARCH_MAX_USES", "2"))
+DEFAULT_MAX_TOKENS = int(os.environ.get("FORECAST_MAX_TOKENS", "1500"))
+DEFAULT_WEB_SEARCH_MAX_USES = int(os.environ.get("FORECAST_WEB_SEARCH_MAX_USES", "1"))
 KALSHI_ENABLED = os.environ.get("FORECAST_KALSHI_ENABLED", "true").lower() == "true"
+KALSHI_TIMEOUT_SEC = int(os.environ.get("FORECAST_KALSHI_TIMEOUT_SEC", "3"))
 
 
 _client: anthropic.Anthropic | None = None
@@ -90,7 +91,7 @@ def _get_client() -> anthropic.Anthropic:
 def _get_kalshi() -> KalshiForecastClient:
     global _kalshi
     if _kalshi is None:
-        _kalshi = KalshiForecastClient()
+        _kalshi = KalshiForecastClient(timeout_sec=KALSHI_TIMEOUT_SEC)
     return _kalshi
 
 

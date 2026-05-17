@@ -29,9 +29,11 @@ services:
       - key: FORECAST_MODEL
         value: claude-opus-4-7
       - key: FORECAST_MAX_TOKENS
-        value: "3000"
+        value: "1500"
       - key: FORECAST_WEB_SEARCH_MAX_USES
-        value: "2"
+        value: "1"
+      - key: FORECAST_KALSHI_TIMEOUT_SEC
+        value: "3"
       - key: FORECAST_KALSHI_ENABLED
         value: "true"
       - key: KALSHI_BASE_URL
