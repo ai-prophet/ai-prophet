@@ -256,13 +256,13 @@ def _get_betting_engine(strategy_name: str = "default"):
         engine = BettingEngine(
             strategy=strategy,
             db_engine=db_engine,
-            dry_run=settings.dry_run,
+            paper=settings.paper,
             kalshi_config=settings.kalshi,
             enabled=settings.enabled,
         )
         click.echo(
             f"[BETTING] Engine ENABLED (strategy={engine.strategy.name}, "
-            f"dry_run={settings.dry_run})"
+            f"paper={settings.paper})"
         )
         _engine_holder["engine"] = engine
         _engine_holder["strategy_name"] = strategy_name
@@ -353,13 +353,12 @@ def _make_pipeline_builder(
                         market_position_shares=mkt_pos_shares,
                         market_position_side=mkt_pos_side,
                     )
-                _engine.on_forecast(
-                    tick_ts=tick_ts,
+                _engine.trade_from_forecast(
                     market_id=market_id,
                     p_yes=p_yes,
                     yes_ask=yes_ask,
                     no_ask=no_ask,
-                    question=question,
+                    observed_at=tick_ts,
                     source=_source,
                     portfolio=portfolio,
                 )
