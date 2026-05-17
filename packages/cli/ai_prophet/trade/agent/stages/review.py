@@ -95,8 +95,20 @@ class ReviewStage(PipelineStage):
             review_data = {"review": review_data.get("review", [])}
 
             selected_count = len(review_data.get("review", []))
-            logger.info(f"Review selected {selected_count} markets for analysis")
-
+            logger.info(
+                f"Review selected {selected_count} markets for analysis (target max_markets={self.max_markets})",
+            )
+            
+            
+            # --- ADDED: warn when model output exceeds the stage target ---
+            # This warning only improves visibility
+            # when the model exceeds the requested target count.
+            if selected_count > self.max_markets:
+                logger.warning(
+                    f"Review selected {selected_count} markets, exceeding target max_markets={self.max_markets}; "
+                    "output may still pass schema validation if within schema limits",
+                )
+            
             # Validate schema
             logger.debug("Validating review schema")
             self.validator.validate_review(review_data)

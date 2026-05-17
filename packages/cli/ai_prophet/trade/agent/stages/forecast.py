@@ -99,6 +99,8 @@ class ForecastStage(PipelineStage):
 
         # Generate forecasts for each market
         forecasts: dict[str, dict[str, Any]] = {}
+        
+        failed_forecasts: dict[str, str] = {}
 
         for idx, (market_id, summary) in enumerate(summaries.items()):
             logger.debug(f"Generating forecast {idx+1}/{len(summaries)} for {market_id}")
@@ -122,19 +124,30 @@ class ForecastStage(PipelineStage):
                 logger.info(f"Completed forecast for {market_id}: p_yes={forecast['p_yes']:.3f}")
             except Exception as e:
                 logger.error(f"Forecast failed for {market_id}: {e}", exc_info=True)
-                return StageResult(
-                    stage_name=self.name,
-                    success=False,
-                    data={"forecasts": forecasts},
-                    error=f"Forecast failed for {market_id}: {e}",
-                )
+                failed_forecasts[market_id] = str(e)
+                continue
 
+        if not forecasts:
+            logger.error("All forecast generations failed")
+            return StageResult(
+                stage_name=self.name,
+                success=False,
+                data={
+                    "forecasts": {},
+                    "failed_forecasts": failed_forecasts,
+                },
+                error="All forecast generations failed",
+            )
+                    
         logger.info(f"Forecast stage complete: {len(forecasts)} probability forecasts generated")
-
+        
         return StageResult(
             stage_name=self.name,
             success=True,
-            data={"forecasts": forecasts},
+            data={
+                "forecasts": forecasts,
+                "failed_forecasts": failed_forecasts,
+            },
         )
 
     def _generate_forecast(
