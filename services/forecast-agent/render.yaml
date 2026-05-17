@@ -32,7 +32,13 @@ services:
         value: "3000"
       - key: FORECAST_WEB_SEARCH_MAX_USES
         value: "2"
-      - key: FORECAST_TEMPERATURE
-        value: "0.2"
+      - key: FORECAST_KALSHI_ENABLED
+        value: "true"
+      - key: KALSHI_BASE_URL
+        value: https://api.elections.kalshi.com
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_B64
+        sync: false
       - key: LOG_LEVEL
         value: INFO

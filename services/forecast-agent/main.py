@@ -1,16 +1,15 @@
-"""Prophet Arena forecast agent — Opus 4.7 + native web search.
+"""Prophet Arena forecast agent — Opus 4.7 + Kalshi market data + web search.
 
-Exposes ``POST /predict`` matching the contract that ``prophet forecast predict``
-sends. The request body mirrors ``ai_prophet_core.forecast.schemas.Event`` so any
-field the dataset / server attaches (including future market-data extensions)
-flows through to the LLM prompt without code changes.
+Wire contract mirrors ``ai_prophet_core.forecast.schemas.Event``. Prompt design
+ports the canonical ProphetArena agent prompt
+(``ProphetArena-Engine/app/services/llms/prompts.py``): exact-outcomes
+constraint, structured JSON output with ``probabilities`` / ``rationale`` /
+``analysis``, and a "CURRENT ONLINE TRADING DATA" section populated from
+Kalshi's ``/markets`` snapshot for the event_ticker.
 
-Submission flow:
-    prophet forecast register --team-name <name> --endpoint-url \
-        https://<this-render-service>.onrender.com/predict
-
-Local run:
-    ANTHROPIC_API_KEY=sk-ant-... uvicorn main:app --host 0.0.0.0 --port 8000
+Deploy:
+    set ANTHROPIC_API_KEY. Optional: KALSHI_API_KEY_ID,
+    KALSHI_PRIVATE_KEY_B64 (Kalshi public market reads work without auth).
 """
 
 from __future__ import annotations
@@ -25,29 +24,22 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from kalshi_client import KalshiForecastClient
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-app = FastAPI(title="Prophet Arena Forecast Agent (Opus 4.7 + Web Search)")
+app = FastAPI(title="Prophet Arena Forecast Agent (Opus 4.7)")
 
 
 # ---------------------------------------------------------------------------
 # Wire contract — mirrors ai_prophet_core.forecast.schemas
-# Keep field names identical so any payload extensions (e.g. market_data) flow
-# through automatically.
 # ---------------------------------------------------------------------------
 
 class EventRequest(BaseModel):
-    """Incoming event payload from `prophet forecast predict`.
-
-    Extra fields are allowed and forwarded to the prompt so the bot can use
-    market data, orderbook snapshots, or other context added later upstream
-    without redeploying.
-    """
-
     model_config = ConfigDict(extra="allow")
 
     event_ticker: str
@@ -72,50 +64,17 @@ class PredictionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Claude (Opus 4.7) with native web_search tool
+# Config
 # ---------------------------------------------------------------------------
 
 DEFAULT_MODEL = os.environ.get("FORECAST_MODEL", "claude-opus-4-7")
 DEFAULT_MAX_TOKENS = int(os.environ.get("FORECAST_MAX_TOKENS", "3000"))
 DEFAULT_WEB_SEARCH_MAX_USES = int(os.environ.get("FORECAST_WEB_SEARCH_MAX_USES", "2"))
-DEFAULT_TEMPERATURE = float(os.environ.get("FORECAST_TEMPERATURE", "0.2"))
-
-SYSTEM_PROMPT = """\
-You are an expert forecaster competing on Prophet Arena. Your sole job is to
-produce well-calibrated probability distributions over event outcomes.
-
-PROCESS
-1. Read the event carefully — identify what is being asked, the resolution
-   criteria, and the set of valid outcomes.
-2. Use the `web_search` tool to gather the most recent and reliable evidence
-   (news, official sources, market data) bearing on the question. Prefer
-   primary sources. Search multiple angles when uncertain.
-3. Reason explicitly about base rates, recency, source quality, and what could
-   make you wrong.
-4. Produce calibrated probabilities.
-
-CALIBRATION RULES
-- Probabilities must be decimals in [0, 1] and sum to 1.0 across the listed
-  outcomes.
-- Use the EXACT outcome labels provided in the event. Do not invent labels,
-  collapse, or split them.
-- Extremes (p < 0.05 or p > 0.95) require very strong evidence.
-- When evidence is weak or conflicting, regress toward the base rate / uniform.
-- For binary markets where only one outcome is listed, return that outcome's
-  probability (the YES probability).
-
-OUTPUT FORMAT
-Your FINAL message must be ONLY a single JSON object — no prose around it —
-in exactly this shape:
-
-{"probabilities": [{"market": "<exact outcome label>", "probability": <float>}, ...],
- "rationale": "<one short paragraph summarizing the key evidence and your reasoning>"}
-
-Do not wrap the JSON in markdown fences. Do not emit any text after the JSON.
-"""
+KALSHI_ENABLED = os.environ.get("FORECAST_KALSHI_ENABLED", "true").lower() == "true"
 
 
 _client: anthropic.Anthropic | None = None
+_kalshi: KalshiForecastClient | None = None
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -128,32 +87,168 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
+def _get_kalshi() -> KalshiForecastClient:
+    global _kalshi
+    if _kalshi is None:
+        _kalshi = KalshiForecastClient()
+    return _kalshi
+
+
 def _event_markets(event: EventRequest) -> list[str]:
     if event.outcomes:
         return list(event.outcomes)
     return [event.market_ticker]
 
 
-def _build_user_prompt(event: EventRequest) -> str:
+# ---------------------------------------------------------------------------
+# Kalshi market snapshot — implied probability per outcome (last_price/100)
+# ---------------------------------------------------------------------------
+
+def _price_to_probability(market: dict) -> float | None:
+    """Prefer last_price; fall back to mid of yes_bid/yes_ask."""
+    last = market.get("last_price")
+    if isinstance(last, (int, float)) and last > 0:
+        return float(last) / 100.0
+    bid = market.get("yes_bid")
+    ask = market.get("yes_ask")
+    if isinstance(bid, (int, float)) and isinstance(ask, (int, float)) and (bid + ask) > 0:
+        return (float(bid) + float(ask)) / 2.0 / 100.0
+    return None
+
+
+def _outcome_label_for_market(market: dict) -> str:
+    """Pick the most-likely outcome label Kalshi attaches to a market row."""
+    for key in ("yes_sub_title", "subtitle", "title", "ticker"):
+        v = market.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def fetch_market_stats(event: EventRequest) -> dict[str, float]:
+    """Return ``{outcome_label: implied_probability}`` for the event.
+
+    Tries ``/markets?event_ticker=...`` first (covers multi-outcome events
+    where each outcome is its own market). Falls back to a single
+    ``/markets/{market_ticker}`` lookup for binary YES/NO markets.
+
+    Returns ``{}`` on any failure — the bot still runs without it.
+    """
+    if not KALSHI_ENABLED:
+        return {}
+
+    try:
+        client = _get_kalshi()
+        snapshot: dict[str, float] = {}
+
+        markets = client.get_markets(event_ticker=event.event_ticker, status="open")
+        for m in markets:
+            label = _outcome_label_for_market(m)
+            prob = _price_to_probability(m)
+            if label and prob is not None:
+                snapshot[label] = round(prob, 4)
+
+        if snapshot:
+            return snapshot
+
+        single = client.get_market(event.market_ticker)
+        if single:
+            prob = _price_to_probability(single)
+            if prob is not None:
+                if event.outcomes and len(event.outcomes) == 2:
+                    return {event.outcomes[0]: prob, event.outcomes[1]: round(1.0 - prob, 4)}
+                return {"YES": prob, "NO": round(1.0 - prob, 4)}
+        return {}
+    except Exception as exc:  # never let Kalshi failures break the forecast
+        logger.warning("Kalshi snapshot failed for %s: %s", event.market_ticker, exc)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Prompt — ported from ProphetArena PredictionPrompts (prompts.py)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are an AI assistant specialized in analyzing and predicting "
+    "real-world events. You provide calibrated probability forecasts grounded "
+    "in evidence you gather via web_search and in the live prediction-market "
+    "trading data provided."
+)
+
+
+def _build_task_prompt(event_title: str, market_names: list[str]) -> str:
+    """Port of PredictionPrompts.create_task_prompt."""
+    market_list_str = "\n".join(f"- {m}" for m in market_names)
+    json_example = ",\n                ".join(
+        f'"{m}": <probability_value_from_0_to_1>' for m in market_names
+    )
+    return f""" You are an AI assistant specialized in analyzing and predicting real-world events.
+                You have deep expertise in predicting the outcome of the event: "{event_title}"
+
+                Note that this event occurs in the future. You will be given live market trading data and may use the web_search tool to gather additional sources.
+                Based on the collected information, your goal is to extract meaningful insights and provide well-reasoned predictions.
+                You will be predicting the probability (as a float value from 0 to 1) of ONLY the following possible outcomes:
+                {market_list_str}
+
+                IMPORTANT CONSTRAINTS:
+                1. You MUST ONLY provide probabilities for the exact possible outcomes listed above
+                2. Do NOT create or invent any additional outcomes
+                3. Use exactly the same outcome names as provided (case-sensitive)
+                4. Ensure all probabilities are between 0 and 1
+                5. Probabilities MUST sum to 1.0 across the listed outcomes
+
+                Your response MUST be in JSON format with the following structure:
+                ```json
+                {{
+                    "probabilities": {{
+                        {json_example}
+                    }},
+                    "rationale": "<text_explaining_your_rationale>",
+                    "analysis": {{
+                        "sources_used": [
+                            {{"title": "Source Title", "url": "https://..."}}
+                        ],
+                        "evidence_extracted": [
+                            {{"source": "Source Name or URL", "evidence": "Specific evidence or data point extracted"}}
+                        ],
+                        "combination_weighting": "<text justification>",
+                        "uncertainties_counterpoints": "<text justification>",
+                        "mapping_to_final_probs": "<text justification>"
+                    }}
+                }}
+                ```
+
+                In the rationale section, provide a short, concise, 3 sentence rationale that explains:
+                - How you weighed different pieces of information
+                - Your reasoning for the probability distribution you assigned
+                - Any key factors or uncertainties you considered
+
+                In the analysis section, be extremely specific and detailed. The analysis must be a JSON object with exactly these 5 fields:
+                1. sources_used: array of {{title, url}} objects covering every external source you used
+                2. evidence_extracted: array of {{source, evidence}} objects citing the specific facts you used from each source
+                3. combination_weighting: how you combined evidence across sources, which were weighted most heavily and why
+                4. uncertainties_counterpoints: conflicting signals, missing data, caveats
+                5. mapping_to_final_probs: how each cited piece of evidence justifies your probability assignments
+        """.strip()
+
+
+def _build_user_prompt(event: EventRequest, market_stats: dict[str, float]) -> str:
+    """Port of PredictionPrompts.create_user_prompt + event context."""
     parts: list[str] = []
-    parts.append(f"Event ticker: {event.event_ticker}")
-    parts.append(f"Market ticker: {event.market_ticker}")
-    parts.append(f"Title: {event.title}")
+    parts.append("EVENT CONTEXT:")
+    parts.append(f"  Event ticker: {event.event_ticker}")
+    parts.append(f"  Market ticker: {event.market_ticker}")
+    parts.append(f"  Title: {event.title}")
     if event.subtitle:
-        parts.append(f"Subtitle: {event.subtitle}")
-    parts.append(f"Category: {event.category}")
-    parts.append(f"Close time (UTC): {event.close_time}")
+        parts.append(f"  Subtitle: {event.subtitle}")
+    parts.append(f"  Category: {event.category}")
+    parts.append(f"  Closes (UTC): {event.close_time}")
     if event.description:
         parts.append(f"\nDescription:\n{event.description}")
     if event.rules:
         parts.append(f"\nResolution rules:\n{event.rules}")
 
-    markets = _event_markets(event)
-    parts.append("\nValid outcome labels (use EXACTLY these strings):")
-    for m in markets:
-        parts.append(f"  - {m}")
-
-    # Forward any extra fields (e.g. market_data, orderbook) attached upstream.
+    # Forward any extra fields the platform attaches.
     known = {
         "event_ticker", "market_ticker", "title", "subtitle", "description",
         "category", "rules", "close_time", "outcomes",
@@ -163,18 +258,35 @@ def _build_user_prompt(event: EventRequest) -> str:
         if k not in known and v is not None
     }
     if extras:
-        parts.append("\nAdditional context provided by the platform:")
-        parts.append(json.dumps(extras, indent=2, default=str))
+        parts.append(
+            "\nAdditional context from the platform:\n"
+            + json.dumps(extras, indent=2, default=str)
+        )
+
+    market_stats_info = ""
+    if market_stats:
+        market_stats_info = f"""
+CURRENT ONLINE TRADING DATA:
+You have access to the predicted outcome probability (last trading price of each outcome treated as YES probability) from Kalshi at the moment of your prediction:
+{json.dumps(market_stats, indent=2)}
+
+Note: Market data reflects the current consensus of traders with diverse beliefs and private information. It is a strong but not definitive signal — combine it with the evidence you gather via web_search to produce a well-calibrated prediction. Do not rely on market data alone.
+"""
 
     parts.append(
-        "\nResearch the question using web_search as needed, then output the "
-        "final JSON object as specified."
+        "\nUse the web_search tool to gather recent, reliable sources bearing "
+        "on the question. Cite specific sources by URL in your rationale."
     )
+    if market_stats_info:
+        parts.append(market_stats_info)
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# JSON parsing + probability normalization
+# ---------------------------------------------------------------------------
+
 def _extract_final_text(response: anthropic.types.Message) -> str:
-    """Concatenate all text blocks; Claude's final answer is in the last one(s)."""
     texts = [
         block.text
         for block in response.content
@@ -186,7 +298,6 @@ def _extract_final_text(response: anthropic.types.Message) -> str:
 def _parse_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
-        # Strip ```json ... ``` fence if Claude added one despite instructions
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
     if text.endswith("```"):
         text = text.rsplit("```", 1)[0]
@@ -212,26 +323,23 @@ def _normalize_probabilities(
     raw: list[dict[str, Any]],
     expected_markets: list[str],
 ) -> list[MarketProbability]:
-    """Coerce, clamp, normalize-to-1, and align to expected outcome set."""
-    expected = list(expected_markets)
     by_market: dict[str, float] = {}
     for item in raw:
         market = str(item["market"])
         probability = float(item["probability"])
-        if probability > 1.0:  # tolerate model emitting 0-100
+        if probability > 1.0:
             probability /= 100.0
         by_market[market] = max(0.0, min(1.0, probability))
 
-    # If the model used outcome labels that match (case-insensitive), realign
-    if expected and not any(m in by_market for m in expected):
+    if expected_markets and not any(m in by_market for m in expected_markets):
         lower = {k.lower(): v for k, v in by_market.items()}
         by_market = {
-            m: lower[m.lower()] for m in expected if m.lower() in lower
+            m: lower[m.lower()] for m in expected_markets if m.lower() in lower
         }
 
     aligned = (
-        [(m, by_market.get(m, 0.0)) for m in expected]
-        if expected
+        [(m, by_market.get(m, 0.0)) for m in expected_markets]
+        if expected_markets
         else list(by_market.items())
     )
     aligned = [pair for pair in aligned if pair[0]]
@@ -240,14 +348,11 @@ def _normalize_probabilities(
 
     total = sum(p for _m, p in aligned)
     if total <= 0:
-        # uniform fallback rather than failing
         n = len(aligned)
         aligned = [(m, 1.0 / n) for m, _ in aligned]
         total = 1.0
 
-    return [
-        MarketProbability(market=m, probability=p / total) for m, p in aligned
-    ]
+    return [MarketProbability(market=m, probability=p / total) for m, p in aligned]
 
 
 def _uniform_fallback(markets: list[str], reason: str) -> PredictionResponse:
@@ -260,17 +365,31 @@ def _uniform_fallback(markets: list[str], reason: str) -> PredictionResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# Forecast
+# ---------------------------------------------------------------------------
+
 def forecast(event: EventRequest) -> PredictionResponse:
     client = _get_client()
     markets = _event_markets(event)
+    market_stats = fetch_market_stats(event)
+    logger.info(
+        "predict %s outcomes=%d kalshi_stats=%d",
+        event.market_ticker,
+        len(markets),
+        len(market_stats),
+    )
+
+    task_prompt = _build_task_prompt(event.title, markets)
+    user_prompt = _build_user_prompt(event, market_stats)
+    combined = f"{user_prompt}\n\n{task_prompt}"
 
     try:
         response = client.messages.create(
             model=DEFAULT_MODEL,
             max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=DEFAULT_TEMPERATURE,
             system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": _build_user_prompt(event)}],
+            messages=[{"role": "user", "content": combined}],
             tools=[
                 {
                     "type": "web_search_20250305",
@@ -285,7 +404,7 @@ def forecast(event: EventRequest) -> PredictionResponse:
 
     text = _extract_final_text(response)
     if not text:
-        logger.warning("%s: empty response, falling back to uniform", event.market_ticker)
+        logger.warning("%s: empty response", event.market_ticker)
         return _uniform_fallback(markets, "empty model response")
 
     try:
@@ -317,6 +436,7 @@ def root() -> dict[str, Any]:
         "service": "prophet-arena-forecast-agent",
         "model": DEFAULT_MODEL,
         "web_search_max_uses": DEFAULT_WEB_SEARCH_MAX_USES,
+        "kalshi_enabled": KALSHI_ENABLED,
     }
 
 
