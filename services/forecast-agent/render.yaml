@@ -1,0 +1,38 @@
+# Render Blueprint — Prophet Arena Forecast Agent
+# https://docs.render.com/blueprint-spec
+#
+# Deploy:
+#   1. Push this branch to GitHub.
+#   2. In Render: New > Blueprint > pick this repo > select services/forecast-agent/render.yaml.
+#   3. Set ANTHROPIC_API_KEY in the service env (marked sync: false below).
+#   4. Note the public URL (e.g. https://prophet-arena-forecast-agent.onrender.com).
+#   5. From a clone with the forecast CLI:
+#        prophet forecast register \
+#            --team-name "<your team>" \
+#            --endpoint-url https://<service>.onrender.com/predict
+
+services:
+  - type: web
+    name: prophet-arena-forecast-agent
+    runtime: python
+    region: oregon
+    plan: starter
+    rootDir: services/forecast-agent
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: FORECAST_MODEL
+        value: claude-opus-4-7
+      - key: FORECAST_MAX_TOKENS
+        value: "3000"
+      - key: FORECAST_WEB_SEARCH_MAX_USES
+        value: "5"
+      - key: FORECAST_TEMPERATURE
+        value: "0.2"
+      - key: LOG_LEVEL
+        value: INFO
