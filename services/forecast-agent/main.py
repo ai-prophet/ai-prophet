@@ -77,7 +77,7 @@ class PredictionResponse(BaseModel):
 
 DEFAULT_MODEL = os.environ.get("FORECAST_MODEL", "claude-opus-4-7")
 DEFAULT_MAX_TOKENS = int(os.environ.get("FORECAST_MAX_TOKENS", "3000"))
-DEFAULT_WEB_SEARCH_MAX_USES = int(os.environ.get("FORECAST_WEB_SEARCH_MAX_USES", "5"))
+DEFAULT_WEB_SEARCH_MAX_USES = int(os.environ.get("FORECAST_WEB_SEARCH_MAX_USES", "2"))
 DEFAULT_TEMPERATURE = float(os.environ.get("FORECAST_TEMPERATURE", "0.2"))
 
 SYSTEM_PROMPT = """\
