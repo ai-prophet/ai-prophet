@@ -252,6 +252,16 @@ def _normalize_probabilities(
     raw: list[dict[str, Any]],
     expected_markets: list[str],
 ) -> list[MarketProbability]:
+    """Clamp + label-align probabilities, but DO NOT renormalize to sum=1.
+
+    For multi-outcome events, each probability is treated as the independent
+    probability of that outcome resolving YES — outcomes are not assumed
+    mutually exclusive. The PA evaluator handles per-outcome Brier scoring,
+    so a renormalization here would distort the model's calibrated estimates.
+
+    Still applied: clamp to [0, 1], auto-rescale 0-100 → 0-1, case-insensitive
+    realignment to the expected label set, and fill missing labels with 0.0.
+    """
     by_market: dict[str, float] = {}
     for item in raw:
         market = str(item["market"])
@@ -273,15 +283,9 @@ def _normalize_probabilities(
     )
     aligned = [pair for pair in aligned if pair[0]]
     if not aligned:
-        raise ValueError("no usable probabilities after normalization")
+        raise ValueError("no usable probabilities after alignment")
 
-    total = sum(p for _m, p in aligned)
-    if total <= 0:
-        n = len(aligned)
-        aligned = [(m, 1.0 / n) for m, _ in aligned]
-        total = 1.0
-
-    return [MarketProbability(market=m, probability=p / total) for m, p in aligned]
+    return [MarketProbability(market=m, probability=p) for m, p in aligned]
 
 
 def _uniform_fallback(markets: list[str], reason: str) -> PredictionResponse:
