@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -191,17 +192,27 @@ class ExperimentRunner:
         logger.info(f"Experiment {self.experiment_id} (slug={self.slug}, created={resp.created})")
         logger.info("Memory store initialized at %s/%s", self.memory_dir, self.slug)
 
+        # Optional display-name override (per-participant for upsert; LLM
+        # spec is unaffected so the API client still uses the real model).
+        display_override = os.environ.get("WORKER_DISPLAY_NAME") or None
+
         for m in self.models:
             model_name = m["model"]
+            display_name = m.get("display_name") or display_override or model_name
             rep = m.get("rep", 0)
             p = self.session.upsert_participant(
-                model=model_name, rep=rep,
+                model=display_name, rep=rep,
                 starting_cash=self.starting_cash,
             )
             self.participants[p.participant_idx] = {
-                "model": model_name, "rep": rep, "participant_idx": p.participant_idx,
+                "model": model_name, "display_name": display_name,
+                "rep": rep, "participant_idx": p.participant_idx,
             }
-            logger.info(f"Participant {p.participant_idx}: {model_name} rep={rep}")
+            logger.info(
+                f"Participant {p.participant_idx}: {model_name}"
+                + (f" (display={display_name})" if display_name != model_name else "")
+                + f" rep={rep}"
+            )
 
     def run(self) -> None:
         """Main tick loop. Exits when Core says experiment_completed."""
