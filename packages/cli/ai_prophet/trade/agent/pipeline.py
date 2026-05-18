@@ -207,7 +207,7 @@ class AgentPipeline:
 
         for market in candidates:
             try:
-                parsed = self._agent_forecast(market)
+                parsed = self._agent_forecast(market, tick_ctx)
             except Exception as exc:
                 logger.warning("Forecast failed for %s: %s", market.market_id, exc)
                 continue
@@ -302,8 +302,13 @@ class AgentPipeline:
         eligible.sort(key=lambda m: (-(m.volume_24h or 0), m.market_id))
         return eligible[: self.max_markets]
 
-    def _agent_forecast(self, market) -> dict[str, Any]:
-        """One AgentPrompts → Opus 4.7 + web_search call. Returns parsed JSON."""
+    def _agent_forecast(self, market, tick_ctx: TickContext) -> dict[str, Any]:
+        """One AgentPrompts → Opus 4.7 + web_search call. Returns parsed JSON.
+
+        Feeds the LLM richer context than just question+prices: resolution
+        time, 24h volume, source metadata, current portfolio state and any
+        existing position in this market.
+        """
         market_names = ["YES", "NO"]
         system_prompt = AgentPrompts.create_task_prompt(
             event_title=market.question,
@@ -311,11 +316,15 @@ class AgentPipeline:
             rules=market.description,
             avoid_market_search=False,
         )
-        user_prompt = AgentPrompts.create_user_prompt(
-            market_stats={
-                "YES": round(market.yes_ask, 4),
-                "NO": round(market.no_ask, 4),
-            },
+        user_prompt = (
+            self._build_event_context(market, tick_ctx)
+            + "\n\n"
+            + AgentPrompts.create_user_prompt(
+                market_stats={
+                    "YES": round(market.yes_ask, 4),
+                    "NO": round(market.no_ask, 4),
+                },
+            )
         )
 
         response = self._anthropic.messages.create(
@@ -336,6 +345,51 @@ class AgentPipeline:
             b.text for b in response.content if getattr(b, "type", None) == "text"
         ).strip()
         return parse_response(text, market_names)
+
+    def _build_event_context(self, market, tick_ctx: TickContext) -> str:
+        """Per-market context block prefixed to AgentPrompts.create_user_prompt."""
+        parts: list[str] = ["MARKET CONTEXT:"]
+        parts.append(f"  Market ID: {market.market_id}")
+        if market.question:
+            parts.append(f"  Question: {market.question}")
+        if market.resolution_time is not None:
+            parts.append(f"  Resolves at (UTC): {market.resolution_time}")
+        if (market.volume_24h or 0) > 0:
+            parts.append(f"  24h volume: {market.volume_24h:,.0f}")
+        for attr, label in (
+            ("source", "Source"),
+            ("source_url", "Source URL"),
+            ("topic", "Topic"),
+            ("family", "Family"),
+            ("short_label", "Short label"),
+        ):
+            value = getattr(market, attr, None)
+            if value:
+                parts.append(f"  {label}: {value}")
+        if market.description:
+            parts.append(f"\nDescription:\n{market.description}")
+
+        # Portfolio context — what we already hold and how much cash is free.
+        parts.append("\nPORTFOLIO STATE:")
+        try:
+            parts.append(f"  Cash available: ${float(tick_ctx.cash):,.2f}")
+        except Exception:
+            pass
+        try:
+            parts.append(f"  Equity: ${float(tick_ctx.equity):,.2f}")
+        except Exception:
+            pass
+        pos = tick_ctx.get_position(market.market_id)
+        if pos is not None:
+            parts.append(
+                f"  Existing position in this market: {pos.side} "
+                f"{pos.shares} shares @ avg ${pos.avg_entry_price} "
+                f"(current ${pos.current_price}; "
+                f"unrealized PnL ${pos.unrealized_pnl})"
+            )
+        else:
+            parts.append("  No existing position in this market.")
+        return "\n".join(parts)
 
     def _evaluate(self, market, p_yes: float, tick_ctx: TickContext) -> BetSignal | None:
         """Set portfolio snapshot for this market on the strategy and evaluate."""
