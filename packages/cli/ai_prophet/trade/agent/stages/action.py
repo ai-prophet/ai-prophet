@@ -203,6 +203,17 @@ CONSTRAINTS:
 - Positions above 8% of cash are high risk
 - Prices above 90% or below 10% have limited upside (near resolution)
 
+SIZING GUIDELINES:
+- If the edge is small or uncertain, prefer HOLD or a very small position.
+- Larger positions require stronger and more specific evidence.
+- Generic rationale should not justify large size.
+- If you already have exposure in this market or related markets, reduce incremental size.
+
+IMPORTANT:
+- Do not force a trade.
+- Do not output a large size unless the edge is clear and well-supported.
+- Be especially cautious when forecast confidence is low or evidence is generic.
+
 Use the submit_trade_decision tool to provide your decision."""
 
         user_prompt = f"""Market: {question}
