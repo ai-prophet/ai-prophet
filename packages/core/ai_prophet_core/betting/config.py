@@ -19,8 +19,10 @@ MAX_SPREAD = 1.03
 MAX_ORDER_COST = 50.0
 
 # Minimum |p_yes - yes_ask| edge required to generate any trade signal.
-# Trades with smaller edges get eaten by per-fill fees (~$0.01-0.02/share).
-MIN_EDGE = 0.02
+# On Kalshi live trading this was 0.02 because per-fill fees of $0.01-0.02
+# per share would eat any smaller edge. On the PA hackathon there are no
+# per-fill fees, so we trade smaller edges (1¢) to capture more signal.
+MIN_EDGE = 0.01
 
 # Maximum number of markets to place orders on per tick.
 MAX_MARKETS_PER_TICK = 50
