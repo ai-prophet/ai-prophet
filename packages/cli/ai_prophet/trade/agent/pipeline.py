@@ -241,13 +241,21 @@ class AgentPipeline:
                 }
                 continue
 
-            intent = self._signal_to_intent(signal, market, tick_ctx, parsed.get("rationale", ""))
-            if intent is None:
+            new_intents = self._signal_to_intents(
+                signal, market, tick_ctx, parsed.get("rationale", "")
+            )
+            if not new_intents:
                 continue
-            intents.append(intent)
+            intents.extend(new_intents)
             signals_log[market.market_id] = {
-                "side": signal.side, "shares": float(signal.shares),
-                "price": float(signal.price), "cost": float(signal.cost),
+                "side": signal.side,
+                "shares": float(signal.shares),
+                "price": float(signal.price),
+                "cost": float(signal.cost),
+                "intents": [
+                    {"action": i["action"], "side": i["side"], "shares": i["shares"]}
+                    for i in new_intents
+                ],
             }
 
         logger.info(
@@ -423,33 +431,86 @@ class AgentPipeline:
             market_position_shares=Decimal(str(pos.shares)),
         )
 
-    def _signal_to_intent(
+    def _signal_to_intents(
         self,
         signal: BetSignal,
         market,
         tick_ctx: TickContext,
         rationale: str,
-    ) -> dict[str, Any] | None:
-        """Convert a BetSignal (fractional shares) into the dict shape the
-        runner sends to the PA server via TradeIntentRequest.
+    ) -> list[dict[str, Any]]:
+        """Convert a BetSignal into one or more trade intents for the runner.
+
+        Mirrors the NET-flip logic in anri-trading's BettingEngine
+        (engine.py:419-490): if we hold the opposite side of what the
+        strategy wants, emit a SELL of the existing position first so we
+        actually flip — not hedge — and so the strategy's sizing math is
+        consistent (it sized the BUY assuming the SELL cash is available).
+
+        Three cases:
+          1. No existing position, or position on the same side as desired
+             → single BUY for ``signal.shares``.
+          2. Opposite-side position AND desired size <= held size
+             → single SELL of ``signal.shares`` on the held side (no BUY
+             needed; we're just trimming the existing position).
+          3. Opposite-side position AND desired size > held size
+             → SELL the full held position, then BUY the remainder on the
+             new side.
         """
-        side_upper = (signal.side or "").upper()
-        if side_upper not in {"YES", "NO"}:
-            logger.warning("Unknown side %r from strategy for %s", signal.side, market.market_id)
-            return None
-        # Strategy uses fractional shares (0-1 scale). Server's TradeIntentRequest
-        # accepts a string — runner passes whatever we put here.
-        shares_str = f"{float(signal.shares):.4f}"
-        return {
+        desired_side = (signal.side or "").upper()
+        if desired_side not in {"YES", "NO"}:
+            logger.warning(
+                "Unknown side %r from strategy for %s",
+                signal.side, market.market_id,
+            )
+            return []
+        desired_shares = float(signal.shares)
+        if desired_shares <= 0:
+            return []
+
+        base = {
             "run_id": tick_ctx.run_id,
             "tick_ts": tick_ctx.tick_ts,
             "market_id": market.market_id,
             "question": market.question,
-            "action": "BUY",
-            "side": side_upper,
-            "shares": shares_str,
             "rationale": rationale or "",
         }
+
+        pos = tick_ctx.get_position(market.market_id)
+        held_side = (pos.side or "").upper() if pos else None
+        held_shares = float(pos.shares) if pos else 0.0
+
+        # Same side or no position — vanilla BUY.
+        if held_side is None or held_side == desired_side or held_shares <= 0:
+            return [{
+                **base,
+                "action": "BUY",
+                "side": desired_side,
+                "shares": f"{desired_shares:.4f}",
+            }]
+
+        # Opposite-side held — need to flip.
+        sell_shares = min(desired_shares, held_shares)
+        remaining_buy = desired_shares - sell_shares
+
+        intents: list[dict[str, Any]] = [{
+            **base,
+            "action": "SELL",
+            "side": held_side,
+            "shares": f"{sell_shares:.4f}",
+        }]
+        if remaining_buy > 1e-6:
+            intents.append({
+                **base,
+                "action": "BUY",
+                "side": desired_side,
+                "shares": f"{remaining_buy:.4f}",
+            })
+        logger.info(
+            "NET flip on %s: SELL %.4f %s + BUY %.4f %s (held=%.4f, want=%.4f)",
+            market.market_id, sell_shares, held_side, remaining_buy,
+            desired_side, held_shares, desired_shares,
+        )
+        return intents
 
     def _build_reasoning(
         self,
