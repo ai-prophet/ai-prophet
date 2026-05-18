@@ -11,12 +11,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ai_prophet_core.ruleset import (
+    MAX_GROSS_EXPOSURE,
+    MAX_NOTIONAL_PER_MARKET,
+    MAX_OPEN_POSITIONS,
+    MAX_TRADES_PER_DAY,
+    MAX_TRADES_PER_TICK,
+)
+
 from ai_prophet.trade.core import TickContext
 from ai_prophet.trade.core.tick_context import CandidateMarket
 from ai_prophet.trade.llm import LLMClient, LLMMessage
 
 from ..tool_schemas import TRADE_DECISION_TOOL
-from ..utils import format_portfolio_summary, format_position_for_market
+from ..utils import render_portfolio
 from ..validator import SchemaValidator
 from .base import PipelineStage, StageResult
 
@@ -178,7 +186,6 @@ class ActionStage(PipelineStage):
         yes_bid = market_info.yes_bid
         yes_ask = market_info.yes_ask
         spread = yes_ask - yes_bid
-        no_bid = 1.0 - yes_ask
         no_ask = 1.0 - yes_bid
 
         # Edge vs the price you'd actually pay to open (the ask side). Surfaced
@@ -193,21 +200,8 @@ class ActionStage(PipelineStage):
         # there is no market impact. The real per-trade cost is the SPREAD.
         volume_24h = float(getattr(market_info, "volume_24h", 0) or 0)
 
-        # Build context using shared utilities
-        portfolio_summary = format_portfolio_summary(tick_ctx, include_positions=False)
-        position_context = format_position_for_market(tick_ctx, market_id)
+        portfolio_block = render_portfolio(tick_ctx, focus_market_id=market_id)
 
-        # If we hold this market, append concrete exit price + proceeds so the
-        # LLM doesn't have to derive them from the order book itself.
-        held_position = tick_ctx.get_position(market_id)
-        if held_position is not None:
-            exit_price = yes_bid if held_position.side == "YES" else no_bid
-            exit_proceeds = float(held_position.shares) * exit_price
-            sell_action = "SELL_YES" if held_position.side == "YES" else "SELL_NO"
-            position_context += (
-                f"\nEXIT NOW: {sell_action} at {exit_price:.1%} → "
-                f"proceeds ${exit_proceeds:,.2f} (vs cost ${float(held_position.avg_entry_price) * float(held_position.shares):,.2f})\n"
-            )
         memory_by_market = getattr(tick_ctx, "memory_by_market", None) or {}
         market_memory = memory_by_market.get(market_id, "")
         memory_block = f"\n\nRECENT MEMORY:\n{market_memory}" if market_memory else ""
@@ -218,28 +212,30 @@ class ActionStage(PipelineStage):
             len(market_memory),
         )
 
-        system_prompt = """You size trades in a prediction market.
+        system_prompt = f"""You size trades in a prediction market.
 
 Mechanics:
-- BUY YES at YES ASK. SELL YES at YES BID. BUY NO at (1-YES bid). SELL NO at (1-YES ask).
-- Order size doesn't affect fill price. The spread is the only per-trade cost.
-- Round-trip = enter then exit = full spread per share. After entry you'll
-  show a paper loss of half the spread (entry at ask, marked at mid). That's
-  accounting, not a real loss.
+- BUY YES fills at YES ASK. SELL YES fills at YES BID. BUY NO fills at (1-YES bid). SELL NO fills at (1-YES ask).
+- Order size doesn't affect fill price; the spread is the per-trade cost.
+- A round-trip (enter then exit) costs the full spread per share, so after
+  entry you'll show a paper loss of half the spread (entry at ask, marked at mid).
 
 Actions: BUY_YES, BUY_NO, SELL_YES, SELL_NO, HOLD.
 SELL only valid if you hold that side. Use size_usd = current position value
 to fully exit. Consider SELL when your forecast has materially moved away
 from the thesis that justified the entry, or to free cash for a stronger trade.
 
-Rule of thumb: trade if your forecast beats the ask by clearly more than the
-spread. If the spread is wider than your edge, the round-trip will eat it —
-HOLD instead.
+Volume is the dollar amount traded in this market over the last 24 hours.
+It does not affect your fill price.
 
-Volume is a quality signal (low vol = poorly-informed market, usually wide
-spread) but does not affect your fill price.
+Server-enforced limits (intents over these are rejected):
+- Max notional per market: ${MAX_NOTIONAL_PER_MARKET:,.0f}
+- Max gross exposure across all positions: ${MAX_GROSS_EXPOSURE:,.0f}
+- Max open positions: {MAX_OPEN_POSITIONS}
+- Max trades per tick: {MAX_TRADES_PER_TICK}
+- Max trades per day: {MAX_TRADES_PER_DAY}
 
-Cap position size around 8% of cash. Skip prices near 0 or 1 (limited upside).
+Prices near 0 or 1 typically reflect near-resolved markets and rarely move much.
 
 Use the submit_trade_decision tool."""
 
@@ -251,8 +247,8 @@ Buy YES at {yes_ask:.1%}  (edge vs forecast: {yes_edge*100:+.1f}%)
 Buy NO  at {no_ask:.1%}  (edge vs forecast: {no_edge*100:+.1f}%)
 24h volume: ${volume_24h:,.0f}
 
-{portfolio_summary}
-{position_context}
+{portfolio_block}
+
 Decide.{memory_block}"""
 
         messages = [

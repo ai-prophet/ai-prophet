@@ -26,6 +26,7 @@ class Position:
     unrealized_pnl: Decimal
     realized_pnl: Decimal
     updated_at: datetime
+    question: str = ""
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,7 @@ class TickContext:
                         updated_at=_as_datetime(
                             pos_data.get("updated_at") or tick_info["server_now_ts"]
                         ),
+                        question=pos_data.get("question") or market_data.get("question", ""),
                     )
                     break
 
@@ -269,6 +271,10 @@ class TickContext:
             candidates.append(candidate)
 
         # Parse positions
+        candidate_questions = {
+            m["market_id"]: m.get("question", "")
+            for m in candidates_response.get("markets", [])
+        }
         positions = []
         for pos_data in portfolio_response.get("positions", []):
             position = Position(
@@ -282,6 +288,7 @@ class TickContext:
                 updated_at=_as_datetime(
                     pos_data.get("updated_at") or tick_info["server_now_ts"]
                 ),
+                question=pos_data.get("question") or candidate_questions.get(pos_data["market_id"], ""),
             )
             positions.append(position)
 

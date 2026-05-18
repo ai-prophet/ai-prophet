@@ -10,28 +10,11 @@ from ai_prophet.trade.core.tick_context import CandidateMarket
 from ai_prophet.trade.llm import LLMClient, LLMMessage
 
 from ..tool_schemas import REVIEW_TOOL
-from ..utils import format_portfolio_summary
+from ..utils import render_portfolio
 from ..validator import SchemaValidator
 from .base import PipelineStage, StageResult
 
 logger = logging.getLogger(__name__)
-
-
-def _liquidity_tier(spread: float, volume_24h: float) -> str:
-    """Classify a market by how tradeable it is.
-
-    Combines bid-ask spread (as a fraction of mid, approximated by spread alone
-    since most markets sit in 20-80¢ range) with 24h volume. The tiers are
-    deliberately coarse — the LLM uses them as a fast filter, not a precise
-    cost model.
-    """
-    if volume_24h < 500 or spread >= 0.10:
-        return "ILLIQUID"
-    if spread < 0.03 and volume_24h > 5000:
-        return "TIGHT"
-    if spread < 0.05 and volume_24h > 1000:
-        return "OK"
-    return "WIDE"
 
 
 class ReviewStage(PipelineStage):
@@ -151,18 +134,14 @@ class ReviewStage(PipelineStage):
         Returns:
             Review decision matching review.schema.json
         """
-        # Build candidate summary with derived spread + liquidity tier so the
-        # LLM doesn't have to scan 256 rows and do mental arithmetic on each.
-        # `tier` collapses bid-ask + volume into a single "is this tradeable
-        # at all" signal — most of the LLM's mistakes here were on illiquid
-        # novelty markets (e.g. $1k/day, 20¢ spread) where any edge is eaten.
+        # Surface bid/ask, spread, and 24h volume per candidate. The LLM
+        # decides for itself which markets are worth researching.
         def _row(m: CandidateMarket) -> str:
             mid = (m.yes_bid + m.yes_ask) / 2
             spread = m.yes_ask - m.yes_bid
             sp_pct = (spread / mid * 100) if mid > 0 else 0
-            tier = _liquidity_tier(spread, m.volume_24h)
             return (
-                f"[{tier:>8}] {m.market_id} | {m.question[:70]} | "
+                f"{m.market_id} | {m.question} | "
                 f"{m.yes_bid:.2f}/{m.yes_ask:.2f} sp={spread:.2f}({sp_pct:.0f}%) | "
                 f"vol ${m.volume_24h:,.0f}"
             )
@@ -170,7 +149,7 @@ class ReviewStage(PipelineStage):
         candidates_text = "\n".join([_row(m) for m in candidates])
 
         # Format portfolio context
-        positions_text = format_portfolio_summary(tick_ctx, include_positions=True)
+        positions_text = render_portfolio(tick_ctx)
         memory_summary = getattr(tick_ctx, "memory_summary", "") or ""
         memory_block = f"\n\nRECENT MEMORY:\n{memory_summary}" if memory_summary else ""
         logger.info(
@@ -181,17 +160,11 @@ class ReviewStage(PipelineStage):
 
         system_prompt = f"""Pick up to {self.max_markets} markets from the candidate list to research.
 
-Each row: [tier] market_id | question | bid/ask sp=(spread, % of mid) | volume
+Each row: market_id | question | yes_bid/yes_ask sp=(spread, % of mid) | 24h volume
 
-Tiers reflect the round-trip cost (spread) you'd pay to enter then exit:
-  TIGHT     <3¢ spread, vol >$5k       cheap to trade
-  OK        <5¢ spread, vol >$1k       normal
-  WIDE      <10¢ spread                expensive — only if your edge beats the spread
-  ILLIQUID  >=10¢ spread OR very low vol   skip — exiting will lose money
-
-Pick markets where you have specific knowledge, recent events may not be
-priced in, or the probability looks off vs base rates. Skip ILLIQUID rows,
-vague questions, and prices near 0 or 1 (limited upside).
+Spread is the cost per share to enter then exit a position — wider spread
+means more cost paid per share to round-trip the trade.
+Prices near 0 or 1 typically reflect near-resolved markets and rarely move much.
 
 Use the submit_review tool."""
 

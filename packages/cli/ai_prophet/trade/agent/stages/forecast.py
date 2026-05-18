@@ -191,13 +191,11 @@ class ForecastStage(PipelineStage):
 
         system_prompt = """Estimate the probability that this event resolves YES based on the research.
 
-Form your view from base rates and the specific evidence in the research.
 The market mid is one data point, not a target — match it if you genuinely
 have no edge, but do not anchor on it when the evidence supports a different
-view. Take a real position when the research warrants it.
+view.
 
-Be calibrated: extreme probabilities (<5% or >95%) need strong evidence.
-Output the probability and a brief rationale only.
+Justify your estimate.
 
 Use the submit_forecast tool."""
 
