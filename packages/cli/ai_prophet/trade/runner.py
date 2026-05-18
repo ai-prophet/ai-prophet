@@ -50,6 +50,10 @@ _TICK_BUDGET_HTTP_SLACK_SEC = 60
 PARTICIPANT_TICK_BUDGET_SEC = max(60, TICK_SUBMISSION_DEADLINE_SECS - _TICK_BUDGET_HTTP_SLACK_SEC)
 MAX_CONCURRENT_PARTICIPANTS = 4
 TRANSIENT_API_RETRY_SEC = 15
+# Fallback poll interval when claim_tick returns "no tick" without a
+# server-suggested retry_after_sec. PA ticks fire on a multi-minute
+# cadence, so polling every 15s just spams the API. Env-overridable.
+NO_TICK_RETRY_SEC = int(os.environ.get("WORKER_NO_TICK_RETRY_SEC", "60"))
 
 
 def compute_config_hash(config: dict) -> str:
