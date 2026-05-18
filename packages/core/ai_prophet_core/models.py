@@ -41,11 +41,13 @@ class Confidence(StrEnum):
 class RecommendationDirection(StrEnum):
     """LLM pipeline trade recommendation.
 
-    Note: SELL is handled at the execution layer (TradeAction.SELL) but is not
-    surfaced to the LLM pipeline in v1. Position exits happen at resolution.
+    SELL_YES / SELL_NO close an existing position on the corresponding side and
+    are only meaningful when the participant already holds that side.
     """
     BUY_YES = "BUY_YES"
     BUY_NO = "BUY_NO"
+    SELL_YES = "SELL_YES"
+    SELL_NO = "SELL_NO"
     HOLD = "HOLD"
 
 

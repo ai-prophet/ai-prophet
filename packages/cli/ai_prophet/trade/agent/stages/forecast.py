@@ -160,11 +160,20 @@ class ForecastStage(PipelineStage):
         market_info = next((m for m in candidates if m.market_id == market_id), None)
         question = market_info.question if market_info else "Unknown market"
 
-        # Get current market price for context
+        # Show full quote (bid/ask/mid) so the forecaster isn't anchored to mid as
+        # if it were a tradable price. Round-trip economics are handled downstream
+        # in the action stage; this stage just needs to know what range of implied
+        # probabilities the order book is currently quoting.
         market_price = ""
         if market_info:
-            mid = (market_info.yes_bid + market_info.yes_ask) / 2
-            market_price = f"\nCurrent market price: {mid:.1%} (the market's implied probability)"
+            yes_bid = market_info.yes_bid
+            yes_ask = market_info.yes_ask
+            mid = (yes_bid + yes_ask) / 2
+            market_price = (
+                f"\nMarket quote (YES): bid {yes_bid:.1%}  ask {yes_ask:.1%}  mid {mid:.1%}"
+                f"\n(Mid is a reference for the market's implied probability. "
+                f"Actual transactions happen at the bid/ask.)"
+            )
 
         summary_text = summary.get("summary", "No summary available")
         key_points = "\n".join([f"- {kp}" for kp in summary.get("key_points", [])])
@@ -180,46 +189,30 @@ class ForecastStage(PipelineStage):
             len(market_memory),
         )
 
-        system_prompt = """You are an expert forecaster specialized in calibrated probability estimation.
+        system_prompt = """Estimate the probability that this event resolves YES based on the research.
 
-Your ONLY task is to estimate the probability that this event resolves YES.
-Do NOT make trading recommendations - just provide your honest probability estimate.
+Form your view from base rates and the specific evidence in the research.
+The market mid is one data point, not a target — match it if you genuinely
+have no edge, but do not anchor on it when the evidence supports a different
+view. Take a real position when the research warrants it.
 
-CALIBRATION GUIDELINES:
-- Consider base rates: What's the typical outcome for similar events?
-- Weight evidence by reliability and recency
-- Account for uncertainty: don't be overconfident
-- Extremes (p < 0.10 or p > 0.90) require very strong evidence
-- When uncertain, probabilities closer to market price are safer
+Be calibrated: extreme probabilities (<5% or >95%) need strong evidence.
+Output the probability and a brief rationale only.
 
-CRITICAL: RESPECT THE MARKET
-- The market price reflects the consensus of many traders
-- If your estimate differs by >15% from market, you need SPECIFIC facts to justify it
-- Generic research (e.g. "X is a good player") does NOT justify large deviations
-- Ask yourself: "What do I know that the market doesn't?"
-- If you can't answer that clearly, stay close to the market price
+Use the submit_forecast tool."""
 
-COMMON PITFALLS TO AVOID:
-- Claiming large edge without specific insider-level knowledge
-- Ignoring that prediction markets are usually well-calibrated
-- Being overconfident despite limited/generic information
-
-Use the submit_forecast tool to provide your probability estimate."""
-
-        user_prompt = f"""Event to forecast: {question}
+        user_prompt = f"""Event: {question}
 {market_price}
 
-RESEARCH FINDINGS:
+Research:
 {summary_text}
 
-KEY POINTS:
+Key points:
 {key_points}
 
-OPEN QUESTIONS/UNCERTAINTIES:
+Open questions:
 {open_questions_text}
-
-Based on this research, what is your probability estimate that this event resolves YES?
-Think carefully about base rates and calibration.{memory_block}"""
+{memory_block}"""
 
         messages = [
             LLMMessage(role="system", content=system_prompt),

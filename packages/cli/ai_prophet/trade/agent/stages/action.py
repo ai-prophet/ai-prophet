@@ -177,10 +177,37 @@ class ActionStage(PipelineStage):
         question = market_info.question
         yes_bid = market_info.yes_bid
         yes_ask = market_info.yes_ask
+        spread = yes_ask - yes_bid
+        no_bid = 1.0 - yes_ask
+        no_ask = 1.0 - yes_bid
+
+        # Edge vs the price you'd actually pay to open (the ask side). Surfaced
+        # pre-computed because the round-trip economics are easy to misread and
+        # we don't want the LLM doing fragile arithmetic on every market.
+        yes_edge = p_yes - yes_ask
+        no_edge = (1 - p_yes) - no_ask
+
+        # Volume is shown as a context signal (low-volume markets are usually
+        # low-information / not seriously traded), not as a sizing cap.
+        # The simulator fills at the quoted bid/ask regardless of order size —
+        # there is no market impact. The real per-trade cost is the SPREAD.
+        volume_24h = float(getattr(market_info, "volume_24h", 0) or 0)
 
         # Build context using shared utilities
         portfolio_summary = format_portfolio_summary(tick_ctx, include_positions=False)
         position_context = format_position_for_market(tick_ctx, market_id)
+
+        # If we hold this market, append concrete exit price + proceeds so the
+        # LLM doesn't have to derive them from the order book itself.
+        held_position = tick_ctx.get_position(market_id)
+        if held_position is not None:
+            exit_price = yes_bid if held_position.side == "YES" else no_bid
+            exit_proceeds = float(held_position.shares) * exit_price
+            sell_action = "SELL_YES" if held_position.side == "YES" else "SELL_NO"
+            position_context += (
+                f"\nEXIT NOW: {sell_action} at {exit_price:.1%} → "
+                f"proceeds ${exit_proceeds:,.2f} (vs cost ${float(held_position.avg_entry_price) * float(held_position.shares):,.2f})\n"
+            )
         memory_by_market = getattr(tick_ctx, "memory_by_market", None) or {}
         market_memory = memory_by_market.get(market_id, "")
         memory_block = f"\n\nRECENT MEMORY:\n{market_memory}" if market_memory else ""
@@ -191,30 +218,42 @@ class ActionStage(PipelineStage):
             len(market_memory),
         )
 
-        system_prompt = """You are a trader making position sizing decisions for prediction markets.
+        system_prompt = """You size trades in a prediction market.
 
-HOW IT WORKS:
-- Price = probability (0.50 = 50% chance)
-- BUY YES if you think the event is more likely than the price suggests
-- BUY NO if you think the event is less likely than the price suggests
-- HOLD if you don't see a clear opportunity
+Mechanics:
+- BUY YES at YES ASK. SELL YES at YES BID. BUY NO at (1-YES bid). SELL NO at (1-YES ask).
+- Order size doesn't affect fill price. The spread is the only per-trade cost.
+- Round-trip = enter then exit = full spread per share. After entry you'll
+  show a paper loss of half the spread (entry at ask, marked at mid). That's
+  accounting, not a real loss.
 
-CONSTRAINTS:
-- Positions above 8% of cash are high risk
-- Prices above 90% or below 10% have limited upside (near resolution)
+Actions: BUY_YES, BUY_NO, SELL_YES, SELL_NO, HOLD.
+SELL only valid if you hold that side. Use size_usd = current position value
+to fully exit. Consider SELL when your forecast has materially moved away
+from the thesis that justified the entry, or to free cash for a stronger trade.
 
-Use the submit_trade_decision tool to provide your decision."""
+Rule of thumb: trade if your forecast beats the ask by clearly more than the
+spread. If the spread is wider than your edge, the round-trip will eat it —
+HOLD instead.
+
+Volume is a quality signal (low vol = poorly-informed market, usually wide
+spread) but does not affect your fill price.
+
+Cap position size around 8% of cash. Skip prices near 0 or 1 (limited upside).
+
+Use the submit_trade_decision tool."""
 
         user_prompt = f"""Market: {question}
+Your forecast: {p_yes:.1%} YES — {forecast_rationale}
 
-YOUR FORECAST: {p_yes:.0%} probability of YES
-Rationale: {forecast_rationale}
-
-MARKET PRICE: {yes_ask:.0%} to buy YES, {1 - yes_bid:.0%} to buy NO
+YES: bid {yes_bid:.1%} / ask {yes_ask:.1%} / spread {spread:.1%}
+Buy YES at {yes_ask:.1%}  (edge vs forecast: {yes_edge*100:+.1f}%)
+Buy NO  at {no_ask:.1%}  (edge vs forecast: {no_edge*100:+.1f}%)
+24h volume: ${volume_24h:,.0f}
 
 {portfolio_summary}
 {position_context}
-What is your trade decision?{memory_block}"""
+Decide.{memory_block}"""
 
         messages = [
             LLMMessage(role="system", content=system_prompt),
@@ -256,34 +295,61 @@ What is your trade decision?{memory_block}"""
         recommendation = decision.get("recommendation", "HOLD")
         size_usd = decision.get("size_usd", 0)
 
-        # Skip HOLD recommendations
         if recommendation == "HOLD":
             return None
 
-        # Skip if size is below minimum
-        if size_usd < self.min_size_usd:
-            logger.debug(f"Size ${size_usd} below minimum ${self.min_size_usd}, skipping")
-            return None
-
-        # Determine action and side based on recommendation
+        # Determine action / side / fill price. BUY hits the ask, SELL hits the
+        # bid — matches the execution engine's _compute_price exactly so the
+        # LLM sees the same price it will get filled at.
         if recommendation == "BUY_YES":
-            action = "BUY"
-            side = "YES"
+            action, side = "BUY", "YES"
             price = market_info.yes_ask
         elif recommendation == "BUY_NO":
-            action = "BUY"
-            side = "NO"
+            action, side = "BUY", "NO"
             price = 1.0 - market_info.yes_bid
+        elif recommendation == "SELL_YES":
+            action, side = "SELL", "YES"
+            price = market_info.yes_bid
+        elif recommendation == "SELL_NO":
+            action, side = "SELL", "NO"
+            price = 1.0 - market_info.yes_ask
         else:
-            # HOLD or unknown
             return None
 
-        # Convert size_usd to shares
         if price <= 0:
             logger.warning(f"Invalid price {price} for {market_id}")
             return None
 
+        is_sell = action == "SELL"
+
+        # SELL hard gate: only emit if we actually hold the position to sell.
+        # The engine would reject otherwise ("Cannot SELL without position"),
+        # but pre-filtering avoids wasting submission round-trips and keeps
+        # the trade log clean.
+        if is_sell:
+            position = tick_ctx.get_position(market_id)
+            if position is None or position.side != side:
+                logger.warning(
+                    "Skipping %s for %s: no matching %s position to sell",
+                    recommendation, market_id, side,
+                )
+                return None
+
+        # min_size_usd is a noise filter for new BUY entries; it doesn't apply
+        # to SELLs (closing out a small leftover position is always valid).
+        if not is_sell and size_usd < self.min_size_usd:
+            logger.debug(f"Size ${size_usd} below minimum ${self.min_size_usd}, skipping")
+            return None
+
         shares = size_usd / price
+
+        # Cap SELL shares to held position. Engine clamps too, but doing it
+        # here keeps the submitted shares honest and prevents misleading log
+        # output that suggests we're selling more than we own.
+        if is_sell:
+            held = float(position.shares)
+            if shares > held:
+                shares = held
 
         logger.debug(f"Final intent: {action} {side} {shares:.2f} shares (${size_usd} / ${price:.3f})")
 

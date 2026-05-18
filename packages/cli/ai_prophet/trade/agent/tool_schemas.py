@@ -92,17 +92,30 @@ TRADE_DECISION_TOOL = ToolSchema(
         "properties": {
             "recommendation": {
                 "type": "string",
-                "enum": ["BUY_YES", "BUY_NO", "HOLD"],
-                "description": "Trade recommendation",
+                "enum": [
+                    "BUY_YES",
+                    "BUY_NO",
+                    "SELL_YES",
+                    "SELL_NO",
+                    "HOLD",
+                ],
+                "description": (
+                    "Trade recommendation. SELL_YES/SELL_NO only valid when "
+                    "you currently hold that side of the market."
+                ),
             },
             "size_usd": {
                 "type": "number",
                 "minimum": 0,
-                "description": "Dollar amount to trade (0 if HOLD)",
+                "description": (
+                    "Dollar amount to trade (0 if HOLD). For SELL actions, the "
+                    "size is capped at your held position; use a large value "
+                    "(e.g. position value) to fully exit."
+                ),
             },
             "rationale": {
                 "type": "string",
-                "maxLength": 1000,
+                "maxLength": 4000,
                 "description": "Brief reasoning for the trade decision",
             },
         },

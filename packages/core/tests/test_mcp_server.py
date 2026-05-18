@@ -12,13 +12,6 @@ pytest.importorskip("fastmcp")
 from ai_prophet_core import mcp_server  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
-def reset_betting_engine_cache():
-    mcp_server._close_betting_engine()
-    yield
-    mcp_server._close_betting_engine()
-
-
 def test_claim_tick_exposes_only_candidate_set_id(monkeypatch):
     class FakeClient:
         def __enter__(self):
@@ -98,83 +91,8 @@ def test_forecast_submission_tool_is_not_exposed():
     assert not hasattr(mcp_server, "submit_forecast")
 
 
-def test_get_betting_engine_uses_db_backing(monkeypatch):
-    captured: dict[str, object] = {}
-    calls = {"db": 0, "engine": 0}
-
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.LiveBettingSettings.from_env",
-        lambda: SimpleNamespace(enabled=True, paper=True, kalshi="kalshi-config"),
-    )
-    monkeypatch.setattr(
-        "ai_prophet_core.betting.db.create_db_engine",
-        lambda: calls.__setitem__("db", calls["db"] + 1) or "db-engine",
-    )
-    class FakeEngine(SimpleNamespace):
-        def close(self):
-            captured["closed"] = True
-
-    def build_engine(**kwargs):
-        calls["engine"] += 1
-        captured.update(kwargs)
-        return FakeEngine(enabled=kwargs["enabled"])
-
-    monkeypatch.setattr("ai_prophet_core.betting.BettingEngine", build_engine)
-
-    engine = mcp_server._get_betting_engine()
-    cached = mcp_server._get_betting_engine()
-
-    assert captured["db_engine"] == "db-engine"
-    assert captured["kalshi_config"] == "kalshi-config"
-    assert engine is cached
-    assert calls == {"db": 1, "engine": 1}
-
-    mcp_server._close_betting_engine()
-    assert captured["closed"] is True
-    assert mcp_server._betting_engine is None
-
-
-def test_forecast_to_trade_reports_disabled_engine(monkeypatch):
-    monkeypatch.setattr(
-        mcp_server,
-        "_get_betting_engine",
-        lambda: SimpleNamespace(enabled=False),
-    )
-
-    result = mcp_server.forecast_to_trade(
-        market_id="kalshi:TEST",
-        p_yes=0.72,
-        yes_ask=0.55,
-        no_ask=0.45,
-    )
-
-    assert result == {
-        "market_id": "kalshi:TEST",
-        "order_placed": False,
-        "status": "DISABLED",
-        "reason": "betting engine disabled",
-    }
-
-
-def test_forecast_to_trade_reports_strategy_skip(monkeypatch):
-    class FakeEngine:
-        enabled = True
-
-        def trade_from_forecast(self, **_kwargs):
-            return None
-
-    monkeypatch.setattr(mcp_server, "_get_betting_engine", lambda: FakeEngine())
-
-    result = mcp_server.forecast_to_trade(
-        market_id="kalshi:TEST",
-        p_yes=0.72,
-        yes_ask=0.55,
-        no_ask=0.45,
-    )
-
-    assert result == {
-        "market_id": "kalshi:TEST",
-        "order_placed": False,
-        "status": "SKIP",
-        "reason": "strategy passed",
-    }
+def test_betting_tools_are_not_exposed():
+    """Kalshi exchange execution is not part of the MCP surface."""
+    assert not hasattr(mcp_server, "forecast_to_trade")
+    assert not hasattr(mcp_server, "place_trade")
+    assert not hasattr(mcp_server, "_get_betting_engine")

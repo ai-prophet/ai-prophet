@@ -1,13 +1,12 @@
 """Prophet Arena MCP Server.
 
-Exposes the Core API as MCP tools so any MCP-compatible client
-(Claude Desktop, Cursor, etc.) can run experiments and trade
-on prediction markets through natural language.
+Exposes the Core API as MCP tools so any MCP-compatible client (Claude
+Desktop, Cursor, etc.) can run paper-trading benchmark experiments
+through natural language.
 """
 
 from __future__ import annotations
 
-import atexit
 import os
 import uuid
 from datetime import datetime
@@ -23,21 +22,16 @@ load_dotenv()
 mcp = FastMCP(
     "Prophet Arena",
     instructions=(
-        "You are connected to Prophet Arena, a platform for trading on real "
-        "prediction markets. There are two modes:\n\n"
-        "BENCHMARK MODE (evaluating models on a deterministic clock): "
-        "health_check -> create_experiment -> add_participant -> claim_tick "
-        "-> get_markets -> submit_trades -> finalize_tick -> (repeat). Each "
-        "tick is a 15-minute decision window; results are comparable across "
-        "models.\n\n"
-        "BETTING MODE (Kalshi exchange execution): get_current_markets to "
-        "browse, forecast_to_trade to bet from a probability, place_trade "
-        "for direct execution (paper or live based on engine config)."
+        "You are connected to Prophet Arena, a paper-trading benchmark for "
+        "prediction markets. Flow: health_check -> create_experiment -> "
+        "add_participant -> claim_tick -> get_markets -> submit_trades -> "
+        "finalize_tick -> (repeat). Each tick is a 15-minute decision "
+        "window; results are comparable across models. Browse the current "
+        "market universe any time with get_current_markets."
     ),
 )
 
 _lease_owner = str(uuid.uuid4())
-_betting_engine = None
 
 
 def _get_client() -> ServerAPIClient:
@@ -51,22 +45,6 @@ def _model_to_dict(obj) -> dict:
     if hasattr(obj, "model_dump"):
         return obj.model_dump(mode="json")
     return dict(obj)
-
-
-def _close_betting_engine() -> None:
-    global _betting_engine
-
-    engine = _betting_engine
-    if engine is None:
-        return
-
-    close = getattr(engine, "close", None)
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            pass
-    _betting_engine = None
 
 
 # ---------------------------------------------------------------------------
@@ -349,131 +327,11 @@ def get_current_markets() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Live betting tools (uses BettingEngine)
-# ---------------------------------------------------------------------------
-
-def _get_betting_engine():
-    """Lazy-create a BettingEngine from env vars."""
-    global _betting_engine
-
-    if _betting_engine is not None:
-        return _betting_engine
-
-    from .betting import BettingEngine, LiveBettingSettings
-    from .betting.db import create_db_engine
-
-    settings = LiveBettingSettings.from_env()
-    db_engine = create_db_engine() if settings.enabled else None
-    _betting_engine = BettingEngine(
-        db_engine=db_engine,
-        paper=settings.paper,
-        kalshi_config=settings.kalshi,
-        enabled=settings.enabled,
-    )
-    return _betting_engine
-
-
-def _bet_result_to_dict(result) -> dict:
-    d: dict = {
-        "market_id": result.market_id,
-        "order_placed": result.order_placed,
-    }
-    if result.signal:
-        d["side"] = result.signal.side
-        d["shares"] = result.signal.shares
-        d["price"] = result.signal.price
-    if result.status:
-        d["status"] = result.status
-    if result.error:
-        d["error"] = result.error
-    return d
-
-
-def _trade_status_response(market_id: str, *, status: str, reason: str) -> dict:
-    return {
-        "market_id": market_id,
-        "order_placed": False,
-        "status": status,
-        "reason": reason,
-    }
-
-
-@mcp.tool
-def forecast_to_trade(
-    market_id: str,
-    p_yes: float,
-    yes_ask: float,
-    no_ask: float,
-) -> dict:
-    """Place a bet based on a probability forecast.
-
-    The betting strategy decides side and size. Routes to paper trade
-    or live Kalshi based on engine config.
-
-    Args:
-        market_id: Market identifier (e.g. "kalshi:NASDAQ-100-GT5K").
-        p_yes: Your probability estimate that YES resolves (0-1).
-        yes_ask: Current ask price for YES contracts (0-1).
-        no_ask: Current ask price for NO contracts (0-1).
-    """
-    engine = _get_betting_engine()
-    if not engine.enabled:
-        return _trade_status_response(
-            market_id,
-            status="DISABLED",
-            reason="betting engine disabled",
-        )
-    result = engine.trade_from_forecast(
-        market_id=market_id, p_yes=p_yes, yes_ask=yes_ask, no_ask=no_ask,
-    )
-    if result is None:
-        return _trade_status_response(
-            market_id,
-            status="SKIP",
-            reason="strategy passed",
-        )
-    return _bet_result_to_dict(result)
-
-
-@mcp.tool
-def place_trade(
-    market_id: str,
-    side: str,
-    shares: int,
-    price: float,
-) -> dict:
-    """Place a trade directly, bypassing strategy evaluation.
-
-    Routes to paper trade or live Kalshi based on engine config.
-
-    Args:
-        market_id: Market identifier (e.g. "kalshi:NASDAQ-100-GT5K").
-        side: "yes" or "no".
-        shares: Number of contracts.
-        price: Limit price (0-1).
-    """
-    engine = _get_betting_engine()
-    if not engine.enabled:
-        return _trade_status_response(
-            market_id,
-            status="DISABLED",
-            reason="betting engine disabled",
-        )
-    result = engine.make_trade(
-        market_id=market_id, side=side, shares=shares, price=price,
-    )
-    return _bet_result_to_dict(result)
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def main():
     mcp.run()
-
-
-atexit.register(_close_betting_engine)
 
 
 if __name__ == "__main__":

@@ -12,8 +12,8 @@
     },
     "recommendation": {
       "type": "string",
-      "enum": ["BUY_YES", "BUY_NO", "HOLD"],
-      "description": "Trade direction based on probability vs market price"
+      "enum": ["BUY_YES", "BUY_NO", "SELL_YES", "SELL_NO", "HOLD"],
+      "description": "Trade direction. SELL_* requires an existing position on that side."
     },
     "size_usd": {
       "type": "number",
@@ -23,7 +23,7 @@
     "rationale": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 1000,
+      "maxLength": 4000,
       "description": "Brief reasoning for the trade decision and sizing"
     }
   },

@@ -17,6 +17,23 @@ from .base import PipelineStage, StageResult
 logger = logging.getLogger(__name__)
 
 
+def _liquidity_tier(spread: float, volume_24h: float) -> str:
+    """Classify a market by how tradeable it is.
+
+    Combines bid-ask spread (as a fraction of mid, approximated by spread alone
+    since most markets sit in 20-80¢ range) with 24h volume. The tiers are
+    deliberately coarse — the LLM uses them as a fast filter, not a precise
+    cost model.
+    """
+    if volume_24h < 500 or spread >= 0.10:
+        return "ILLIQUID"
+    if spread < 0.03 and volume_24h > 5000:
+        return "TIGHT"
+    if spread < 0.05 and volume_24h > 1000:
+        return "OK"
+    return "WIDE"
+
+
 class ReviewStage(PipelineStage):
     """Select markets for detailed analysis.
 
@@ -134,11 +151,23 @@ class ReviewStage(PipelineStage):
         Returns:
             Review decision matching review.schema.json
         """
-        # Build candidate summary with bid/ask spread
-        candidates_text = "\n".join([
-            f"{m.market_id} | {m.question[:80]} | {m.yes_bid:.2f}/{m.yes_ask:.2f} | ${m.volume_24h:.0f}"
-            for m in candidates
-        ])
+        # Build candidate summary with derived spread + liquidity tier so the
+        # LLM doesn't have to scan 256 rows and do mental arithmetic on each.
+        # `tier` collapses bid-ask + volume into a single "is this tradeable
+        # at all" signal — most of the LLM's mistakes here were on illiquid
+        # novelty markets (e.g. $1k/day, 20¢ spread) where any edge is eaten.
+        def _row(m: CandidateMarket) -> str:
+            mid = (m.yes_bid + m.yes_ask) / 2
+            spread = m.yes_ask - m.yes_bid
+            sp_pct = (spread / mid * 100) if mid > 0 else 0
+            tier = _liquidity_tier(spread, m.volume_24h)
+            return (
+                f"[{tier:>8}] {m.market_id} | {m.question[:70]} | "
+                f"{m.yes_bid:.2f}/{m.yes_ask:.2f} sp={spread:.2f}({sp_pct:.0f}%) | "
+                f"vol ${m.volume_24h:,.0f}"
+            )
+
+        candidates_text = "\n".join([_row(m) for m in candidates])
 
         # Format portfolio context
         positions_text = format_portfolio_summary(tick_ctx, include_positions=True)
@@ -150,36 +179,27 @@ class ReviewStage(PipelineStage):
             len(memory_summary),
         )
 
-        system_prompt = f"""You are a prediction market analyst selecting markets for detailed analysis.
+        system_prompt = f"""Pick up to {self.max_markets} markets from the candidate list to research.
 
-HOW PREDICTION MARKETS WORK:
-- Price = probability (0.50 = 50% chance of YES)
-- BUY YES at 0.40: You profit if event happens (you think >40% likely)
-- BUY NO at 0.40: You profit if event doesn't happen (you think <40% likely)
-- Spread between bid/ask indicates liquidity
+Each row: [tier] market_id | question | bid/ask sp=(spread, % of mid) | volume
 
-Review ALL {len(candidates)} markets and select up to {self.max_markets} for deeper research.
+Tiers reflect the round-trip cost (spread) you'd pay to enter then exit:
+  TIGHT     <3¢ spread, vol >$5k       cheap to trade
+  OK        <5¢ spread, vol >$1k       normal
+  WIDE      <10¢ spread                expensive — only if your edge beats the spread
+  ILLIQUID  >=10¢ spread OR very low vol   skip — exiting will lose money
 
-GOOD REASONS TO SELECT A MARKET:
-- You have domain knowledge about the topic
-- Recent news/events may not be fully priced in
-- The probability seems off based on base rates or logic
-- High volume indicates active trading interest
+Pick markets where you have specific knowledge, recent events may not be
+priced in, or the probability looks off vs base rates. Skip ILLIQUID rows,
+vague questions, and prices near 0 or 1 (limited upside).
 
-SKIP markets where:
-- Price is below 0.10 or above 0.90 (near resolution, limited upside)
-- You have no way to research or form a view
-- Question is too vague or ambiguous
+Use the submit_review tool."""
 
-Use the submit_review tool to submit your selections."""
-
-        user_prompt = f"""Current tick: {tick_ctx.tick_ts}
-Cash available: ${float(tick_ctx.cash):,.0f}
+        user_prompt = f"""Tick: {tick_ctx.tick_ts}  Cash: ${float(tick_ctx.cash):,.0f}
 {positions_text}
-All {len(candidates)} candidate markets (ID | Question | Bid/Ask | 24h Volume):
-{candidates_text}
 
-Select up to {self.max_markets} markets worth researching.{memory_block}"""
+{len(candidates)} candidates:
+{candidates_text}{memory_block}"""
 
         messages = [
             LLMMessage(role="system", content=system_prompt),
