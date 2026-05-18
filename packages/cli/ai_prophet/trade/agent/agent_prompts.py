@@ -61,6 +61,7 @@ class AgentPrompts:
                 2. Do NOT create or invent any additional outcomes
                 3. Use exactly the same outcome names as provided (case-sensitive)
                 4. Ensure all probabilities are between 0 and 1
+                5. For MULTI-OUTCOME events (more than 2 outcomes), the probabilities DO NOT have to sum to 1.0. Each probability is the standalone probability that THAT specific outcome resolves YES, independent of the others. Outcomes are not mutually exclusive in general — assign each one its own honest probability.
 
                 Your response MUST be in JSON format with the following structure:
                 ```json
