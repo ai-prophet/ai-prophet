@@ -86,6 +86,13 @@ DEFAULT_STRATEGY = os.environ.get("WORKER_STRATEGY", "rebalancing")
 PRICE_PREFILTER_MIN = float(os.environ.get("WORKER_PRICE_MIN", "0.10"))
 PRICE_PREFILTER_MAX = float(os.environ.get("WORKER_PRICE_MAX", "0.90"))
 
+# Strategy works internally in *fractional* shares (0..~1); the PA server's
+# TradeIntentRequest.shares and PositionData.shares are in *contracts*
+# (1 contract = $1 max payout) — same as anri-trading's BettingEngine
+# (engine.py:408 multiplies by 100 before submitting to Kalshi) and main's
+# action stage (shares = size_usd / price). Convert at the boundary.
+SHARES_SCALE = float(os.environ.get("WORKER_SHARES_SCALE", "100"))
+
 # Substring match (case-insensitive) against market metadata fields. Markets
 # matching any of these get dropped before the LLM call — mirrors
 # anri-trading's EXCLUDED_MARKET_CATEGORIES + _contains_excluded_market_marker.
@@ -463,8 +470,10 @@ class AgentPipeline:
                 signal.side, market.market_id,
             )
             return []
-        desired_shares = float(signal.shares)
-        if desired_shares <= 0:
+
+        # Convert strategy fractional shares → PA-server contract units.
+        desired_contracts = float(signal.shares) * SHARES_SCALE
+        if desired_contracts <= 0:
             return []
 
         base = {
@@ -477,38 +486,40 @@ class AgentPipeline:
 
         pos = tick_ctx.get_position(market.market_id)
         held_side = (pos.side or "").upper() if pos else None
-        held_shares = float(pos.shares) if pos else 0.0
+        # PositionData.shares is already in contract units — same scale as
+        # what we emit. No conversion needed.
+        held_contracts = float(pos.shares) if pos else 0.0
 
         # Same side or no position — vanilla BUY.
-        if held_side is None or held_side == desired_side or held_shares <= 0:
+        if held_side is None or held_side == desired_side or held_contracts <= 0:
             return [{
                 **base,
                 "action": "BUY",
                 "side": desired_side,
-                "shares": f"{desired_shares:.4f}",
+                "shares": f"{desired_contracts:.4f}",
             }]
 
-        # Opposite-side held — need to flip.
-        sell_shares = min(desired_shares, held_shares)
-        remaining_buy = desired_shares - sell_shares
+        # Opposite-side held — flip.
+        sell_contracts = min(desired_contracts, held_contracts)
+        remaining_buy_contracts = desired_contracts - sell_contracts
 
         intents: list[dict[str, Any]] = [{
             **base,
             "action": "SELL",
             "side": held_side,
-            "shares": f"{sell_shares:.4f}",
+            "shares": f"{sell_contracts:.4f}",
         }]
-        if remaining_buy > 1e-6:
+        if remaining_buy_contracts > 1e-4:
             intents.append({
                 **base,
                 "action": "BUY",
                 "side": desired_side,
-                "shares": f"{remaining_buy:.4f}",
+                "shares": f"{remaining_buy_contracts:.4f}",
             })
         logger.info(
-            "NET flip on %s: SELL %.4f %s + BUY %.4f %s (held=%.4f, want=%.4f)",
-            market.market_id, sell_shares, held_side, remaining_buy,
-            desired_side, held_shares, desired_shares,
+            "NET flip on %s: SELL %.4f %s + BUY %.4f %s (held=%.4f, want=%.4f contracts)",
+            market.market_id, sell_contracts, held_side, remaining_buy_contracts,
+            desired_side, held_contracts, desired_contracts,
         )
         return intents
 
