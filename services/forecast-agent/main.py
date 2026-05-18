@@ -24,6 +24,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_prompts import AgentPrompts, parse_agent_response
 from kalshi_client import KalshiForecastClient
 
 logger = logging.getLogger(__name__)
@@ -192,75 +193,16 @@ def fetch_market_stats(event: EventRequest) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# Prompt — ported from ProphetArena PredictionPrompts (prompts.py)
+# Prompt — uses canonical AgentPrompts (see agent_prompts.py)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    "You are an AI assistant specialized in analyzing and predicting "
-    "real-world events. You provide calibrated probability forecasts grounded "
-    "in evidence you gather via web_search and in the live prediction-market "
-    "trading data provided."
-)
+def _build_event_context(event: EventRequest) -> str:
+    """Per-event context prefixed to AgentPrompts.create_user_prompt.
 
-
-def _build_task_prompt(event_title: str, market_names: list[str]) -> str:
-    """Port of PredictionPrompts.create_task_prompt."""
-    market_list_str = "\n".join(f"- {m}" for m in market_names)
-    json_example = ",\n                ".join(
-        f'"{m}": <probability_value_from_0_to_1>' for m in market_names
-    )
-    return f""" You are an AI assistant specialized in analyzing and predicting real-world events.
-                You have deep expertise in predicting the outcome of the event: "{event_title}"
-
-                Note that this event occurs in the future. You will be given live market trading data and may use the web_search tool to gather additional sources.
-                Based on the collected information, your goal is to extract meaningful insights and provide well-reasoned predictions.
-                You will be predicting the probability (as a float value from 0 to 1) of ONLY the following possible outcomes:
-                {market_list_str}
-
-                IMPORTANT CONSTRAINTS:
-                1. You MUST ONLY provide probabilities for the exact possible outcomes listed above
-                2. Do NOT create or invent any additional outcomes
-                3. Use exactly the same outcome names as provided (case-sensitive)
-                4. Ensure all probabilities are between 0 and 1
-                5. Probabilities MUST sum to 1.0 across the listed outcomes
-
-                Your response MUST be in JSON format with the following structure:
-                ```json
-                {{
-                    "probabilities": {{
-                        {json_example}
-                    }},
-                    "rationale": "<text_explaining_your_rationale>",
-                    "analysis": {{
-                        "sources_used": [
-                            {{"title": "Source Title", "url": "https://..."}}
-                        ],
-                        "evidence_extracted": [
-                            {{"source": "Source Name or URL", "evidence": "Specific evidence or data point extracted"}}
-                        ],
-                        "combination_weighting": "<text justification>",
-                        "uncertainties_counterpoints": "<text justification>",
-                        "mapping_to_final_probs": "<text justification>"
-                    }}
-                }}
-                ```
-
-                In the rationale section, provide a short, concise, 3 sentence rationale that explains:
-                - How you weighed different pieces of information
-                - Your reasoning for the probability distribution you assigned
-                - Any key factors or uncertainties you considered
-
-                In the analysis section, be extremely specific and detailed. The analysis must be a JSON object with exactly these 5 fields:
-                1. sources_used: array of {{title, url}} objects covering every external source you used
-                2. evidence_extracted: array of {{source, evidence}} objects citing the specific facts you used from each source
-                3. combination_weighting: how you combined evidence across sources, which were weighted most heavily and why
-                4. uncertainties_counterpoints: conflicting signals, missing data, caveats
-                5. mapping_to_final_probs: how each cited piece of evidence justifies your probability assignments
-        """.strip()
-
-
-def _build_user_prompt(event: EventRequest, market_stats: dict[str, float]) -> str:
-    """Port of PredictionPrompts.create_user_prompt + event context."""
+    The canonical AgentPrompts only takes `market_stats`; this block carries
+    the rest of the platform payload (ticker, category, close_time, description,
+    plus any extra fields like market_data) so the model can use them.
+    """
     parts: list[str] = ["EVENT CONTEXT:"]
     if event.event_ticker:
         parts.append(f"  Event ticker: {event.event_ticker}")
@@ -276,10 +218,7 @@ def _build_user_prompt(event: EventRequest, market_stats: dict[str, float]) -> s
         parts.append(f"  Closes (UTC): {event.close_time}")
     if event.description:
         parts.append(f"\nDescription:\n{event.description}")
-    if event.rules:
-        parts.append(f"\nResolution rules:\n{event.rules}")
 
-    # Forward any extra fields the platform attaches.
     known = {
         "event_ticker", "market_ticker", "title", "subtitle", "description",
         "category", "rules", "close_time", "outcomes", "markets",
@@ -293,28 +232,11 @@ def _build_user_prompt(event: EventRequest, market_stats: dict[str, float]) -> s
             "\nAdditional context from the platform:\n"
             + json.dumps(extras, indent=2, default=str)
         )
-
-    market_stats_info = ""
-    if market_stats:
-        market_stats_info = f"""
-CURRENT ONLINE TRADING DATA:
-You have access to the predicted outcome probability (last trading price of each outcome treated as YES probability) from Kalshi at the moment of your prediction:
-{json.dumps(market_stats, indent=2)}
-
-Note: Market data reflects the current consensus of traders with diverse beliefs and private information. It is a strong but not definitive signal — combine it with the evidence you gather via web_search to produce a well-calibrated prediction. Do not rely on market data alone.
-"""
-
-    parts.append(
-        "\nUse the web_search tool to gather recent, reliable sources bearing "
-        "on the question. Cite specific sources by URL in your rationale."
-    )
-    if market_stats_info:
-        parts.append(market_stats_info)
     return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
-# JSON parsing + probability normalization
+# Response extraction + probability normalization
 # ---------------------------------------------------------------------------
 
 def _extract_final_text(response: anthropic.types.Message) -> str:
@@ -324,30 +246,6 @@ def _extract_final_text(response: anthropic.types.Message) -> str:
         if getattr(block, "type", None) == "text"
     ]
     return "\n".join(texts).strip()
-
-
-def _parse_json_object(text: str) -> dict[str, Any]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-    if text.endswith("```"):
-        text = text.rsplit("```", 1)[0]
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError(f"No JSON object in response: {text[:300]!r}")
-    return json.loads(text[start:end + 1])
-
-
-def _coerce_probabilities(data: dict[str, Any]) -> list[dict[str, Any]]:
-    if "probabilities" not in data:
-        raise KeyError("response missing 'probabilities' key")
-    raw = data["probabilities"]
-    if isinstance(raw, dict):
-        return [{"market": k, "probability": v} for k, v in raw.items()]
-    if not isinstance(raw, list):
-        raise TypeError("'probabilities' must be a list or object")
-    return raw
 
 
 def _normalize_probabilities(
@@ -411,16 +309,26 @@ def forecast(event: EventRequest) -> PredictionResponse:
         len(market_stats),
     )
 
-    task_prompt = _build_task_prompt(event.title or "the event", markets)
-    user_prompt = _build_user_prompt(event, market_stats)
-    combined = f"{user_prompt}\n\n{task_prompt}"
+    # Canonical AgentPrompts (UnifiedProphetArena) wrapped with extra event
+    # context. The system prompt is verbatim AgentPrompts.create_task_prompt;
+    # we append event metadata (category, close_time, extras) and the canonical
+    # user prompt as the user message.
+    system_prompt = AgentPrompts.create_task_prompt(
+        event_title=event.title or "the event",
+        market_names=markets,
+        rules=event.rules or event.description,
+        avoid_market_search=False,
+    )
+    user_prompt = _build_event_context(event) + "\n\n" + AgentPrompts.create_user_prompt(
+        market_stats=market_stats or None,
+    )
 
     try:
         response = client.messages.create(
             model=DEFAULT_MODEL,
             max_tokens=DEFAULT_MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": combined}],
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
             tools=[
                 {
                     "type": "web_search_20250305",
@@ -439,20 +347,19 @@ def forecast(event: EventRequest) -> PredictionResponse:
         return _uniform_fallback(markets, "empty model response")
 
     try:
-        data = _parse_json_object(text)
-        raw = _coerce_probabilities(data)
-        probabilities = _normalize_probabilities(raw, markets)
+        parsed = parse_agent_response(text, markets)
+        # AgentPrompts emits a {market: prob} dict; convert to the wire-format
+        # list-of-dicts the hackathon expects, then renormalize to sum to 1.
+        raw_list = [{"market": m, "probability": p} for m, p in parsed["probabilities"].items()]
+        probabilities = _normalize_probabilities(raw_list, markets)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         logger.warning(
-            "%s: parse failure (%s); raw=%r", event.market_ticker or event.event_ticker, exc, text[:500]
+            "%s: parse failure (%s); raw=%r",
+            event.market_ticker or event.event_ticker, exc, text[:500],
         )
         return _uniform_fallback(markets, f"parse failure: {exc}")
 
-    rationale = data.get("rationale") if isinstance(data, dict) else None
-    if isinstance(rationale, str):
-        rationale = rationale.strip() or None
-    else:
-        rationale = None
+    rationale = parsed.get("rationale") or None
 
     return PredictionResponse(probabilities=probabilities, rationale=rationale)
 
