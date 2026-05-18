@@ -14,13 +14,30 @@ def test_validate_review_valid():
             {
                 "market_id": "123",
                 "priority": 80,
-                "queries": ["query 1", "query 2"],
                 "rationale": "Good opportunity"
             }
         ]
     }
 
     # Should not raise
+    validator.validate_review(review)
+
+
+def test_validate_review_accepts_legacy_queries():
+    """Legacy payloads carrying `queries` must still validate."""
+    validator = SchemaValidator()
+
+    review = {
+        "review": [
+            {
+                "market_id": "123",
+                "priority": 80,
+                "queries": ["query 1", "query 2"],
+                "rationale": "Good opportunity",
+            }
+        ]
+    }
+
     validator.validate_review(review)
 
 
@@ -43,7 +60,6 @@ def test_validate_review_invalid_priority():
             {
                 "market_id": "123",
                 "priority": 150,  # Invalid: > 100
-                "queries": ["query"],
                 "rationale": "Test"
             }
         ]
@@ -62,7 +78,6 @@ def test_validate_review_missing_field():
             {
                 "market_id": "123",
                 # Missing priority
-                "queries": ["query"],
                 "rationale": "Test"
             }
         ]

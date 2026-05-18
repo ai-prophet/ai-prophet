@@ -14,7 +14,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["market_id", "priority", "queries", "rationale"],
+        "required": ["market_id", "priority", "rationale"],
         "properties": {
           "market_id": {
             "type": "string",
@@ -35,7 +35,7 @@
               "maxLength": 1000
             },
             "maxItems": 3,
-            "description": "Up to 3 search queries to execute for this market (can be empty if no research needed)"
+            "description": "Optional: legacy field. Search queries are now generated in the forecast stage; kept here so historical payloads still validate."
           },
           "rationale": {
             "type": "string",

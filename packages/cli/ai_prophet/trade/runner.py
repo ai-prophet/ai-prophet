@@ -34,7 +34,6 @@ from ai_prophet_core.client import (
 )
 from ai_prophet_core.ruleset import TICK_SUBMISSION_DEADLINE_SECS
 
-from ai_prophet.trade.agent.reasoning_memory import build_memory_context
 from ai_prophet.trade.core.config import ClientConfig
 from ai_prophet.trade.core.tick_context import CandidateMarket, Position, TickContext
 from ai_prophet.trade.memory import LocalReasoningStore
@@ -129,7 +128,6 @@ class ExperimentRunner:
         api = ServerAPIClient(base_url=api_url, api_key=api_key)
         self.session = BenchmarkSession(api)
         self.client_config = client_config or ClientConfig.get()
-        self.memory_config = self.client_config.memory
         self.slug = experiment_slug
         self.config = config or {}
         self.config_hash = compute_config_hash(self.config)
@@ -395,7 +393,6 @@ class ExperimentRunner:
         candidate_set_id = tick_shared["candidate_set_id"]
         tick_ts: datetime = tick_shared["tick_ts"]
         candidate_markets: tuple[CandidateMarket, ...] = tick_shared["candidate_markets"]
-        market_ids = [m.market_id for m in candidate_markets]
         exp_id = self.session.require_experiment_id()
 
         cfg = self.participants[idx]
@@ -417,6 +414,7 @@ class ExperimentRunner:
             equity = Decimal(portfolio.equity)
             total_pnl = Decimal(portfolio.total_pnl)
             total_fills = portfolio.total_fills
+            candidate_questions = {m.market_id: m.question for m in candidate_markets}
             positions = tuple(
                 Position(
                     market_id=p.market_id,
@@ -427,6 +425,9 @@ class ExperimentRunner:
                     unrealized_pnl=Decimal(p.unrealized_pnl),
                     realized_pnl=Decimal(p.realized_pnl),
                     updated_at=p.updated_at or tick_ts,
+                    question=getattr(p, "question", "") or candidate_questions.get(p.market_id, ""),
+                    entry_forecast_rationale=getattr(p, "entry_forecast_rationale", "") or "",
+                    entry_trade_rationale=getattr(p, "entry_trade_rationale", "") or "",
                 )
                 for p in portfolio.positions
             )
@@ -436,32 +437,6 @@ class ExperimentRunner:
                 f"Participant {idx}: resumed experiment but portfolio unavailable, "
                 f"using starting_cash=${self.starting_cash}"
             )
-
-        # Build memory from local JSONL history (always-on, no API reads).
-        memory_summary = ""
-        memory_by_market: dict[str, str] = {}
-        reasoning_entries = []
-        if self.local_memory_store:
-            reasoning_entries = self.local_memory_store.read_recent_reasoning(
-                participant_idx=idx,
-                limit=self.memory_config.recent_ticks_limit,
-            )
-        if reasoning_entries:
-            try:
-                memory_ctx = build_memory_context(
-                    entries=reasoning_entries,
-                    current_market_ids=market_ids,
-                    market_history_limit=self.memory_config.market_history_limit,
-                )
-                memory_summary = memory_ctx.summary
-                memory_by_market = memory_ctx.by_market
-                logger.info(f"Participant {idx} memory: {len(reasoning_entries)} entries -> {len(memory_by_market)} markets, {len(memory_summary)} chars")
-                if memory_summary:
-                    logger.info(f"Participant {idx} memory summary:\n{memory_summary}")
-            except Exception as e:
-                logger.warning(f"Participant {idx}: memory build failed (non-fatal): {e}")
-        else:
-            logger.info(f"Participant {idx} memory: empty (no local history)")
 
         tick_ctx = TickContext(
             run_id=f"{exp_id}:{idx}",
@@ -476,8 +451,6 @@ class ExperimentRunner:
             total_pnl=total_pnl,
             positions=positions,
             total_fills=total_fills,
-            memory_summary=memory_summary,
-            memory_by_market=memory_by_market,
         )
 
         try:

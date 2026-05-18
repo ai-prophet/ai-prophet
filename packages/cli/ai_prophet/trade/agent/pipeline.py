@@ -23,6 +23,7 @@ from .stages import (
     SearchStage,
     StageResult,
 )
+from .utils import candidate_questions
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +44,10 @@ class AgentPipeline:
     """Orchestrates the 4-stage agent pipeline.
 
     Pipeline flow:
-    1. REVIEW: Select markets for analysis
-    2. SEARCH: Execute web searches and summarize
-    3. FORECAST: Generate probability estimates
-    4. ACTION: Convert forecasts to trade intents
+    1. REVIEW:   Select markets for analysis
+    2. SEARCH:   Per-market query generation, web search, summarization
+    3. FORECAST: Estimate p_yes from each summary
+    4. ACTION:   Convert forecasts to trade intents
 
     Features:
     - Logs all stages to EventStore
@@ -85,19 +86,14 @@ class AgentPipeline:
         self.event_store = event_store
         self.api_client = api_client
         self.config = config or {}
-        self.search_client: SearchClient | None = None
 
         runtime_config = client_config or ClientConfig.get()
-
-        logger.info("Initializing agent pipeline")
-
-        # Get search client from config (None = mock mode)
         search_client: SearchClient | None = self.config.get("search_client")
         self.search_client = search_client
-        if search_client:
-            logger.info("Using real search (Brave API)")
-        else:
-            logger.info("Search disabled (no search_client provided)")
+        logger.info(
+            "Initializing agent pipeline (search=%s)",
+            "enabled" if search_client else "disabled",
+        )
 
         # Use explicit runtime config as the only default source.
         max_markets = self.config.get("max_markets", runtime_config.pipeline.max_markets)
@@ -231,26 +227,17 @@ class AgentPipeline:
         return PipelineResult(intents=intents, forecasts=forecasts, reasoning=reasoning)
 
     def close(self) -> None:
-        """Release any underlying client resources (HTTP pools, etc)."""
-        # Best-effort: these may be mocks in tests.
-        try:
-            close = getattr(self.api_client, "close", None)
+        """Release any underlying client resources (HTTP pools, etc).
+
+        Best-effort: these may be mocks or already-closed clients in tests.
+        """
+        for client in (self.api_client, self.llm_client, self.search_client):
+            close = getattr(client, "close", None)
             if callable(close):
-                close()
-        except Exception:
-            pass
-        try:
-            close = getattr(self.llm_client, "close", None)
-            if callable(close):
-                close()
-        except Exception:
-            pass
-        try:
-            close = getattr(self.search_client, "close", None)
-            if callable(close):
-                close()
-        except Exception:
-            pass
+                try:
+                    close()
+                except Exception:
+                    pass
 
     def _log_stage_result(
         self,
@@ -263,68 +250,55 @@ class AgentPipeline:
             return
         logger.debug(f"Logging stage result for {stage_name} to EventStore")
 
-        # Map stage names to EventStore methods
+        tick_ts = tick_ctx.tick_ts
+        store = self.event_store
+
         if stage_name == "review":
-            # Log each selected market individually
-            review_items = result.data.get("review", [])
-            logger.debug(f"Writing {len(review_items)} review decisions to EventStore")
-            for item in review_items:
-                self.event_store.write_review_decision(
-                    tick_ts=tick_ctx.tick_ts,
+            # `queries` no longer live in review payloads but the event
+            # schema still expects a (possibly empty) list.
+            for item in result.data.get("review", []):
+                store.write_review_decision(
+                    tick_ts=tick_ts,
                     market_id=item["market_id"],
                     priority=item["priority"],
-                    queries=item["queries"],
-                    rationale=item["rationale"]
+                    queries=item.get("queries", []),
+                    rationale=item["rationale"],
                 )
 
         elif stage_name == "search":
-            # Log search results per market
-            summaries = result.data.get("summaries", {})
-            logger.debug(f"Writing {len(summaries)} search summaries to EventStore")
-            for market_id, summary in summaries.items():
-                # Log the summary as a search result
-                self.event_store.write_search_result(
-                    tick_ts=tick_ctx.tick_ts,
-                    market_id=market_id,
-                    query_idx=0,
-                    query="combined",
+            for market_id, queries in result.data.get("queries", {}).items():
+                for idx, query in enumerate(queries):
+                    store.write_search_query(
+                        tick_ts=tick_ts, market_id=market_id,
+                        query_idx=idx, query=query,
+                    )
+            for market_id, summary in result.data.get("summaries", {}).items():
+                store.write_search_result(
+                    tick_ts=tick_ts, market_id=market_id,
+                    query_idx=0, query="combined",
                     summary=summary.get("summary", ""),
-                    urls=[],
-                    error=None
+                    urls=[], error=None,
                 )
 
         elif stage_name == "forecast":
-            # Log each probability forecast individually
-            # Note: Forecasts now only contain p_yes + rationale (no trade decision)
-            forecasts = result.data.get("forecasts", {})
-            logger.debug(f"Writing {len(forecasts)} probability forecasts to EventStore")
-            # Build market_id -> question lookup
-            questions = {m.market_id: m.question for m in tick_ctx.candidates}
-            for market_id, forecast in forecasts.items():
-                self.event_store.write_forecast(
-                    tick_ts=tick_ctx.tick_ts,
-                    market_id=market_id,
+            questions = candidate_questions(tick_ctx)
+            for market_id, forecast in result.data.get("forecasts", {}).items():
+                store.write_forecast(
+                    tick_ts=tick_ts, market_id=market_id,
                     p_yes=forecast["p_yes"],
                     rationale=forecast["rationale"],
-                    question=questions.get(market_id)
+                    question=questions.get(market_id),
                 )
 
         elif stage_name == "action":
-            decisions = result.data.get("decisions", {})
-
-            # Build market_id -> question lookup
-            questions = {m.market_id: m.question for m in tick_ctx.candidates}
-
-            # Log LLM trade decisions
-            logger.debug(f"Writing {len(decisions)} trade decisions to EventStore")
-            for market_id, decision in decisions.items():
-                self.event_store.write_trade_decision(
-                    tick_ts=tick_ctx.tick_ts,
-                    market_id=market_id,
+            questions = candidate_questions(tick_ctx)
+            for market_id, decision in result.data.get("decisions", {}).items():
+                store.write_trade_decision(
+                    tick_ts=tick_ts, market_id=market_id,
                     recommendation=decision.get("recommendation", "HOLD"),
                     size_usd=decision.get("size_usd", 0),
                     rationale=decision.get("rationale", ""),
-                    question=questions.get(market_id)
+                    question=questions.get(market_id),
                 )
 
 
@@ -357,50 +331,43 @@ def _extract_reasoning(
     stage_results: dict[str, StageResult],
     tick_ctx: TickContext,
 ) -> dict[str, Any]:
-    """Build a compact reasoning dict from stage results.
+    """Compact, bounded reasoning dict for ``plan_json["reasoning"]``.
 
-    Designed to be stored in plan_json["reasoning"] for experiments
-    that opt in. Keeps it bounded -- no full LLM prompts, just
-    the structured outputs each stage produced.
+    Only includes the structured stage outputs — no raw LLM prompts.
     """
-    questions = {m.market_id: m.question for m in tick_ctx.candidates}
-    reasoning: dict[str, Any] = {}
+    questions = candidate_questions(tick_ctx)
+    reasoning: dict[str, Any] = {
+        "candidates": [
+            {
+                "market_id": m.market_id,
+                "question": m.question,
+                "yes_mark": round(m.yes_mark, 4),
+                "volume_24h": m.volume_24h,
+            }
+            for m in tick_ctx.candidates
+        ],
+    }
 
-    # Snapshot of what the model saw: market_id, question, yes_mark, volume.
-    reasoning["candidates"] = [
-        {
-            "market_id": m.market_id,
-            "question": m.question,
-            "yes_mark": round(m.yes_mark, 4),
-            "volume_24h": m.volume_24h,
-        }
-        for m in tick_ctx.candidates
-    ]
+    if (review := _stage_data(stage_results, "review")) is not None:
+        reasoning["review"] = review.get("review", [])
 
-    review = stage_results.get("review")
-    if review and review.success:
-        reasoning["review"] = review.data.get("review", [])
-
-    search = stage_results.get("search")
-    if search and search.success:
+    if (search := _stage_data(stage_results, "search")) is not None:
         reasoning["search"] = {
             mid: {"summary": s.get("summary", "")}
-            for mid, s in search.data.get("summaries", {}).items()
+            for mid, s in search.get("summaries", {}).items()
         }
 
-    forecast = stage_results.get("forecast")
-    if forecast and forecast.success:
+    if (forecast := _stage_data(stage_results, "forecast")) is not None:
         reasoning["forecasts"] = {
             mid: {
                 "question": questions.get(mid),
                 "p_yes": f.get("p_yes"),
                 "rationale": f.get("rationale"),
             }
-            for mid, f in forecast.data.get("forecasts", {}).items()
+            for mid, f in forecast.get("forecasts", {}).items()
         }
 
-    action = stage_results.get("action")
-    if action and action.success:
+    if (action := _stage_data(stage_results, "action")) is not None:
         reasoning["decisions"] = {
             mid: {
                 "question": questions.get(mid),
@@ -408,7 +375,14 @@ def _extract_reasoning(
                 "size_usd": d.get("size_usd"),
                 "rationale": d.get("rationale"),
             }
-            for mid, d in action.data.get("decisions", {}).items()
+            for mid, d in action.get("decisions", {}).items()
         }
 
     return reasoning
+
+
+def _stage_data(
+    stage_results: dict[str, StageResult], stage_name: str,
+) -> dict[str, Any] | None:
+    result = stage_results.get(stage_name)
+    return result.data if result and result.success else None

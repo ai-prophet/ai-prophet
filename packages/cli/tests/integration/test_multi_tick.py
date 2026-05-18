@@ -62,11 +62,12 @@ def _make_llm_client() -> Mock:
                     {
                         "market_id": "market_123",
                         "priority": 80,
-                        "queries": ["latest event X evidence"],
                         "rationale": "High expected information value.",
                     }
                 ]
             }
+        if tool_name == "submit_research_queries":
+            return {"queries": ["latest event X evidence"]}
         if tool_name == "submit_search_summary":
             return {
                 "summary": "Recent developments support a moderate YES edge.",

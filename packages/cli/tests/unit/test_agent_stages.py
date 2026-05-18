@@ -19,8 +19,14 @@ def tick_ctx():
     ctx.submission_deadline = datetime(2026, 1, 20, 6, 55, 0, tzinfo=UTC)
     ctx.server_now = datetime(2026, 1, 20, 5, 45, 0, tzinfo=UTC)
     ctx.candidates = []
+    ctx.positions = ()
     ctx.cash = Decimal("10000.0")
     ctx.equity = Decimal("10000.0")
+    ctx.total_pnl = Decimal("0")
+    ctx.get_position.return_value = None
+    ctx.get_candidate.side_effect = lambda mid: next(
+        (c for c in ctx.candidates if c.market_id == mid), None
+    )
     return ctx
 
 
@@ -71,7 +77,8 @@ def test_action_stage_no_forecasts(tick_ctx, mock_llm_client):
 
 
 def test_search_stage_without_search_client_returns_explicit_no_search_summary():
-    """Search stage should not fabricate evidence when search is unavailable."""
+    """SearchStage skips query-gen entirely and emits the canonical empty
+    summary when no search client is configured."""
     llm_client = MagicMock()
     stage = SearchStage(
         llm_client=llm_client,
@@ -80,23 +87,23 @@ def test_search_stage_without_search_client_returns_explicit_no_search_summary()
         max_results_per_query=3,
     )
 
+    candidate = CandidateMarket(
+        market_id="market_1",
+        question="Will X happen?",
+        description="Description",
+        resolution_time=datetime(2026, 2, 1, 0, 0, 0, tzinfo=UTC),
+        yes_bid=0.45,
+        yes_ask=0.55,
+        yes_mark=0.50,
+        no_bid=0.45,
+        no_ask=0.55,
+        no_mark=0.50,
+        volume_24h=1000.0,
+        quote_ts=datetime(2026, 1, 20, 5, 30, 0, tzinfo=UTC),
+    )
     tick_ctx = MagicMock()
-    tick_ctx.candidates = [
-        CandidateMarket(
-            market_id="market_1",
-            question="Will X happen?",
-            description="Description",
-            resolution_time=datetime(2026, 2, 1, 0, 0, 0, tzinfo=UTC),
-            yes_bid=0.45,
-            yes_ask=0.55,
-            yes_mark=0.50,
-            no_bid=0.45,
-            no_ask=0.55,
-            no_mark=0.50,
-            volume_24h=1000.0,
-            quote_ts=datetime(2026, 1, 20, 5, 30, 0, tzinfo=UTC),
-        )
-    ]
+    tick_ctx.candidates = [candidate]
+    tick_ctx.get_candidate = lambda mid: candidate if mid == "market_1" else None
 
     previous_results = {
         "review": StageResult(
@@ -107,7 +114,6 @@ def test_search_stage_without_search_client_returns_explicit_no_search_summary()
                     {
                         "market_id": "market_1",
                         "priority": 80,
-                        "queries": ["latest evidence for X"],
                         "rationale": "High information value",
                     }
                 ]
@@ -118,6 +124,7 @@ def test_search_stage_without_search_client_returns_explicit_no_search_summary()
     result = stage.execute(tick_ctx, previous_results)
 
     assert result.success is True
+    assert result.data["queries"] == {"market_1": []}
     summary = result.data["summaries"]["market_1"]
     assert "No external web evidence was retrieved" in summary["summary"]
     assert summary["key_points"] == []
@@ -200,6 +207,13 @@ def test_action_stage_size_below_minimum(mock_llm_client):
     tick_ctx.run_id = "test_run"
     tick_ctx.tick_ts = datetime(2026, 1, 20, 6, 0, 0, tzinfo=UTC)
     tick_ctx.cash = Decimal("10000.0")
+    tick_ctx.equity = Decimal("10000.0")
+    tick_ctx.total_pnl = Decimal("0")
+    tick_ctx.positions = ()
+    tick_ctx.get_position.return_value = None
+    tick_ctx.get_candidate.side_effect = lambda mid: next(
+        (c for c in tick_ctx.candidates if c.market_id == mid), None
+    )
     tick_ctx.candidates = [
         CandidateMarket(
             market_id="market_1",
@@ -288,6 +302,13 @@ def test_action_stage_generates_buy_yes_intent(mock_llm_client):
     tick_ctx.run_id = "test_run"
     tick_ctx.tick_ts = datetime(2026, 1, 20, 6, 0, 0, tzinfo=UTC)
     tick_ctx.cash = Decimal("10000.0")
+    tick_ctx.equity = Decimal("10000.0")
+    tick_ctx.total_pnl = Decimal("0")
+    tick_ctx.positions = ()
+    tick_ctx.get_position.return_value = None
+    tick_ctx.get_candidate.side_effect = lambda mid: next(
+        (c for c in tick_ctx.candidates if c.market_id == mid), None
+    )
     tick_ctx.candidates = [
         CandidateMarket(
             market_id="market_1",

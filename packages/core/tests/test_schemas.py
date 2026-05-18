@@ -11,20 +11,32 @@ from ai_prophet_core.schemas import SchemaLoader, is_valid_schema, validate_sche
 
 def test_validate_review_schema():
     """Test review schema validation (v1 batched format)."""
-    # Valid review output
+    # Valid review output (queries are no longer required)
     valid = {
         "schema_version": "v1",
         "review": [
             {
                 "market_id": "market_123",
                 "priority": 85,
-                "queries": ["query 1", "query 2"],
-                "rationale": "High volume spike"
+                "rationale": "High volume spike",
             }
         ]
     }
     validate_schema("review", valid)  # Should not raise
     assert is_valid_schema("review", valid) is True
+
+    # Legacy payloads carrying queries must still validate.
+    legacy_with_queries = {
+        "review": [
+            {
+                "market_id": "market_123",
+                "priority": 85,
+                "queries": ["query 1", "query 2"],
+                "rationale": "High volume spike",
+            }
+        ]
+    }
+    assert is_valid_schema("review", legacy_with_queries) is True
 
     # schema_version is optional (default in Pydantic, not required in JSON schema)
     without_version = {
@@ -32,8 +44,7 @@ def test_validate_review_schema():
             {
                 "market_id": "market_123",
                 "priority": 85,
-                "queries": ["query 1"],
-                "rationale": "reason"
+                "rationale": "reason",
             }
         ]
     }
@@ -45,9 +56,8 @@ def test_validate_review_schema():
             {
                 "market_id": "market_123",
                 "priority": 85,
-                "queries": ["query 1"],
                 "rationale": "reason",
-                "unknown_field": True
+                "unknown_field": True,
             }
         ]
     }

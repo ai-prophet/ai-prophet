@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ai_prophet.trade.core import TickContext
-from ai_prophet.trade.llm import LLMClient
+from ai_prophet.trade.llm import LLMClient, LLMMessage
 
 
 @dataclass
@@ -20,43 +20,54 @@ class StageResult:
 
 
 class PipelineStage(ABC):
-    """Abstract base class for pipeline stages.
+    """Abstract base for pipeline stages.
 
-    Each stage:
-    - Takes TickContext and previous stage results
-    - Calls LLM (optional)
-    - Returns StageResult
-    - Logs to EventStore (handled by pipeline)
+    Subclasses implement ``name`` and ``execute``. The helpers below
+    (``_ok``, ``_fail``, ``_messages``, ``_require_llm``, ``_require_stage``)
+    exist to eliminate repeated boilerplate at every stage entry point.
     """
 
     def __init__(self, llm_client: LLMClient | None = None):
-        """Initialize stage.
-
-        Args:
-            llm_client: LLM client (if stage needs LLM)
-        """
         self.llm_client = llm_client
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        """Stage name for logging."""
-        pass
+    def name(self) -> str: ...
 
     @abstractmethod
     def execute(
         self,
         tick_ctx: TickContext,
         previous_results: dict[str, StageResult],
-    ) -> StageResult:
-        """Execute the stage.
+    ) -> StageResult: ...
 
-        Args:
-            tick_ctx: Current tick context
-            previous_results: Results from previous stages (keyed by stage name)
+    # -- shared helpers -----------------------------------------------------
 
-        Returns:
-            Stage result with data and metadata
-        """
-        pass
+    def _ok(self, data: dict[str, Any]) -> StageResult:
+        return StageResult(stage_name=self.name, success=True, data=data)
 
+    def _fail(self, error: str, data: dict[str, Any] | None = None) -> StageResult:
+        return StageResult(
+            stage_name=self.name, success=False, data=data or {}, error=error,
+        )
+
+    @staticmethod
+    def _messages(system: str, user: str) -> list[LLMMessage]:
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user),
+        ]
+
+    def _require_llm(self) -> StageResult | None:
+        if self.llm_client is None:
+            return self._fail(f"LLM client required for {self.name} stage")
+        return None
+
+    def _require_stage(
+        self,
+        previous_results: dict[str, StageResult],
+        stage_name: str,
+    ) -> StageResult | None:
+        if stage_name not in previous_results:
+            return self._fail(f"{stage_name.capitalize()} stage result not found")
+        return None

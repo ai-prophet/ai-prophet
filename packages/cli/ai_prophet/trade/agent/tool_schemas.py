@@ -19,19 +19,33 @@ REVIEW_TOOL = ToolSchema(
                     "properties": {
                         "market_id": {"type": "string"},
                         "priority": {"type": "integer", "minimum": 0, "maximum": 100},
-                        "queries": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "maxItems": 3,
-                        },
                         "rationale": {"type": "string"},
                     },
-                    "required": ["market_id", "priority", "queries", "rationale"],
+                    "required": ["market_id", "priority", "rationale"],
                 },
                 "maxItems": 10,
             },
         },
         "required": ["review"],
+    },
+)
+
+
+RESEARCH_QUERIES_TOOL = ToolSchema(
+    name="submit_research_queries",
+    description="Submit search queries to research this prediction market",
+    parameters={
+        "type": "object",
+        "properties": {
+            "queries": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "minItems": 1,
+                "maxItems": 3,
+                "description": "1-3 web search queries tailored to this market",
+            },
+        },
+        "required": ["queries"],
     },
 )
 

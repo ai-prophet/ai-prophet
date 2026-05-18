@@ -17,7 +17,14 @@ from ai_prophet_core.time import is_tick_boundary
 
 @dataclass(frozen=True)
 class Position:
-    """Position with current market data attached."""
+    """Position with current market data attached.
+
+    ``entry_forecast_rationale`` / ``entry_trade_rationale`` carry the agent's
+    *original thesis* — the forecast and trade reasoning that justified
+    opening this position. They're surfaced back to the action stage so the
+    trader can decide whether the thesis still holds. Empty when the server
+    does not (yet) return them; rendered with a "not captured" fallback.
+    """
     market_id: str
     side: str  # "YES" or "NO"
     shares: Decimal
@@ -27,6 +34,8 @@ class Position:
     realized_pnl: Decimal
     updated_at: datetime
     question: str = ""
+    entry_forecast_rationale: str = ""
+    entry_trade_rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -155,8 +164,6 @@ class TickContext:
     # Trade history summary
     total_fills: int
     fills_this_tick: int = 0  # Will be updated during execution
-    memory_summary: str | None = None
-    memory_by_market: dict[str, str] | None = None
 
     def __post_init__(self):
         """Validate invariants."""
@@ -242,43 +249,15 @@ class TickContext:
                 return datetime.fromisoformat(value)
             raise ValueError(f"Expected datetime or ISO string, got: {type(value).__name__}")
 
-        # Parse candidates
-        candidates = []
-        for market_data in candidates_response["markets"]:
-            # Check if we have a position in this market
-            position = None
-            for pos_data in portfolio_response.get("positions", []):
-                if pos_data["market_id"] == market_data["market_id"]:
-                    position = Position(
-                        market_id=pos_data["market_id"],
-                        side=pos_data["side"],
-                        shares=Decimal(pos_data["shares"]),
-                        avg_entry_price=Decimal(pos_data["avg_entry_price"]),
-                        current_price=Decimal(pos_data.get("current_price", "0")),
-                        unrealized_pnl=Decimal(pos_data.get("unrealized_pnl", "0")),
-                        realized_pnl=Decimal(pos_data.get("realized_pnl", "0")),
-                        updated_at=_as_datetime(
-                            pos_data.get("updated_at") or tick_info["server_now_ts"]
-                        ),
-                        question=pos_data.get("question") or market_data.get("question", ""),
-                    )
-                    break
-
-            candidate = CandidateMarket.from_server_response(
-                market_data,
-                existing_position=position
-            )
-            candidates.append(candidate)
-
-        # Parse positions
         candidate_questions = {
             m["market_id"]: m.get("question", "")
             for m in candidates_response.get("markets", [])
         }
-        positions = []
-        for pos_data in portfolio_response.get("positions", []):
-            position = Position(
-                market_id=pos_data["market_id"],
+
+        def _build_position(pos_data: dict) -> Position:
+            market_id = pos_data["market_id"]
+            return Position(
+                market_id=market_id,
                 side=pos_data["side"],
                 shares=Decimal(pos_data["shares"]),
                 avg_entry_price=Decimal(pos_data["avg_entry_price"]),
@@ -288,9 +267,24 @@ class TickContext:
                 updated_at=_as_datetime(
                     pos_data.get("updated_at") or tick_info["server_now_ts"]
                 ),
-                question=pos_data.get("question") or candidate_questions.get(pos_data["market_id"], ""),
+                question=pos_data.get("question") or candidate_questions.get(market_id, ""),
+                entry_forecast_rationale=pos_data.get("entry_forecast_rationale", ""),
+                entry_trade_rationale=pos_data.get("entry_trade_rationale", ""),
             )
-            positions.append(position)
+
+        positions_by_market = {
+            pos_data["market_id"]: _build_position(pos_data)
+            for pos_data in portfolio_response.get("positions", [])
+        }
+
+        candidates = [
+            CandidateMarket.from_server_response(
+                market_data,
+                existing_position=positions_by_market.get(market_data["market_id"]),
+            )
+            for market_data in candidates_response["markets"]
+        ]
+        positions = list(positions_by_market.values())
 
         return cls(
             run_id=run_id,

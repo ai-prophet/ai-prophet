@@ -11,6 +11,7 @@ from .stages import (
 )
 from .tool_schemas import (
     FORECAST_TOOL,
+    RESEARCH_QUERIES_TOOL,
     REVIEW_TOOL,
     SEARCH_SUMMARY_TOOL,
     TRADE_DECISION_TOOL,
@@ -30,10 +31,10 @@ __all__ = [
     "ActionStage",
     # Tool schemas
     "REVIEW_TOOL",
+    "RESEARCH_QUERIES_TOOL",
     "SEARCH_SUMMARY_TOOL",
     "FORECAST_TOOL",
     "TRADE_DECISION_TOOL",
     # Validation
     "SchemaValidator",
 ]
-

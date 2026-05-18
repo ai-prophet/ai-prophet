@@ -1,4 +1,14 @@
-"""Search stage: Execute web searches and summarize results."""
+"""Search stage: per-market query generation, web search, summarization.
+
+For each market the Review stage picked:
+
+1. Generate up to N search queries (skipped if no search client).
+2. Execute the queries via ``SearchClient``.
+3. Summarize the results.
+
+Any per-market failure falls back to ``empty_search_summary`` so one bad
+market never kills the tick.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +16,12 @@ import logging
 from typing import Any
 
 from ai_prophet.trade.core import TickContext
-from ai_prophet.trade.llm import LLMClient, LLMMessage
+from ai_prophet.trade.llm import LLMClient
 from ai_prophet.trade.llm.base import vprint
 from ai_prophet.trade.search import SearchClient
 
-from ..tool_schemas import SEARCH_SUMMARY_TOOL
+from ..tool_schemas import RESEARCH_QUERIES_TOOL, SEARCH_SUMMARY_TOOL
+from ..utils import empty_search_summary
 from ..validator import SchemaValidator
 from .base import PipelineStage, StageResult
 
@@ -18,16 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 class SearchStage(PipelineStage):
-    """Execute web searches for selected markets.
+    """Research the markets picked by Review.
 
-    Takes queries from review stage and:
-    1. Executes web searches (via search tool)
-    2. Formats results for LLM
-    3. Generates cited summaries
-    4. Validates against search.schema.json
-
-    Input: review stage result (selected markets + queries)
-    Output: search summaries per market
+    Input:  review stage result (selected markets).
+    Output: ``{"summaries": {mid: summary}, "queries": {mid: [str, ...]}}``.
     """
 
     def __init__(
@@ -37,14 +42,6 @@ class SearchStage(PipelineStage):
         max_queries_per_market: int = 1,
         max_results_per_query: int = 3,
     ):
-        """Initialize search stage.
-
-        Args:
-            llm_client: LLM client for summarization
-            search_client: SearchClient instance (optional; None means search disabled)
-            max_queries_per_market: Max queries per market
-            max_results_per_query: Max search results per query
-        """
         super().__init__(llm_client)
         self.search_client = search_client
         self.max_queries_per_market = max_queries_per_market
@@ -60,213 +57,107 @@ class SearchStage(PipelineStage):
         tick_ctx: TickContext,
         previous_results: dict[str, StageResult],
     ) -> StageResult:
-        """Execute search stage.
+        if err := self._require_stage(previous_results, "review"):
+            return err
 
-        Args:
-            tick_ctx: Current tick context
-            previous_results: Must contain "review" stage result
+        selected = previous_results["review"].data.get("review", [])
+        logger.info("Search stage processing %d markets", len(selected))
 
-        Returns:
-            StageResult with search summaries per market
-        """
-        logger.debug("Search stage starting")
-
-        # Get review results
-        if "review" not in previous_results:
-            logger.error("Search stage missing review results")
-            return StageResult(
-                stage_name=self.name,
-                success=False,
-                data={},
-                error="Review stage result not found",
-            )
-
-        review_data = previous_results["review"].data
-        selected_markets = review_data.get("review", [])
-
-        logger.info(f"Search stage processing {len(selected_markets)} markets")
-
-        if not selected_markets:
-            logger.info("No markets selected for search, returning empty result")
-            # No markets selected - return empty result
-            return StageResult(
-                stage_name=self.name,
-                success=True,
-                data={"summaries": {}},
-            )
-
-        # Execute searches for each market
         summaries: dict[str, dict[str, Any]] = {}
+        queries_by_market: dict[str, list[str]] = {}
 
-        for idx, market in enumerate(selected_markets):
+        for market in selected:
             market_id = market["market_id"]
-            queries = market["queries"]
+            candidate = tick_ctx.get_candidate(market_id)
+            question = candidate.question if candidate else f"Market {market_id}"
 
-            # Look up the full market info from tick_ctx to get the question
-            candidates = tick_ctx.candidates
-            market_info = next((m for m in candidates if m.market_id == market_id), None)
-            question = market_info.question if market_info else f"Market {market_id}"
+            queries = self._generate_queries(market_id, question)
+            queries_by_market[market_id] = queries
+            summaries[market_id] = self._summarize(question, self._run_searches(queries))
 
-            logger.debug(f"Processing market {idx+1}/{len(selected_markets)}: {market_id} "
-                        f"with {len(queries)} queries")
+        return self._ok({"summaries": summaries, "queries": queries_by_market})
 
-            if self.search_client is None:
-                summaries[market_id] = self._empty_search_summary(
-                    question=question,
-                    reason="Search disabled: no search client configured for this run.",
-                )
-                logger.info("Search disabled for %s, using explicit no-search summary", market_id)
-                continue
+    # -- per-market steps ---------------------------------------------------
 
-            try:
-                # Execute searches
-                search_results = self._execute_searches(queries)
+    def _generate_queries(self, market_id: str, question: str) -> list[str]:
+        """Return 1-N tailored queries, or [] when search/LLM is unavailable."""
+        if self.search_client is None or self.llm_client is None:
+            return []
 
-                # Verbose: show search results
-                vprint(f"\n  Search: {queries[0][:60] if queries else 'no query'}...")
-                for r in search_results[:3]:
-                    title = r.get("title", "")[:50]
-                    vprint(f"    - {title}")
-
-                # Summarize with LLM - pass the question
-                logger.debug("Summarizing search results with LLM")
-                summary = self._summarize_results(market_id, question, search_results)
-
-                # Validate schema (with flexible parsing for sources)
-                try:
-                    logger.debug("Validating search summary schema")
-                    self.validator.validate_search(summary)
-                except Exception as e:
-                    # Log warning but don't fail - LLM output can be fuzzy
-                    logger.warning(f"Search validation warning for {market_id}: {e}")
-
-                summaries[market_id] = summary
-                logger.info(f"Completed search for {market_id}")
-            except Exception as e:
-                logger.error(f"Search failed for {market_id}: {e}", exc_info=True)
-                return StageResult(
-                    stage_name=self.name,
-                    success=False,
-                    data={"summaries": summaries},
-                    error=f"Search failed for {market_id}: {e}",
-                )
-
-        logger.info(f"Search stage complete: {len(summaries)} summaries generated")
-
-        return StageResult(
-            stage_name=self.name,
-            success=True,
-            data={"summaries": summaries},
+        messages = self._messages(
+            "You are the research step in a prediction-market trading agent. "
+            "Downstream, an LLM forecaster will estimate the probability that "
+            "this event resolves YES and an LLM trader will size a position. "
+            "Generate 1-3 web search queries that will surface the evidence "
+            "the forecaster needs — recent news, key facts, polling, expert "
+            "analysis, base rates, anything that materially changes the "
+            "probability of YES. Use the submit_research_queries tool.",
+            f"Market: {question}\nMarket ID: {market_id}",
         )
-
-    def _execute_searches(self, queries: list[str]) -> list[dict[str, Any]]:
-        """Execute web searches for queries.
-
-        Args:
-            queries: List of search queries
-
-        Returns:
-            List of search results with url, title, snippet, text
-        """
-        # Limit queries per market (configurable via config.yaml)
-        queries_to_run = queries[:self.max_queries_per_market]
-
-        if not queries_to_run:
-            logger.debug("No queries to execute")
+        try:
+            response = self.llm_client.generate_json(messages, tool=RESEARCH_QUERIES_TOOL)
+        except Exception as e:
+            logger.warning("Query generation failed for %s: %s", market_id, e)
             return []
 
-        if self.search_client is None:
-            logger.info("Search disabled: no search client configured")
+        raw = response.get("queries", [])
+        queries = [q.strip() for q in raw if isinstance(q, str) and q.strip()]
+        return queries[: self.max_queries_per_market]
+
+    def _run_searches(self, queries: list[str]) -> list[dict[str, Any]]:
+        if not queries or self.search_client is None:
             return []
 
-        # Real search mode: Use Brave Search API
-        logger.debug(f"Executing {len(queries_to_run)} search queries")
-        all_results = []
-        for query in queries_to_run:
+        results: list[dict[str, Any]] = []
+        for query in queries:
             try:
-                logger.debug(f"Executing search query: {query[:100]}")
-                results = self.search_client.search(
-                    query=query,
-                    limit=self.max_results_per_query
+                results.extend(
+                    self.search_client.search(query=query, limit=self.max_results_per_query)
                 )
-                logger.debug(f"Got {len(results)} results for query")
-                all_results.extend(results)
             except Exception as e:
-                logger.warning(f"Search failed for query '{query}': {e}")
-                # Continue with other queries
+                logger.warning("Search failed for query '%s': %s", query, e)
 
-        logger.debug(f"Total search results: {len(all_results)}")
-        return all_results
+        vprint(f"\n  Search: {queries[0][:60]}...")
+        for r in results[:3]:
+            vprint(f"    - {r.get('title', '')[:50]}")
+        return results
 
-    def _summarize_results(
-        self,
-        market_id: str,
-        question: str,
-        search_results: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Summarize search results with LLM using tool calling.
-
-        Args:
-            market_id: Market identifier
-            question: Market question text
-            search_results: Raw search results
-
-        Returns:
-            Validated search summary (matching search.schema.json)
-        """
-        if not search_results:
-            return self._empty_search_summary(
+    def _summarize(self, question: str, search_results: list[dict[str, Any]]) -> dict[str, Any]:
+        if not search_results or self.llm_client is None:
+            return empty_search_summary(
                 question=question,
                 reason="No external search results were retrieved for this market.",
             )
 
-        # Format results with full text if available
-        results_parts = []
-        for i, r in enumerate(search_results):
-            part = f"[{i}] {r['title']}\n{r['snippet']}\nURL: {r['url']}"
-            if "text" in r and r["text"]:
-                text = r["text"][:1000]
-                part += f"\nContent: {text}..."
-            results_parts.append(part)
-
-        results_text = "\n\n".join(results_parts)
-
-        system_prompt = """You are a research analyst summarizing web search results for a prediction market.
-
-Synthesize the most relevant findings into a concise summary. Use the submit_search_summary tool to provide your analysis."""
-
-        user_prompt = f"""Market question: {question}
-
-Search results:
-{results_text}
-
-Summarize the key findings relevant to forecasting this market."""
-
-        messages = [
-            LLMMessage(role="system", content=system_prompt),
-            LLMMessage(role="user", content=user_prompt),
-        ]
-
-        if self.llm_client:
-            logger.debug(f"Calling LLM to summarize {len(search_results)} search results")
-            summary = self.llm_client.generate_json(messages, tool=SEARCH_SUMMARY_TOOL)
-            logger.debug(f"LLM returned summary with {len(summary.get('key_points', []))} key points")
-            return summary
-
-        return self._empty_search_summary(
-            question=question,
-            reason="LLM unavailable for summarization.",
+        results_text = "\n\n".join(_format_result(i, r) for i, r in enumerate(search_results))
+        messages = self._messages(
+            "You are the research step in a prediction-market trading agent. "
+            "The next step (forecaster) will use your summary to estimate "
+            "the probability that this event resolves YES. Distill the search "
+            "results into the facts that materially change that probability: "
+            "key developments, supporting evidence, and remaining uncertainty. "
+            "Use the submit_search_summary tool.",
+            f"Market question: {question}\n\nSearch results:\n{results_text}",
         )
+        try:
+            summary = self.llm_client.generate_json(messages, tool=SEARCH_SUMMARY_TOOL)
+        except Exception as e:
+            logger.warning("Summarization failed: %s", e)
+            return empty_search_summary(
+                question=question,
+                reason="Summarization step failed; proceeding without summary.",
+            )
 
-    def _empty_search_summary(self, question: str, reason: str) -> dict[str, Any]:
-        question_snippet = question[:180]
-        return {
-            "schema_version": "v1",
-            "summary": (
-                f"No external web evidence was retrieved for '{question_snippet}'. "
-                "Forecasting proceeds without fresh search data."
-            ),
-            "key_points": [],
-            "open_questions": [reason],
-        }
+        try:
+            self.validator.validate_search(summary)
+        except Exception as e:
+            # LLM summaries are often slightly off-schema; tolerate but log.
+            logger.warning("Search summary validation warning: %s", e)
+        return summary
 
+
+def _format_result(idx: int, r: dict[str, Any]) -> str:
+    part = f"[{idx}] {r['title']}\n{r['snippet']}\nURL: {r['url']}"
+    if r.get("text"):
+        part += f"\nContent: {r['text'][:1000]}..."
+    return part

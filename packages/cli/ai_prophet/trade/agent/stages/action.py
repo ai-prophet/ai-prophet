@@ -1,14 +1,13 @@
-"""Action stage: Generate trade decisions from probability forecasts.
+"""Action stage: turn each probability forecast into a trade intent.
 
-This stage takes probability forecasts and makes SEPARATE trade decisions.
-This separation from the forecast stage enables independent evaluation of:
-- Forecasting ability (Stage 3): How well does the model estimate probabilities?
-- Risk management (Stage 4): How well does the model size trades?
+A separate LLM call from forecasting so forecasting accuracy and trade
+sizing can be evaluated independently.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from ai_prophet_core.ruleset import (
@@ -21,40 +20,63 @@ from ai_prophet_core.ruleset import (
 
 from ai_prophet.trade.core import TickContext
 from ai_prophet.trade.core.tick_context import CandidateMarket
-from ai_prophet.trade.llm import LLMClient, LLMMessage
+from ai_prophet.trade.llm import LLMClient
 
 from ..tool_schemas import TRADE_DECISION_TOOL
-from ..utils import render_portfolio
+from ..utils import render_portfolio, render_time_context
 from ..validator import SchemaValidator
 from .base import PipelineStage, StageResult
 
 logger = logging.getLogger(__name__)
 
 
+def _render_research(summary: dict[str, Any] | None) -> str:
+    """Compact research block for the trader.
+
+    Renders the forecaster's underlying research so sizing can reflect
+    conviction (key points) and uncertainty (open questions). Returns an
+    empty string when no summary is available so the prompt collapses
+    cleanly.
+    """
+    if not summary:
+        return ""
+    text = (summary.get("summary") or "").strip()
+    key_points = [kp for kp in summary.get("key_points", []) if kp]
+    open_questions = [q for q in summary.get("open_questions", []) if q]
+    if not (text or key_points or open_questions):
+        return ""
+
+    lines = ["", "Research underlying the forecast:"]
+    if text:
+        lines.append(text)
+    if key_points:
+        lines.append("Key points:")
+        lines.extend(f"- {kp}" for kp in key_points)
+    if open_questions:
+        lines.append("Open questions (sources of uncertainty):")
+        lines.extend(f"- {q}" for q in open_questions)
+    return "\n".join(lines)
+
+
+# recommendation -> (action, side, price_fn(market_info)). Mirrors the
+# execution engine's _compute_price so the LLM sees the same price it
+# will fill at.
+_DECISIONS: dict[str, tuple[str, str, Callable[[CandidateMarket], float]]] = {
+    "BUY_YES":  ("BUY",  "YES", lambda m: m.yes_ask),
+    "BUY_NO":   ("BUY",  "NO",  lambda m: 1.0 - m.yes_bid),
+    "SELL_YES": ("SELL", "YES", lambda m: m.yes_bid),
+    "SELL_NO":  ("SELL", "NO",  lambda m: 1.0 - m.yes_ask),
+}
+
+
 class ActionStage(PipelineStage):
-    """Convert probability forecasts into trade decisions via LLM.
+    """Convert probability forecasts into trade intents via LLM.
 
-    Takes forecasts and portfolio context, then:
-    1. For each forecast, calls the LLM to decide on a trade
-    2. LLM sees forecast probability, market price, and portfolio
-    3. LLM outputs recommendation and size_usd
-    4. Converts to TradeIntentRequest objects
-
-    This is a SEPARATE LLM call from forecasting for observability:
-    - Forecast stage: measures forecasting ability
-    - Action stage: measures risk management / trading ability
-
-    Input: forecast stage results (probability only)
-    Output: list of TradeIntentRequest objects
+    Input:  forecast stage result (``p_yes`` per market).
+    Output: ``{"intents": [...], "decisions": {mid: decision}}``.
     """
 
     def __init__(self, llm_client: LLMClient | None = None, min_size_usd: float = 1.0):
-        """Initialize action stage.
-
-        Args:
-            llm_client: LLM client for trade decisions
-            min_size_usd: Minimum dollar size to generate an intent (filters noise)
-        """
         super().__init__(llm_client=llm_client)
         self.min_size_usd = min_size_usd
         self.validator = SchemaValidator()
@@ -68,95 +90,52 @@ class ActionStage(PipelineStage):
         tick_ctx: TickContext,
         previous_results: dict[str, StageResult],
     ) -> StageResult:
-        """Execute action stage.
+        if err := self._require_llm():
+            return err
+        if err := self._require_stage(previous_results, "forecast"):
+            return err
 
-        Args:
-            tick_ctx: Current tick context
-            previous_results: Must contain "forecast" stage result
-
-        Returns:
-            StageResult with trade intents
-        """
-        logger.debug("Action stage starting")
-
-        if not self.llm_client:
-            logger.error("Action stage missing LLM client")
-            return StageResult(
-                stage_name=self.name,
-                success=False,
-                data={},
-                error="LLM client required for action stage",
-            )
-
-        # Get forecasts
-        if "forecast" not in previous_results:
-            logger.error("Action stage missing forecast results")
-            return StageResult(
-                stage_name=self.name,
-                success=False,
-                data={},
-                error="Forecast stage result not found",
-            )
-
-        forecast_data = previous_results["forecast"].data
-        forecasts = forecast_data.get("forecasts", {})
-
-        logger.info(f"Action stage processing {len(forecasts)} forecasts")
-
+        forecasts = previous_results["forecast"].data.get("forecasts", {})
+        logger.info("Action stage processing %d forecasts", len(forecasts))
         if not forecasts:
-            logger.info("No forecasts to convert to actions, returning empty result")
-            return StageResult(
-                stage_name=self.name,
-                success=True,
-                data={"intents": [], "decisions": {}},
-            )
+            return self._ok({"intents": [], "decisions": {}})
 
-        # Generate trade decisions for each forecast
+        search_result = previous_results.get("search")
+        summaries: dict[str, dict[str, Any]] = (
+            search_result.data.get("summaries", {}) if search_result else {}
+        )
+
         intents: list[dict[str, Any]] = []
         decisions: dict[str, dict[str, Any]] = {}
 
-        for idx, (market_id, forecast) in enumerate(forecasts.items()):
-            logger.debug(f"Processing forecast {idx+1}/{len(forecasts)} for {market_id}")
+        for market_id, forecast in forecasts.items():
+            market_info = tick_ctx.get_candidate(market_id)
+            if market_info is None:
+                logger.warning("Market %s not in tick candidates; skipping", market_id)
+                continue
 
             try:
-                # Get market info
-                candidates = tick_ctx.candidates
-                market_info = next((m for m in candidates if m.market_id == market_id), None)
-
-                if not market_info:
-                    logger.warning(f"Market {market_id} not found in tick context candidates")
-                    continue
-
-                # Call LLM for trade decision
                 decision = self._generate_trade_decision(
-                    market_id, forecast, market_info, tick_ctx
+                    market_id, forecast, market_info, tick_ctx,
+                    search_summary=summaries.get(market_id),
                 )
-                decisions[market_id] = decision
-
-                # Convert decision to intent if actionable
-                intent = self._convert_to_intent(market_id, decision, market_info, tick_ctx)
-                if intent:
-                    logger.info(f"Generated intent for {market_id}: {intent['action']} {intent['side']} "
-                               f"${decision.get('size_usd', 0):.0f}")
-                    intents.append(intent)
-                else:
-                    logger.debug(f"No intent for {market_id} (HOLD or size below min)")
             except Exception as e:
-                logger.error(f"Trade decision failed for {market_id}: {e}", exc_info=True)
-                return StageResult(
-                    stage_name=self.name,
-                    success=False,
-                    data={"intents": intents, "decisions": decisions},
-                    error=f"Trade decision failed for {market_id}: {e}",
+                logger.error("Trade decision failed for %s: %s", market_id, e, exc_info=True)
+                return self._fail(
+                    f"Trade decision failed for {market_id}: {e}",
+                    {"intents": intents, "decisions": decisions},
                 )
 
-        logger.info(f"Action stage complete: {len(intents)} intents from {len(forecasts)} forecasts")
+            decisions[market_id] = decision
+            intent = self._convert_to_intent(market_id, decision, market_info, tick_ctx)
+            if intent:
+                intents.append(intent)
 
-        return StageResult(
-            stage_name=self.name,
-            success=True,
-            data={"intents": intents, "decisions": decisions},
-        )
+        logger.info("Action stage complete: %d intents from %d forecasts",
+                    len(intents), len(forecasts))
+        return self._ok({"intents": intents, "decisions": decisions})
+
+    # -- internals ----------------------------------------------------------
 
     def _generate_trade_decision(
         self,
@@ -164,55 +143,33 @@ class ActionStage(PipelineStage):
         forecast: dict[str, Any],
         market_info: CandidateMarket,
         tick_ctx: TickContext,
+        search_summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Generate trade decision for a market using LLM with tool calling.
-
-        This is a SEPARATE call from forecasting for observability.
-        Includes position P&L context when the agent holds this market.
-
-        Args:
-            market_id: Market identifier
-            forecast: Probability forecast from forecast stage
-            market_info: Market data (prices, etc.)
-            tick_ctx: Current tick context
-
-        Returns:
-            Trade decision matching trade_decision.schema.json
-        """
         p_yes = forecast.get("p_yes", 0.5)
         forecast_rationale = forecast.get("rationale", "No rationale provided")
 
-        question = market_info.question
         yes_bid = market_info.yes_bid
         yes_ask = market_info.yes_ask
         spread = yes_ask - yes_bid
         no_ask = 1.0 - yes_bid
 
-        # Edge vs the price you'd actually pay to open (the ask side). Surfaced
-        # pre-computed because the round-trip economics are easy to misread and
-        # we don't want the LLM doing fragile arithmetic on every market.
+        # Edge vs the price you'd actually pay to open (the ask). Precomputed
+        # so the LLM doesn't do fragile arithmetic on every market.
         yes_edge = p_yes - yes_ask
         no_edge = (1 - p_yes) - no_ask
 
-        # Volume is shown as a context signal (low-volume markets are usually
-        # low-information / not seriously traded), not as a sizing cap.
-        # The simulator fills at the quoted bid/ask regardless of order size —
-        # there is no market impact. The real per-trade cost is the SPREAD.
+        # Volume is shown as context (low-volume = low-information), not as a
+        # sizing cap. Fills are at the quoted bid/ask regardless of order
+        # size; the real per-trade cost is the spread.
         volume_24h = float(getattr(market_info, "volume_24h", 0) or 0)
 
-        portfolio_block = render_portfolio(tick_ctx, focus_market_id=market_id)
+        portfolio = render_portfolio(tick_ctx, focus_market_id=market_id)
+        time_context = render_time_context(tick_ctx.tick_ts, market_info.resolution_time)
+        research_block = _render_research(search_summary)
 
-        memory_by_market = getattr(tick_ctx, "memory_by_market", None) or {}
-        market_memory = memory_by_market.get(market_id, "")
-        memory_block = f"\n\nRECENT MEMORY:\n{market_memory}" if market_memory else ""
-        logger.info(
-            "Action prompt market_id=%s memory_in_prompt=%s memory_chars=%d",
-            market_id,
-            bool(memory_block),
-            len(market_memory),
-        )
-
-        system_prompt = f"""You size trades in a prediction market.
+        system_prompt = f"""You are trading in a prediction market. Your responsibility is to
+size trades to be profitable, given the forecaster's probability estimate,
+the research it was based on, and the current market quote.
 
 Mechanics:
 - BUY YES fills at YES ASK. SELL YES fills at YES BID. BUY NO fills at (1-YES bid). SELL NO fills at (1-YES ask).
@@ -239,36 +196,28 @@ Prices near 0 or 1 typically reflect near-resolved markets and rarely move much.
 
 Use the submit_trade_decision tool."""
 
-        user_prompt = f"""Market: {question}
-Your forecast: {p_yes:.1%} YES — {forecast_rationale}
+        user_prompt = f"""Market: {market_info.question}
+{time_context}
 
+Forecaster output (from the previous step):
+- p_yes = {p_yes:.1%}
+- Reasoning: {forecast_rationale}
+{research_block}
 YES: bid {yes_bid:.1%} / ask {yes_ask:.1%} / spread {spread:.1%}
-Buy YES at {yes_ask:.1%}  (edge vs forecast: {yes_edge*100:+.1f}%)
-Buy NO  at {no_ask:.1%}  (edge vs forecast: {no_edge*100:+.1f}%)
+Buy YES at {yes_ask:.1%}  (edge vs forecast: {yes_edge*100:+.1f}pp)
+Buy NO  at {no_ask:.1%}  (edge vs forecast: {no_edge*100:+.1f}pp)
 24h volume: ${volume_24h:,.0f}
 
-{portfolio_block}
+{portfolio}
 
-Decide.{memory_block}"""
+Decide."""
 
-        messages = [
-            LLMMessage(role="system", content=system_prompt),
-            LLMMessage(role="user", content=user_prompt),
-        ]
-
-        logger.debug(f"Calling LLM for trade decision (p_yes={p_yes:.3f}, market={yes_ask:.3f})")
-        llm_client = self.llm_client
-        if llm_client is None:
-            raise RuntimeError("LLM client missing in action stage")
-        decision_data = llm_client.generate_json(messages, tool=TRADE_DECISION_TOOL)
-
-        self.validator.validate_trade_decision(decision_data)
-
-        logger.debug(f"LLM trade decision: rec={decision_data.get('recommendation')}, "
-                    f"size=${decision_data.get('size_usd', 0):.0f}")
-
-        return decision_data
-
+        assert self.llm_client is not None  # _require_llm enforces this
+        decision = self.llm_client.generate_json(
+            self._messages(system_prompt, user_prompt), tool=TRADE_DECISION_TOOL,
+        )
+        self.validator.validate_trade_decision(decision)
+        return decision
 
     def _convert_to_intent(
         self,
@@ -277,86 +226,48 @@ Decide.{memory_block}"""
         market_info: CandidateMarket,
         tick_ctx: TickContext,
     ) -> dict[str, Any] | None:
-        """Convert trade decision to intent format.
-
-        Args:
-            market_id: Market identifier
-            decision: Trade decision from LLM
-            market_info: Market data
-            tick_ctx: Current tick context
-
-        Returns:
-            Trade intent dict or None if no trade
-        """
         recommendation = decision.get("recommendation", "HOLD")
         size_usd = decision.get("size_usd", 0)
 
-        if recommendation == "HOLD":
-            return None
-
-        # Determine action / side / fill price. BUY hits the ask, SELL hits the
-        # bid — matches the execution engine's _compute_price exactly so the
-        # LLM sees the same price it will get filled at.
-        if recommendation == "BUY_YES":
-            action, side = "BUY", "YES"
-            price = market_info.yes_ask
-        elif recommendation == "BUY_NO":
-            action, side = "BUY", "NO"
-            price = 1.0 - market_info.yes_bid
-        elif recommendation == "SELL_YES":
-            action, side = "SELL", "YES"
-            price = market_info.yes_bid
-        elif recommendation == "SELL_NO":
-            action, side = "SELL", "NO"
-            price = 1.0 - market_info.yes_ask
-        else:
-            return None
-
+        if recommendation not in _DECISIONS:
+            return None  # HOLD or unknown
+        action, side, price_fn = _DECISIONS[recommendation]
+        price = price_fn(market_info)
         if price <= 0:
-            logger.warning(f"Invalid price {price} for {market_id}")
+            logger.warning("Invalid price %s for %s", price, market_id)
             return None
 
         is_sell = action == "SELL"
 
-        # SELL hard gate: only emit if we actually hold the position to sell.
-        # The engine would reject otherwise ("Cannot SELL without position"),
-        # but pre-filtering avoids wasting submission round-trips and keeps
-        # the trade log clean.
+        # SELL hard gate: pre-filter to avoid wasted submissions the engine
+        # would reject ("Cannot SELL without position").
         if is_sell:
             position = tick_ctx.get_position(market_id)
             if position is None or position.side != side:
                 logger.warning(
-                    "Skipping %s for %s: no matching %s position to sell",
-                    recommendation, market_id, side,
+                    "Skipping %s for %s: no matching %s position", recommendation, market_id, side,
                 )
                 return None
 
-        # min_size_usd is a noise filter for new BUY entries; it doesn't apply
-        # to SELLs (closing out a small leftover position is always valid).
+        # min_size_usd is a noise filter for new entries only; SELLs always
+        # go through so we can close out leftovers.
         if not is_sell and size_usd < self.min_size_usd:
-            logger.debug(f"Size ${size_usd} below minimum ${self.min_size_usd}, skipping")
             return None
 
         shares = size_usd / price
 
         # Cap SELL shares to held position. Engine clamps too, but doing it
-        # here keeps the submitted shares honest and prevents misleading log
-        # output that suggests we're selling more than we own.
+        # here keeps logs honest.
         if is_sell:
-            held = float(position.shares)
+            held = float(position.shares)  # type: ignore[union-attr]
             if shares > held:
                 shares = held
-
-        logger.debug(f"Final intent: {action} {side} {shares:.2f} shares (${size_usd} / ${price:.3f})")
-
-        # Get market question for display
-        question = getattr(market_info, "question", None) or market_id
 
         return {
             "run_id": tick_ctx.run_id,
             "tick_ts": tick_ctx.tick_ts,
             "market_id": market_id,
-            "question": question,
+            "question": market_info.question or market_id,
             "action": action,
             "side": side,
             "shares": f"{shares:.2f}",

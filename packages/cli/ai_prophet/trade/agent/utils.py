@@ -1,15 +1,61 @@
-"""Shared utilities for agent stages.
+"""Shared formatting helpers for agent stages.
 
-`render_portfolio` is the single source of truth for portfolio display in
-LLM prompts. Stages must not hand-roll their own formats.
+These are the single source of truth for any prompt fragment that more
+than one stage renders. Stages must not hand-roll equivalents.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ai_prophet.trade.core import TickContext
+
+
+def days_until_resolution(tick_ts: datetime, resolution_time: datetime) -> int:
+    """Whole days from the current tick to market resolution, floored at 0."""
+    return max(0, (resolution_time.date() - tick_ts.date()).days)
+
+
+def render_time_context(tick_ts: datetime, resolution_time: datetime) -> str:
+    """One-line time framing for forecast/action prompts.
+
+    Example: ``Today: 2026-05-17  ·  Resolves: 2026-11-04 (in 171 days)``
+    """
+    days = days_until_resolution(tick_ts, resolution_time)
+    if days == 0:
+        when = "today"
+    elif days == 1:
+        when = "in 1 day"
+    else:
+        when = f"in {days} days"
+    return (
+        f"Today: {tick_ts.date().isoformat()}  ·  "
+        f"Resolves: {resolution_time.date().isoformat()} ({when})"
+    )
+
+
+def empty_search_summary(*, question: str, reason: str) -> dict[str, Any]:
+    """Placeholder summary matching search.schema.json.
+
+    Used when no external search results are available and the forecast
+    must proceed without fresh web evidence.
+    """
+    return {
+        "schema_version": "v1",
+        "summary": (
+            f"No external web evidence was retrieved for '{question[:180]}'. "
+            "Forecasting proceeds without fresh search data."
+        ),
+        "key_points": [],
+        "open_questions": [reason],
+    }
+
+
+def candidate_questions(tick_ctx: TickContext) -> dict[str, str]:
+    """Map ``market_id -> question`` for every candidate this tick."""
+    return {m.market_id: m.question for m in tick_ctx.candidates}
 
 
 def render_portfolio(
@@ -24,9 +70,10 @@ def render_portfolio(
     of up to ``max_positions`` lines.
 
     If ``focus_market_id`` is provided and the agent holds that market, a
-    focused block is appended with entry/mark/PnL and concrete exit pricing
-    (SELL action + price + proceeds) so stages don't need to derive any of
-    it themselves.
+    focused block is appended with entry/mark/PnL, concrete exit pricing
+    (SELL action + price + proceeds), and the position's *original thesis*
+    (forecaster + trader rationales captured at entry) so the action stage
+    can decide whether the thesis still holds.
     """
     parts = [_render_summary(tick_ctx, max_positions)]
     if focus_market_id:
@@ -124,7 +171,29 @@ def _render_focused_position(tick_ctx: TickContext, market_id: str) -> str:
             f"proceeds ${exit_proceeds:,.2f} (vs cost ${cost_basis:,.2f})"
         )
 
+    lines.extend(_render_original_thesis(position))
     return "\n".join(lines)
+
+
+def _render_original_thesis(position: Any) -> list[str]:
+    """Surface the rationales captured when this position was opened.
+
+    Falls back to a single "not captured" line when nothing is available,
+    so the structure stays stable regardless of server-side support.
+    """
+    forecast = (getattr(position, "entry_forecast_rationale", "") or "").strip()
+    trade = (getattr(position, "entry_trade_rationale", "") or "").strip()
+    if not forecast and not trade:
+        return [
+            "ORIGINAL THESIS: not captured for this position "
+            "(entered before rationale capture was available)."
+        ]
+    lines = ["ORIGINAL THESIS (from the trade that opened this position):"]
+    if forecast:
+        lines.append(f"- Forecaster: {forecast}")
+    if trade:
+        lines.append(f"- Trader: {trade}")
+    return lines
 
 
 def _fmt_signed_dollars(value: float, decimals: int = 0) -> str:
