@@ -66,6 +66,10 @@ class EventStore:
         self._db = db
         self.redact = redact
 
+    def close(self) -> None:
+        """Release the underlying database engine (passthrough to ``ClientDatabase.close``)."""
+        self._db.close()
+
     def _make_event_id(
         self,
         event_type: EventType,

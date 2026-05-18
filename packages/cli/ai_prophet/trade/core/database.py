@@ -204,6 +204,24 @@ class ClientDatabase:
             else:
                 raise
 
+    def close(self) -> None:
+        """Dispose the SQLAlchemy engine, releasing file/connection handles.
+
+        Required for clean teardown on Windows: SQLite files stay locked
+        while the engine holds open connection pool entries, so any
+        tempdir cleanup (e.g. ``shutil.rmtree`` in test fixtures) fails
+        with ``PermissionError`` until the engine is disposed.
+
+        Safe to call multiple times. After calling, do not reuse this
+        instance — create a fresh ``ClientDatabase``.
+        """
+        engine = getattr(self, "engine", None)
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ClientDatabase.close failed: %s", exc)
+
     # === Run Management ===
 
     def create_run(

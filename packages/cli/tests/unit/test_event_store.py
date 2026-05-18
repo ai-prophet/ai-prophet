@@ -20,9 +20,18 @@ def temp_data_dir():
 
 @pytest.fixture
 def client_db(temp_data_dir):
-    """Create ClientDatabase for testing."""
+    """Create ClientDatabase for testing.
+
+    Disposes the SQLAlchemy engine on teardown so the SQLite file is
+    unlocked before ``temp_data_dir`` runs ``shutil.rmtree`` — otherwise
+    Windows raises ``PermissionError`` on the still-locked file.
+    """
     db_path = temp_data_dir / "test.db"
-    return ClientDatabase(db_url=f"sqlite:///{db_path}")
+    db = ClientDatabase(db_url=f"sqlite:///{db_path}")
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 @pytest.fixture
@@ -44,6 +53,25 @@ class TestEventStoreBasics:
         """Test EventStore initialization."""
         assert event_store.run_id == "test_run_123"
         assert event_store._db is not None
+
+    def test_close_is_idempotent_and_releases_handles(self, temp_data_dir):
+        """``ClientDatabase.close`` must dispose the engine so the SQLite file
+        is unlocked, and must be safe to call multiple times.
+
+        Without close(), Windows would raise ``PermissionError`` when the
+        outer tempdir fixture tries to ``shutil.rmtree`` the still-locked
+        sqlite file. The fixture-level coverage already exercises that
+        path; this direct check pins the behaviour explicitly.
+        """
+        db_path = temp_data_dir / "close_test.db"
+        db = ClientDatabase(db_url=f"sqlite:///{db_path}")
+        assert db_path.exists()
+        db.close()
+        # Second close should not raise.
+        db.close()
+        # File can now be removed without PermissionError.
+        db_path.unlink()
+        assert not db_path.exists()
 
     def test_write_tick_start(self, event_store, tick_ts):
         """Test writing tick_start event."""

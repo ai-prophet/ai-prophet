@@ -164,6 +164,25 @@ class BettingEngine:
                 no_ask=no_ask,
             )
 
+            # 1a. Invariant: when a DB is configured, every order must have
+            # a backing prediction row. An order with prediction_id=None
+            # becomes an orphan in the ledger — it breaks position/cash
+            # replay and reconciliation. If persistence failed (real DB
+            # error, not just "no engine configured"), refuse to trade.
+            # Replay duplicates are not affected here: _save_prediction is
+            # idempotent on the uniqueness constraint and returns the
+            # existing row's id.
+            if self._engine is not None and prediction_id is None:
+                logger.warning(
+                    "[BETTING] %s on %s: prediction persistence failed; refusing to place order",
+                    source, market_id,
+                )
+                results.append(BetResult(
+                    market_id=market_id, signal=None, order_placed=False,
+                    error="Prediction persistence failed",
+                ))
+                continue
+
             # 2. Refresh portfolio from live DB state (not the stale snapshot
             #    from the caller) so the strategy always sees the authoritative
             #    position for THIS market -- prevents stale-delta over-buying.
@@ -641,8 +660,26 @@ class BettingEngine:
         yes_ask: float,
         no_ask: float,
     ) -> int | None:
+        """Persist a prediction row, returning its id.
+
+        ``None`` is returned in two distinct situations:
+
+        * ``self._engine is None`` — no DB is configured. Paper mode
+          without persistence; callers are free to keep going.
+        * Persistence failed for a real reason (transient DB error). The
+          caller should refuse to place orders in this case, to avoid
+          orphan orders without a backing prediction row.
+
+        Replay-style duplicates (same instance/source/tick/market) hit the
+        ``uq_betting_prediction`` unique constraint. Rather than returning
+        ``None`` and losing the linkage, we look up the existing row and
+        return its id — the insert is idempotent.
+        """
         if self._engine is None:
             return None
+
+        from sqlalchemy import select
+        from sqlalchemy.exc import IntegrityError
 
         from .db import get_session
         from .db_schema import BettingPrediction
@@ -663,7 +700,27 @@ class BettingEngine:
                 session.add(row)
                 session.flush()
                 return row.id
-        except Exception as e:
+        except IntegrityError:
+            logger.info(
+                "prediction already exists for source=%s tick=%s market=%s; reusing",
+                source, tick_ts, market_id,
+            )
+            try:
+                with get_session(self._engine) as session:
+                    stmt = select(BettingPrediction.id).where(
+                        BettingPrediction.instance_name == self.instance_name,
+                        BettingPrediction.source == source,
+                        BettingPrediction.tick_ts == tick_ts,
+                        BettingPrediction.market_id == market_id,
+                    )
+                    return session.execute(stmt).scalar_one_or_none()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to look up existing prediction after IntegrityError: %s",
+                    exc,
+                )
+                return None
+        except Exception as e:  # noqa: BLE001
             logger.warning("Failed to persist prediction: %s", e, exc_info=True)
             return None
 

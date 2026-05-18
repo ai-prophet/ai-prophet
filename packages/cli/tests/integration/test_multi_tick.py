@@ -97,41 +97,44 @@ def test_pipeline_emits_expected_intent_and_events():
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir)
         db = ClientDatabase(db_url=f"sqlite:///{data_dir}/test.db")
-        db.create_run(run_id=run_id, provider="mock", model_name="mock-model")
-        event_store = EventStore(run_id=run_id, db=db)
+        try:
+            db.create_run(run_id=run_id, provider="mock", model_name="mock-model")
+            event_store = EventStore(run_id=run_id, db=db)
 
-        api_client = Mock(spec=ServerAPIClient)
-        api_client.base_url = "http://test.example.com"
-        llm_client = _make_llm_client()
-        pipeline = AgentPipeline(
-            llm_client=llm_client,
-            api_client=api_client,
-            event_store=event_store,
-        )
+            api_client = Mock(spec=ServerAPIClient)
+            api_client.base_url = "http://test.example.com"
+            llm_client = _make_llm_client()
+            pipeline = AgentPipeline(
+                llm_client=llm_client,
+                api_client=api_client,
+                event_store=event_store,
+            )
 
-        tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
-        result = pipeline.execute(tick_ctx, run_id=run_id, publish_reasoning=True)
+            tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
+            result = pipeline.execute(tick_ctx, run_id=run_id, publish_reasoning=True)
 
-        assert len(result.intents) == 1
-        intent = result.intents[0]
-        assert intent["market_id"] == "market_123"
-        assert intent["action"] == "BUY"
-        assert intent["side"] == "YES"
-        assert intent["shares"] == "100.00"
+            assert len(result.intents) == 1
+            intent = result.intents[0]
+            assert intent["market_id"] == "market_123"
+            assert intent["action"] == "BUY"
+            assert intent["side"] == "YES"
+            assert intent["shares"] == "100.00"
 
-        assert result.reasoning is not None
-        assert "review" in result.reasoning
-        assert "search" in result.reasoning
-        assert "forecasts" in result.reasoning
-        assert "decisions" in result.reasoning
+            assert result.reasoning is not None
+            assert "review" in result.reasoning
+            assert "search" in result.reasoning
+            assert "forecasts" in result.reasoning
+            assert "decisions" in result.reasoning
 
-        assert len(event_store.get_events(tick_ts, EventType.TICK_START)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.REVIEW_DECISION)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.SEARCH_RESULT)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.FORECAST)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.ACTION)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.TICK_COMPLETE)) == 1
-        assert event_store.get_tick_state(tick_ts) == TickState.COMPLETED
+            assert len(event_store.get_events(tick_ts, EventType.TICK_START)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.REVIEW_DECISION)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.SEARCH_RESULT)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.FORECAST)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.ACTION)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.TICK_COMPLETE)) == 1
+            assert event_store.get_tick_state(tick_ts) == TickState.COMPLETED
+        finally:
+            db.close()
 
 
 def test_reexecuting_same_tick_keeps_stage_events_idempotent():
@@ -141,28 +144,31 @@ def test_reexecuting_same_tick_keeps_stage_events_idempotent():
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir)
         db = ClientDatabase(db_url=f"sqlite:///{data_dir}/test.db")
-        db.create_run(run_id=run_id, provider="mock", model_name="mock-model")
-        event_store = EventStore(run_id=run_id, db=db)
+        try:
+            db.create_run(run_id=run_id, provider="mock", model_name="mock-model")
+            event_store = EventStore(run_id=run_id, db=db)
 
-        api_client = Mock(spec=ServerAPIClient)
-        api_client.base_url = "http://test.example.com"
-        llm_client = _make_llm_client()
-        pipeline = AgentPipeline(
-            llm_client=llm_client,
-            api_client=api_client,
-            event_store=event_store,
-        )
+            api_client = Mock(spec=ServerAPIClient)
+            api_client.base_url = "http://test.example.com"
+            llm_client = _make_llm_client()
+            pipeline = AgentPipeline(
+                llm_client=llm_client,
+                api_client=api_client,
+                event_store=event_store,
+            )
 
-        tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
-        first = pipeline.execute(tick_ctx, run_id=run_id)
-        second = pipeline.execute(tick_ctx, run_id=run_id)
+            tick_ctx = _make_tick_context(run_id=run_id, tick_ts=tick_ts)
+            first = pipeline.execute(tick_ctx, run_id=run_id)
+            second = pipeline.execute(tick_ctx, run_id=run_id)
 
-        assert first.intents == second.intents
+            assert first.intents == second.intents
 
-        # EventStore event keys are deterministic for these stage events.
-        assert len(event_store.get_events(tick_ts, EventType.TICK_START)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.REVIEW_DECISION)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.SEARCH_RESULT)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.FORECAST)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.ACTION)) == 1
-        assert len(event_store.get_events(tick_ts, EventType.TICK_COMPLETE)) == 1
+            # EventStore event keys are deterministic for these stage events.
+            assert len(event_store.get_events(tick_ts, EventType.TICK_START)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.REVIEW_DECISION)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.SEARCH_RESULT)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.FORECAST)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.ACTION)) == 1
+            assert len(event_store.get_events(tick_ts, EventType.TICK_COMPLETE)) == 1
+        finally:
+            db.close()

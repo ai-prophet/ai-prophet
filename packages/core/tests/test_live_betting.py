@@ -565,3 +565,108 @@ def test_rebalancing_pure_buy_no_position():
     assert round(signal.shares * 100) == 3
     assert signal.metadata["sell_portion"] == 0
     assert signal.metadata["buy_portion"] > 0
+
+
+# ── Persistence-failure handling ─────────────────────────────────────
+
+
+def test_save_prediction_is_idempotent_on_duplicate():
+    """Replay-style duplicate inserts return the existing row's id instead of None.
+
+    The unique constraint is ``(instance_name, source, tick_ts, market_id)`` —
+    re-running the same tick would otherwise lose the prediction_id and
+    cause downstream signals/orders to become orphans in the ledger.
+    """
+    db_engine = create_engine("sqlite:///:memory:")
+    engine = BettingEngine(db_engine=db_engine, paper=True, enabled=True)
+
+    tick = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+    first_id = engine._save_prediction(
+        tick_ts=tick,
+        market_id="kalshi:TEST-MKT",
+        source="model-A",
+        p_yes=0.7,
+        yes_ask=0.55,
+        no_ask=0.45,
+    )
+    second_id = engine._save_prediction(
+        tick_ts=tick,
+        market_id="kalshi:TEST-MKT",
+        source="model-A",
+        p_yes=0.71,
+        yes_ask=0.56,
+        no_ask=0.44,
+    )
+
+    assert first_id is not None
+    assert second_id == first_id
+
+
+def test_engine_refuses_to_trade_when_persistence_fails():
+    """When the DB write fails for a real reason, no order is placed.
+
+    Orders without a backing prediction row break replay/reconciliation.
+    Distinct from the "no DB configured" case, which is paper mode and
+    must still place orders.
+    """
+    db_engine = create_engine("sqlite:///:memory:")
+    engine = BettingEngine(db_engine=db_engine, paper=True, enabled=True)
+
+    # Force _save_prediction to fail without raising — simulates a transient
+    # DB error that the production code currently logs and swallows.
+    engine._save_prediction = lambda **_kw: None  # type: ignore[assignment]
+
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("0"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="should-not-be-placed",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.order_placed is False
+    assert result.signal is None
+    assert result.error and "persistence failed" in result.error.lower()
+    mock_adapter.submit_order.assert_not_called()
+
+
+def test_engine_without_db_still_places_orders():
+    """Paper mode without a configured DB must still place orders.
+
+    Distinguishes ``prediction_id is None because no engine`` from
+    ``prediction_id is None because persistence failed`` — only the
+    latter should refuse to trade.
+    """
+    engine = BettingEngine(db_engine=None, paper=True, enabled=True)
+
+    mock_adapter = Mock()
+    mock_adapter.submit_order.return_value = Mock(
+        status=OrderStatus.DRY_RUN,
+        filled_shares=Decimal("17"),
+        fill_price=Decimal("0.55"),
+        exchange_order_id="dry-run-456",
+        rejection_reason=None,
+    )
+    engine._adapter = mock_adapter
+
+    results = engine.process_forecasts(
+        tick_ts=datetime(2026, 3, 1, 12, 0, tzinfo=UTC),
+        forecasts={"kalshi:TEST-MKT": 0.72},
+        market_prices={"kalshi:TEST-MKT": (0.55, 0.45)},
+        source="test-model",
+    )
+
+    assert len(results) == 1
+    assert results[0].order_placed is True
+    mock_adapter.submit_order.assert_called_once()

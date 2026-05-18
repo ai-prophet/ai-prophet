@@ -22,9 +22,17 @@ def temp_data_dir():
 
 @pytest.fixture
 def client_db(temp_data_dir):
-    """Create ClientDatabase for testing."""
+    """Create ClientDatabase for testing.
+
+    Disposes the engine on teardown so the SQLite file is unlocked before
+    the tempdir is removed — otherwise Windows raises ``PermissionError``.
+    """
     db_path = temp_data_dir / "integration_test.db"
-    return ClientDatabase(db_url=f"sqlite:///{db_path}")
+    db = ClientDatabase(db_url=f"sqlite:///{db_path}")
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 @pytest.fixture
