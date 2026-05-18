@@ -31,7 +31,7 @@ services:
     plan: starter
     rootDir: .
     buildCommand: pip install --no-cache-dir -e packages/core && pip install --no-cache-dir -e packages/cli
-    startCommand: prophet trade eval run -m anthropic:claude-opus-4-7 --slug eval_brierforce --strategy rebalancing
+    startCommand: prophet trade eval run -m anthropic:claude-opus-4-7 --slug eval_brierforce --strategy rebalancing --max-ticks 100000
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
