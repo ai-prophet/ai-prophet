@@ -13,6 +13,12 @@ import json
 import re
 from typing import Any
 
+# Match raw ASCII control characters (excluding tab/newline/CR which JSON
+# explicitly allows when whitespace, and which json.loads tolerates outside
+# string literals). Anything else inside a string literal triggers
+# "Invalid control character" — strip them.
+_BAD_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
 
 class AgentPrompts:
     """Prompts for agent prediction tasks (binary or multi-outcome)."""
@@ -111,7 +117,13 @@ def parse_response(text: str, expected_markets: list[str]) -> dict[str, Any]:
     if start == -1 or end == -1 or end < start:
         raise ValueError(f"no JSON object in response: {cleaned[:300]!r}")
 
-    data = json.loads(cleaned[start:end + 1])
+    candidate = _BAD_CONTROL_CHARS_RE.sub(" ", cleaned[start:end + 1])
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        # Last-resort: loosen via strict=False so json.loads tolerates any
+        # stray control chars we missed inside string literals.
+        data = json.loads(candidate, strict=False)
     raw_probs = data.get("probabilities")
     if raw_probs is None:
         raise KeyError("response missing 'probabilities'")

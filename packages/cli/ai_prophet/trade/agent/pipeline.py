@@ -85,6 +85,10 @@ DEFAULT_STRATEGY = os.environ.get("WORKER_STRATEGY", "rebalancing")
 # Pre-filter: skip markets where YES ask is out of this range before LLM call.
 PRICE_PREFILTER_MIN = float(os.environ.get("WORKER_PRICE_MIN", "0.10"))
 PRICE_PREFILTER_MAX = float(os.environ.get("WORKER_PRICE_MAX", "0.90"))
+# Max allowed spread (yes_ask + no_ask). Default disables the cap so the
+# strategy will trade wide-spread Kalshi markets too; the within-spread +
+# MIN_EDGE guards still prevent zero-edge entries.
+MAX_SPREAD = float(os.environ.get("WORKER_MAX_SPREAD", "inf"))
 
 # Strategy works internally in *fractional* shares (0..~1); the PA server's
 # TradeIntentRequest.shares and PositionData.shares are in *contracts*
@@ -102,8 +106,8 @@ EXCLUDED_MARKERS = ("mentions",)
 def _build_strategy(name: str) -> BettingStrategy:
     name = (name or "default").lower()
     if name == "rebalancing":
-        return RebalancingStrategy()
-    return DefaultBettingStrategy()
+        return RebalancingStrategy(max_spread=MAX_SPREAD)
+    return DefaultBettingStrategy(max_spread=MAX_SPREAD)
 
 
 def _is_excluded_market(market) -> bool:
@@ -243,9 +247,13 @@ class AgentPipeline:
 
             signal = self._evaluate(market, p_yes, tick_ctx)
             if signal is None:
-                signals_log[market.market_id] = {
-                    "skip_reason": self.strategy.last_skip_reason or "no signal",
-                }
+                reason = self.strategy.last_skip_reason or "no signal"
+                logger.info(
+                    "Skip %s: %s (p_yes=%.3f, yes_ask=%.3f, no_ask=%.3f)",
+                    market.market_id, reason, float(p_yes),
+                    float(market.yes_ask), float(market.no_ask),
+                )
+                signals_log[market.market_id] = {"skip_reason": reason}
                 continue
 
             new_intents = self._signal_to_intents(
