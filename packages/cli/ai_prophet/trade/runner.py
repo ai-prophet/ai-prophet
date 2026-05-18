@@ -237,7 +237,7 @@ class ExperimentRunner:
                     if lease.reason == "experiment_completed":
                         logger.info("Experiment completed.")
                         break
-                    retry = lease.retry_after_sec or 15
+                    retry = lease.retry_after_sec or NO_TICK_RETRY_SEC
                     logger.info(f"No tick available (reason={lease.reason}), retry in {retry}s")
                     time.sleep(retry)
                     continue
