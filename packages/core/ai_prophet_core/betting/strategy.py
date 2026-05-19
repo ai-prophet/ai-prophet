@@ -198,6 +198,10 @@ class DefaultBettingStrategy(BettingStrategy):
                 desired_contracts = round(desired_shares * 100)
                 delta = max(0, desired_contracts - current_contracts) / 100.0
                 if delta < 0.005:  # less than 1 contract needed — already at target
+                    self.last_skip_reason = (
+                        f"Already at target ({current_contracts:.0f} contracts, "
+                        f"desired {desired_contracts})"
+                    )
                     return None
                 desired_shares = delta
 
@@ -316,6 +320,9 @@ class RebalancingStrategy(BettingStrategy):
         delta = target - current_pos
 
         if abs(delta) < self.min_trade:
+            self.last_skip_reason = (
+                f"Delta too small ({abs(delta):.4f} < min_trade {self.min_trade})"
+            )
             return None
 
         if delta > 0:
@@ -338,6 +345,7 @@ class RebalancingStrategy(BettingStrategy):
         # Only cap the BUY portion by available cash — sells return cash, they cost nothing.
         # Include expected sell proceeds so the buy isn't under-sized after a NET flip.
         port = self.portfolio
+        cash_capped = False
         if buy_portion > 0 and port is not None:
             sell_price = no_ask if side == "yes" else yes_ask
             sell_proceeds = sell_portion * sell_price
@@ -345,13 +353,27 @@ class RebalancingStrategy(BettingStrategy):
             if available <= 0:
                 # No cash for the buy portion; only do the sell-down
                 buy_portion = 0.0
+                cash_capped = True
             else:
                 buy_cost = buy_portion * price
                 if buy_cost > available:
                     buy_portion = available / price if price > 0 else 0.0
+                    cash_capped = True
 
         shares = sell_portion + buy_portion
         if shares < self.min_trade:
+            cash_val = float(port.cash) if port is not None else 0.0
+            if cash_capped and cash_val <= 0:
+                self.last_skip_reason = f"No cash for buy (cash={cash_val:.2f})"
+            elif cash_capped:
+                self.last_skip_reason = (
+                    f"Cash-capped below min_trade (shares={shares:.4f} < {self.min_trade}, "
+                    f"cash={cash_val:.2f})"
+                )
+            else:
+                self.last_skip_reason = (
+                    f"Shares too small ({shares:.4f} < min_trade {self.min_trade})"
+                )
             return None
 
         cost = shares * price

@@ -434,16 +434,28 @@ class AgentPipeline:
         The strategy interprets ``market_position_shares`` as CONTRACTS
         (100 contracts = $1 max payout). Position.shares from the server is
         already in contract units.
+
+        Cash/equity/total_pnl MUST be threaded through — RebalancingStrategy
+        gates the BUY portion on ``port.cash`` (strategy.py:344), so an empty
+        snapshot (default cash=0) makes every buy silently zero out and the
+        pipeline reports "no signal" for every market.
         """
         pos = tick_ctx.get_position(market.market_id)
+        base_kwargs = {
+            "cash": tick_ctx.cash,
+            "equity": tick_ctx.equity,
+            "total_pnl": tick_ctx.total_pnl,
+            "position_count": len(tick_ctx.positions),
+        }
         if pos is None:
-            return PortfolioSnapshot()
+            return PortfolioSnapshot(**base_kwargs)
         side_lower = (pos.side or "").lower()
         if side_lower not in {"yes", "no"}:
-            return PortfolioSnapshot()
+            return PortfolioSnapshot(**base_kwargs)
         return PortfolioSnapshot(
             market_position_side=side_lower,
             market_position_shares=Decimal(str(pos.shares)),
+            **base_kwargs,
         )
 
     def _signal_to_intents(
