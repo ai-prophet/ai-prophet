@@ -90,6 +90,13 @@ PRICE_PREFILTER_MAX = float(os.environ.get("WORKER_PRICE_MAX", "0.90"))
 # MIN_EDGE guards still prevent zero-edge entries.
 MAX_SPREAD = float(os.environ.get("WORKER_MAX_SPREAD", "inf"))
 
+# Minimum price movement (fractional units) since our last fill on a ticker
+# before we will trade it again. Throttles tick-to-tick churn on LLM noise.
+# Anri-trading's BettingEngine enforces this in process_forecasts; we
+# replicate it here because this pipeline bypasses BettingEngine and ships
+# intents straight to the PA server. Set to 0 to disable.
+MIN_PRICE_MOVEMENT = float(os.environ.get("WORKER_MIN_PRICE_MOVEMENT", "0.10"))
+
 # Strategy works internally in *fractional* shares (0..~1); the PA server's
 # TradeIntentRequest.shares and PositionData.shares are in *contracts*
 # (1 contract = $1 max payout) — same as anri-trading's BettingEngine
@@ -177,6 +184,13 @@ class AgentPipeline:
         # Optional callback fired with (market_id, p_yes, ...) after each forecast.
         self.on_forecast: Callable[..., None] | None = self.config.get("on_forecast")
 
+        # Persistent across ticks: market_id → (last fill price, side as
+        # "YES"/"NO"). Populated whenever the pipeline emits an intent so
+        # subsequent ticks can throttle re-entry until the market has moved
+        # ≥ MIN_PRICE_MOVEMENT. Falls back to PA-reported avg_entry_price
+        # for markets we haven't touched in this process.
+        self._last_fill_by_market: dict[str, tuple[float, str]] = {}
+
         logger.info(
             "AgentPipeline initialized: model=%s strategy=%s max_markets=%d "
             "web_search_max_uses=%d",
@@ -216,7 +230,25 @@ class AgentPipeline:
         forecasts: dict[str, dict[str, Any]] = {}
         signals_log: dict[str, dict[str, Any]] = {}
 
+        # Mutable cash budget that shrinks as we accumulate intents in this
+        # tick. The strategy reads it via the per-market PortfolioSnapshot;
+        # without this, every market in the loop saw the full starting cash
+        # and the strategy gate could never fire across multiple buys.
+        remaining_cash = float(tick_ctx.cash)
+
         for market in candidates:
+            # 10¢ movement gate: skip BEFORE the (expensive) LLM call when the
+            # market hasn't moved enough since our last fill.
+            movement_skip = self._movement_skip_reason(market)
+            if movement_skip is not None:
+                logger.info(
+                    "Skip %s pre-LLM: %s (yes_ask=%.3f, no_ask=%.3f)",
+                    market.market_id, movement_skip,
+                    float(market.yes_ask), float(market.no_ask),
+                )
+                signals_log[market.market_id] = {"skip_reason": movement_skip}
+                continue
+
             try:
                 parsed = self._agent_forecast(market, tick_ctx)
             except Exception as exc:
@@ -245,13 +277,13 @@ class AgentPipeline:
                 except Exception:
                     logger.exception("on_forecast callback failed for %s", market.market_id)
 
-            signal = self._evaluate(market, p_yes, tick_ctx)
+            signal = self._evaluate(market, p_yes, tick_ctx, cash=remaining_cash)
             if signal is None:
                 reason = self.strategy.last_skip_reason or "no signal"
                 logger.info(
-                    "Skip %s: %s (p_yes=%.3f, yes_ask=%.3f, no_ask=%.3f)",
+                    "Skip %s: %s (p_yes=%.3f, yes_ask=%.3f, no_ask=%.3f, cash=%.2f)",
                     market.market_id, reason, float(p_yes),
-                    float(market.yes_ask), float(market.no_ask),
+                    float(market.yes_ask), float(market.no_ask), remaining_cash,
                 )
                 signals_log[market.market_id] = {"skip_reason": reason}
                 continue
@@ -262,11 +294,31 @@ class AgentPipeline:
             if not new_intents:
                 continue
             intents.extend(new_intents)
+
+            # Decrement remaining_cash for subsequent markets. Sell proceeds
+            # are credited back. Approximates the NO bid as 1 - yes_ask (and
+            # vice versa), the same approximation BettingEngine uses for sell
+            # legs (engine.py: sell_price = 1 - opposite_ask).
+            sell_portion = float((signal.metadata or {}).get("sell_portion") or 0.0)
+            buy_portion = max(0.0, float(signal.shares) - sell_portion)
+            buy_cost_dollars = buy_portion * SHARES_SCALE * float(signal.price)
+            sell_price_approx = max(0.0, 1.0 - float(signal.price))
+            sell_proceeds_dollars = sell_portion * SHARES_SCALE * sell_price_approx
+            remaining_cash += sell_proceeds_dollars - buy_cost_dollars
+
+            # Record the fill so the movement gate throttles re-entry next
+            # tick. Mirrors anri-trading's "last fill price + side" tracking.
+            self._last_fill_by_market[market.market_id] = (
+                float(signal.price),
+                signal.side.upper(),
+            )
+
             signals_log[market.market_id] = {
                 "side": signal.side,
                 "shares": float(signal.shares),
                 "price": float(signal.price),
                 "cost": float(signal.cost),
+                "remaining_cash": round(remaining_cash, 2),
                 "intents": [
                     {"action": i["action"], "side": i["side"], "shares": i["shares"]}
                     for i in new_intents
@@ -414,9 +466,19 @@ class AgentPipeline:
             parts.append("  No existing position in this market.")
         return "\n".join(parts)
 
-    def _evaluate(self, market, p_yes: float, tick_ctx: TickContext) -> BetSignal | None:
-        """Set portfolio snapshot for this market on the strategy and evaluate."""
-        snapshot = self._portfolio_snapshot(market, tick_ctx)
+    def _evaluate(
+        self,
+        market,
+        p_yes: float,
+        tick_ctx: TickContext,
+        cash: float | None = None,
+    ) -> BetSignal | None:
+        """Set portfolio snapshot for this market on the strategy and evaluate.
+
+        ``cash`` overrides ``tick_ctx.cash`` so the caller can pass a budget
+        that's been decremented by intents emitted earlier in the same tick.
+        """
+        snapshot = self._portfolio_snapshot(market, tick_ctx, cash=cash)
         self.strategy._portfolio = snapshot
         try:
             return self.strategy.evaluate(
@@ -428,7 +490,60 @@ class AgentPipeline:
         finally:
             self.strategy._portfolio = None
 
-    def _portfolio_snapshot(self, market, tick_ctx: TickContext) -> PortfolioSnapshot:
+    def _last_known_fill(self, market) -> tuple[float, str] | None:
+        """Return (fill_price, side) for ``market`` if we have any anchor.
+
+        Prefers the in-memory cache populated whenever we emit an intent
+        (gives last-fill granularity within this process). Falls back to
+        the PA-reported avg_entry_price of any open position so the gate
+        still applies across a process restart.
+        """
+        cached = self._last_fill_by_market.get(market.market_id)
+        if cached is not None:
+            return cached
+        pos = getattr(market, "existing_position", None)
+        if pos is None or not pos.side:
+            return None
+        side = pos.side.upper()
+        if side not in {"YES", "NO"}:
+            return None
+        try:
+            return float(pos.avg_entry_price), side
+        except (TypeError, ValueError):
+            return None
+
+    def _movement_skip_reason(self, market) -> str | None:
+        """Return a skip reason if ``market`` hasn't moved enough since last fill.
+
+        Mirrors BettingEngine.process_forecasts' 10¢ gate: re-derive the
+        yes/no fill prices from (fill_price, side) and require either
+        yes_ask or no_ask to have moved ≥ MIN_PRICE_MOVEMENT.
+        """
+        if MIN_PRICE_MOVEMENT <= 0:
+            return None
+        last = self._last_known_fill(market)
+        if last is None:
+            return None
+        fill_price, side = last
+        fill_yes = fill_price if side == "YES" else 1.0 - fill_price
+        fill_no = 1.0 - fill_yes
+        max_deviation = max(
+            abs(float(market.yes_ask) - fill_yes),
+            abs(float(market.no_ask) - fill_no),
+        )
+        if max_deviation < MIN_PRICE_MOVEMENT:
+            return (
+                f"Market unchanged: {max_deviation*100:.1f}¢ since last fill "
+                f"(need {MIN_PRICE_MOVEMENT*100:.0f}¢)"
+            )
+        return None
+
+    def _portfolio_snapshot(
+        self,
+        market,
+        tick_ctx: TickContext,
+        cash: float | None = None,
+    ) -> PortfolioSnapshot:
         """Build the PortfolioSnapshot the strategy expects for this market.
 
         The strategy interprets ``market_position_shares`` as CONTRACTS
@@ -441,8 +556,9 @@ class AgentPipeline:
         pipeline reports "no signal" for every market.
         """
         pos = tick_ctx.get_position(market.market_id)
+        effective_cash = tick_ctx.cash if cash is None else Decimal(str(cash))
         base_kwargs = {
-            "cash": tick_ctx.cash,
+            "cash": effective_cash,
             "equity": tick_ctx.equity,
             "total_pnl": tick_ctx.total_pnl,
             "position_count": len(tick_ctx.positions),
