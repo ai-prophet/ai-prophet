@@ -111,10 +111,15 @@ class DefaultBettingStrategy(BettingStrategy):
     """Average-return-neutral strategy (the built-in default).
 
     Logic:
-      * If the spread (``yes_ask + no_ask``) exceeds *max_spread*, skip.
+      * If the ask sum (``yes_ask + no_ask``) exceeds *max_spread*, skip —
+        the overround (market-maker take) is too high.
+      * If the ask sum is below 0.90, skip — the book is crossed or stale.
       * If the prediction falls inside the bid-ask band, skip.
-      * Otherwise buy the side where the model disagrees with the market,
-        sizing by the magnitude of the disagreement.
+      * Otherwise buy the side with positive per-side edge, sizing by that edge.
+
+    Note: ``max_spread`` is a misnomer kept for backward compatibility with
+    existing callers; it is actually a cap on the *ask sum*, not the
+    within-side bid-ask spread.
     """
 
     name = "default"
@@ -129,11 +134,11 @@ class DefaultBettingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        spread = yes_ask + no_ask
-        if spread > self.max_spread:
+        ask_sum = yes_ask + no_ask
+        # High overround = unfavorable take; very low sum = crossed/stale book.
+        if ask_sum > self.max_spread:
             return None
-        # Skip crossed/invalid markets (spread < 1 means prices are unreliable)
-        if spread < 0.90:
+        if ask_sum < 0.90:
             return None
 
         lower_bound = 1.0 - no_ask
@@ -141,18 +146,23 @@ class DefaultBettingStrategy(BettingStrategy):
         if lower_bound <= p_yes <= upper_bound:
             return None
 
-        diff = p_yes - yes_ask
+        # Per-side edge: YES pays 1 at ask yes_ask; NO pays 1 at ask no_ask.
+        # Sizing each side by its own edge keeps the strategy correct when
+        # yes_ask + no_ask ≠ 1 (overround or dutch book).
+        yes_edge = p_yes - yes_ask
+        no_edge = (1.0 - p_yes) - no_ask
 
-        if diff > 0:
-            desired_shares = p_yes - yes_ask
+        if yes_edge <= 0 and no_edge <= 0:
+            return None
+
+        if yes_edge >= no_edge:
+            desired_shares = yes_edge
             price = yes_ask
             side = "yes"
-        elif diff < 0:
-            desired_shares = abs(diff)
+        else:
+            desired_shares = no_edge
             price = no_ask
             side = "no"
-        else:
-            return None
 
         # Subtract same-side holdings so we only buy the delta needed to reach
         # the target position.  Opposite-side holdings are handled by the
@@ -163,7 +173,7 @@ class DefaultBettingStrategy(BettingStrategy):
                 current_contracts = float(port.market_position_shares)
                 desired_contracts = round(desired_shares * 100)
                 delta = max(0, desired_contracts - current_contracts) / 100.0
-                if delta < 0.005:  # less than 1 contract needed -- already at target
+                if delta < 0.005:  # less than 1 contract needed — already at target
                     return None
                 desired_shares = delta
 
@@ -182,8 +192,8 @@ class RebalancingStrategy(BettingStrategy):
 
         delta = target - current_position
 
-    Positive delta -> buy YES (or sell NO via engine's NET logic).
-    Negative delta -> buy NO (or sell YES via engine's NET logic).
+    Positive delta → buy YES (or sell NO via engine's NET logic).
+    Negative delta → buy NO (or sell YES via engine's NET logic).
 
     Using the real portfolio position instead of in-memory state means the
     strategy survives process restarts and handles partial fills correctly.
@@ -204,7 +214,7 @@ class RebalancingStrategy(BettingStrategy):
         port = self.portfolio
         if not port or not port.market_position_side or port.market_position_shares <= 0:
             return 0.0
-        shares = float(port.market_position_shares) / 100.0  # contracts -> fractional
+        shares = float(port.market_position_shares) / 100.0  # contracts → fractional
         if port.market_position_side.lower() == "yes":
             return shares
         else:
@@ -217,14 +227,14 @@ class RebalancingStrategy(BettingStrategy):
         yes_ask: float,
         no_ask: float,
     ) -> BetSignal | None:
-        spread = yes_ask + no_ask
-        if spread > self.max_spread:
+        ask_sum = yes_ask + no_ask
+        if ask_sum > self.max_spread:
             return None
-        if spread < 0.90:
+        if ask_sum < 0.90:
             return None
 
         # Within-spread filter: if prediction sits inside the bid-ask band,
-        # there is no edge -- skip without updating state.
+        # there is no edge — skip without updating state.
         lower_bound = 1.0 - no_ask
         upper_bound = yes_ask
         if lower_bound <= p_yes <= upper_bound:
@@ -247,19 +257,19 @@ class RebalancingStrategy(BettingStrategy):
             side = "yes"
             shares = delta
             price = yes_ask
-            # If we hold NO, engine will sell those first (NET flip) -- no cash needed for that portion
+            # If we hold NO, engine will sell those first (NET flip) — no cash needed for that portion
             sell_portion = min(shares, abs(current_pos)) if current_pos < 0 else 0.0
         else:
-            # Decrease YES exposure -> buy NO (engine handles sell-first)
+            # Decrease YES exposure → buy NO (engine handles sell-first)
             side = "no"
             shares = abs(delta)
             price = no_ask
-            # If we hold YES, engine will sell those first (NET flip) -- no cash needed for that portion
+            # If we hold YES, engine will sell those first (NET flip) — no cash needed for that portion
             sell_portion = min(shares, current_pos) if current_pos > 0 else 0.0
 
         buy_portion = shares - sell_portion
 
-        # Only cap the BUY portion by available cash -- sells return cash, they cost nothing.
+        # Only cap the BUY portion by available cash — sells return cash, they cost nothing.
         # Include expected sell proceeds so the buy isn't under-sized after a NET flip.
         port = self.portfolio
         if buy_portion > 0 and port is not None:
