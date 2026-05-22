@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -25,6 +25,9 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+MIN_HOURS_TO_RESOLUTION = 3.0
 
 
 class KalshiAdapter(ExchangeAdapter):
@@ -113,38 +116,53 @@ class KalshiAdapter(ExchangeAdapter):
         }
 
     def validate_order(self, request: OrderRequest) -> str | None:
-        """Validate order before submission, including 36-hour pre-resolution check."""
-        # Call parent validation first
+        """Validate order, refusing to submit within MIN_HOURS_TO_RESOLUTION of close.
+
+        Fail-safe: if ``market_expiration`` metadata is missing or unparseable,
+        the order is blocked. The previous behaviour was to silently allow
+        the trade, which let 217 of 356 real-money fills slip through within
+        36h of expiration (97 within 3h) — that's the bug we're closing.
+        """
         base_validation = super().validate_order(request)
         if base_validation:
             return base_validation
 
-        # Check 36-hour pre-resolution constraint
-        from datetime import timedelta
+        raw_expiration = request.metadata.get("market_expiration")
+        if raw_expiration is None:
+            return (
+                "Trading blocked: market_expiration missing from order metadata; "
+                "cannot verify pre-resolution gate."
+            )
 
-        # Get market expiration from metadata if available
-        market_expiration = request.metadata.get("market_expiration")
-        if market_expiration:
-            if isinstance(market_expiration, str):
-                try:
-                    market_expiration = datetime.fromisoformat(market_expiration.replace("Z", "+00:00"))
-                except (ValueError, TypeError):
-                    market_expiration = None
+        if isinstance(raw_expiration, str):
+            try:
+                market_expiration = datetime.fromisoformat(
+                    raw_expiration.replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                return (
+                    f"Trading blocked: market_expiration unparseable ({raw_expiration!r})."
+                )
+        elif isinstance(raw_expiration, datetime):
+            market_expiration = raw_expiration
+        else:
+            return (
+                f"Trading blocked: market_expiration has unsupported type "
+                f"{type(raw_expiration).__name__}."
+            )
 
-            if market_expiration and isinstance(market_expiration, datetime):
-                now = datetime.now(UTC)
-                time_to_expiration = market_expiration - now
+        if market_expiration.tzinfo is None:
+            market_expiration = market_expiration.replace(tzinfo=UTC)
 
-                # Block trading within 36 hours of expiration (even if price deviates)
-                if time_to_expiration <= timedelta(hours=36):
-                    hours_remaining = time_to_expiration.total_seconds() / 3600
-                    if hours_remaining > 0:
-                        return (
-                            f"Trading blocked: Market expires in {hours_remaining:.1f} hours. "
-                            f"Trading is not allowed within 36 hours of market resolution."
-                        )
-                    else:
-                        return "Trading blocked: Market has already expired or resolved."
+        time_to_expiration = market_expiration - datetime.now(UTC)
+        if time_to_expiration <= timedelta(hours=MIN_HOURS_TO_RESOLUTION):
+            hours_remaining = time_to_expiration.total_seconds() / 3600
+            if hours_remaining > 0:
+                return (
+                    f"Trading blocked: market expires in {hours_remaining:.2f}h, "
+                    f"under the {MIN_HOURS_TO_RESOLUTION}h pre-resolution gate."
+                )
+            return "Trading blocked: market has already expired or resolved."
 
         return None
 
