@@ -98,11 +98,12 @@ MAX_SPREAD = float(os.environ.get("WORKER_MAX_SPREAD", "inf"))
 # intents straight to the PA server. Set to 0 to disable.
 MIN_PRICE_MOVEMENT = float(os.environ.get("WORKER_MIN_PRICE_MOVEMENT", "0.10"))
 
-# Skip markets resolving within this many hours of the current tick. Mirrors
-# the spirit of anri-trading's 36h pre-resolution block: late in the life of
-# a market the LLM signal is dominated by spot noise and we'd rather not open
-# new positions we can't manage.
-MIN_HOURS_TO_CLOSE = 6.0
+# Skip markets resolving within this many hours of the current tick. Sub-30m
+# fills on anri-trading were the entire source of late-window losses
+# (-23% ROI on n=61); the 3-6h bucket was actually +35% ROI on n=14. 3h is a
+# conservative buffer that cuts the lossmaker without nuking profitable
+# medium-horizon trades.
+MIN_HOURS_TO_CLOSE = 3.0
 
 # Strategy works internally in *fractional* shares (0..~1); the PA server's
 # TradeIntentRequest.shares and PositionData.shares are in *contracts*
