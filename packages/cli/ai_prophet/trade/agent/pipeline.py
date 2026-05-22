@@ -19,6 +19,7 @@ import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -97,6 +98,12 @@ MAX_SPREAD = float(os.environ.get("WORKER_MAX_SPREAD", "inf"))
 # intents straight to the PA server. Set to 0 to disable.
 MIN_PRICE_MOVEMENT = float(os.environ.get("WORKER_MIN_PRICE_MOVEMENT", "0.10"))
 
+# Skip markets resolving within this many hours of the current tick. Mirrors
+# the spirit of anri-trading's 36h pre-resolution block: late in the life of
+# a market the LLM signal is dominated by spot noise and we'd rather not open
+# new positions we can't manage.
+MIN_HOURS_TO_CLOSE = 6.0
+
 # Strategy works internally in *fractional* shares (0..~1); the PA server's
 # TradeIntentRequest.shares and PositionData.shares are in *contracts*
 # (1 contract = $1 max payout) — same as anri-trading's BettingEngine
@@ -115,6 +122,17 @@ def _build_strategy(name: str) -> BettingStrategy:
     if name == "rebalancing":
         return RebalancingStrategy(max_spread=MAX_SPREAD)
     return DefaultBettingStrategy(max_spread=MAX_SPREAD)
+
+
+def _too_close_to_resolution(market, tick_ts) -> bool:
+    """True if ``market`` resolves within MIN_HOURS_TO_CLOSE of ``tick_ts``."""
+    resolution_time = getattr(market, "resolution_time", None)
+    if resolution_time is None:
+        return False
+    if resolution_time.tzinfo is None:
+        resolution_time = resolution_time.replace(tzinfo=UTC)
+    now = tick_ts if tick_ts.tzinfo is not None else tick_ts.replace(tzinfo=UTC)
+    return (resolution_time - now) <= timedelta(hours=MIN_HOURS_TO_CLOSE)
 
 
 def _is_excluded_market(market) -> bool:
@@ -373,6 +391,7 @@ class AgentPipeline:
             if PRICE_PREFILTER_MIN <= m.yes_ask <= PRICE_PREFILTER_MAX
             and PRICE_PREFILTER_MIN <= m.no_ask <= PRICE_PREFILTER_MAX
             and not _is_excluded_market(m)
+            and not _too_close_to_resolution(m, tick_ctx.tick_ts)
         ]
         eligible.sort(key=lambda m: (-(m.volume_24h or 0), m.market_id))
         return eligible[: self.max_markets]
