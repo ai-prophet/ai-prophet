@@ -32,7 +32,7 @@ envVarGroups:
       - key: COMPARISON_POLL_OFFSET_SEC
         value: "1800"
       - key: COMPARISON_SOURCE_INSTANCE
-        value: "Haifeng"
+        value: "Jibang"
       - key: COMPARISON_STARTING_CASH
         value: "500"
       - key: SYNC_INTERVAL_SEC
@@ -159,9 +159,9 @@ services:
       - key: WORKER_STRATEGY
         value: rebalancing
       - key: MARKET_FETCHER
-        value: "false"
+        value: "true"
       - key: WORKER_PEER_INSTANCES
-        value: Haifeng
+        value: ""
       - key: LIVE_BETTING_DRY_RUN
         value: "false"
       - key: KALSHI_API_KEY_ID
@@ -290,6 +290,6 @@ services:
       - key: NEXT_PUBLIC_API_URL
         value: https://kalshi-trading-api.onrender.com
       - key: NEXT_PUBLIC_DEFAULT_INSTANCE
-        value: haifeng
+        value: jibang
       - key: NEXT_PUBLIC_INSTANCE_CONFIG
         value: '[{"key":"haifeng","label":"Haifeng","apiUrl":"https://kalshi-trading-api.onrender.com","instanceName":"Haifeng","description":"Gemini without market data"},{"key":"jibang","label":"Jibang","apiUrl":"https://kalshi-trading-api.onrender.com","instanceName":"Jibang","description":"Gemini with market data"}]'
