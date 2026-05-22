@@ -207,8 +207,8 @@ def _validate_instance_profile_or_raise() -> None:
         },
         "Jibang": {
             "models": ["gemini:gemini-3.1-pro-preview:market"],
-            "market_fetcher": False,
-            "peers": ["Haifeng"],
+            "market_fetcher": True,
+            "peers": [],
             "strategy": "rebalancing",
             "max_markets": 50,
             "max_active": 50,
