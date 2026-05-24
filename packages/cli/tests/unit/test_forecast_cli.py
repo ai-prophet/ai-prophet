@@ -183,3 +183,126 @@ def test_forecast_submit_command_is_not_available():
 
     assert result.exit_code != 0
     assert "No such command 'submit'" in result.output
+
+
+def test_predict_strategy_flag_routes_to_correct_module(monkeypatch, tmp_path):
+    """--strategy ensemble must call ai_prophet.forecast.ensemble_agent.predict."""
+    events_path = tmp_path / "events.json"
+    output_path = tmp_path / "submission.json"
+    close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    events_path.write_text(
+        json.dumps([{"market_ticker": "STRAT-TEST", "close_time": close_time}])
+    )
+
+    # Stub only the ensemble agent's predict; if the CLI accidentally calls
+    # example_agent.predict instead, p_yes won't match the sentinel value.
+    monkeypatch.setattr(
+        "ai_prophet.forecast.ensemble_agent.predict",
+        lambda _event: {"p_yes": 0.61, "rationale": "stubbed ensemble"},
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "forecast",
+            "predict",
+            "--events",
+            str(events_path),
+            "--strategy",
+            "ensemble",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "STRAT-TEST: p_yes=0.610" in result.output
+
+
+def test_predict_strategy_example_routes_to_example_agent(monkeypatch, tmp_path):
+    events_path = tmp_path / "events.json"
+    output_path = tmp_path / "submission.json"
+    close_time = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    events_path.write_text(
+        json.dumps([{"market_ticker": "EX-TEST", "close_time": close_time}])
+    )
+
+    # The example agent constructs an Anthropic client at call time; stub the
+    # predict() function so we don't need a real API key.
+    monkeypatch.setattr(
+        "ai_prophet.forecast.example_agent.predict",
+        lambda _event: {"p_yes": 0.42, "rationale": "stubbed example"},
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "forecast",
+            "predict",
+            "--events",
+            str(events_path),
+            "--strategy",
+            "example",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "EX-TEST: p_yes=0.420" in result.output
+
+
+def test_predict_rejects_strategy_with_local(tmp_path):
+    events_path = tmp_path / "events.json"
+    events_path.write_text("[]")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "forecast",
+            "predict",
+            "--events",
+            str(events_path),
+            "--strategy",
+            "ensemble",
+            "--local",
+            "ai_prophet.forecast.example_agent",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "only one of" in result.output.lower()
+
+
+def test_predict_requires_a_source(tmp_path):
+    events_path = tmp_path / "events.json"
+    events_path.write_text("[]")
+
+    result = CliRunner().invoke(
+        cli,
+        ["forecast", "predict", "--events", str(events_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "provide one of" in result.output.lower()
+
+
+def test_predict_strategy_rejects_unknown_choice(tmp_path):
+    events_path = tmp_path / "events.json"
+    events_path.write_text("[]")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "forecast",
+            "predict",
+            "--events",
+            str(events_path),
+            "--strategy",
+            "bogus",
+        ],
+    )
+
+    assert result.exit_code != 0
+    # click's Choice validator emits this exact phrase.
+    assert "invalid value for '--strategy'" in result.output.lower()

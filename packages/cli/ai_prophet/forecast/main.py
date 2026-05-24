@@ -25,6 +25,11 @@ from ai_prophet_core.forecast.schemas import MarketProbability, Prediction, Subm
 
 logger = logging.getLogger(__name__)
 
+_STRATEGY_MODULES: dict[str, str] = {
+    "example": "ai_prophet.forecast.example_agent",
+    "ensemble": "ai_prophet.forecast.ensemble_agent",
+}
+
 
 def _setup_logging(verbose: bool = False):
     from dotenv import load_dotenv
@@ -284,6 +289,13 @@ def _save_team_name_to_env(team_name: str) -> None:
     "Example: ai_prophet.forecast.example_agent",
 )
 @click.option(
+    "--strategy",
+    type=click.Choice(["example", "ensemble"], case_sensitive=False),
+    default=None,
+    help="Built-in local strategy: 'example' (single LLM call) or "
+    "'ensemble' (multi-strategy ensemble with web research).",
+)
+@click.option(
     "--output",
     "-o",
     default="predictions.json",
@@ -309,6 +321,7 @@ def predict(
     events: str,
     agent_url: str | None,
     local: str | None,
+    strategy: str | None,
     output: str,
     timeout: int,
     ticker: tuple[str, ...],
@@ -317,12 +330,23 @@ def predict(
     """Collect predictions from an agent endpoint and write a local predictions file."""
     _setup_logging(verbose)
 
-    if not agent_url and not local:
-        raise click.ClickException("Provide --agent-url or --local <module.path>")
-    if agent_url and local:
-        raise click.ClickException("Use --agent-url or --local, not both")
+    sources = [bool(agent_url), bool(local), bool(strategy)]
+    if sum(sources) == 0:
+        raise click.ClickException(
+            "Provide one of --agent-url, --local <module.path>, or --strategy "
+            "{example|ensemble}"
+        )
+    if sum(sources) > 1:
+        raise click.ClickException(
+            "Use only one of --agent-url, --local, --strategy"
+        )
 
-    # Load the local agent's predict function if --local is given
+    # Resolve --strategy to a module path so the rest of the flow is identical
+    # to --local.
+    if strategy:
+        local = _STRATEGY_MODULES[strategy.lower()]
+
+    # Load the local agent's predict function if --local (or --strategy) is given
     local_predict = None
     if local:
         import importlib
@@ -411,7 +435,7 @@ def predict(
 
     out_path = Path(output)
     out_path.write_text(submission.model_dump_json(indent=2, exclude_none=True))
-    click.echo(f"\nPredictions ({len(predictions)} markets) → {out_path}")
+    click.echo(f"\nPredictions ({len(predictions)} markets) -> {out_path}")
 
 
 def _normalize_probabilities(raw: Any) -> list[MarketProbability]:

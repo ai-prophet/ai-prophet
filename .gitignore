@@ -29,6 +29,9 @@ pip-wheel-metadata/
 .coverage.*
 htmlcov/
 
+# Ensemble agent prediction cache (regenerated at runtime)
+prediction_cache.json
+
 # Local data/secrets
 *.db
 .env

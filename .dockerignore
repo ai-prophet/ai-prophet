@@ -1,0 +1,8 @@
+.git
+__pycache__
+*.pyc
+.env
+prediction_cache.json
+calibration_report.json
+*.log
+node_modules
