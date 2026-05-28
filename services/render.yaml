@@ -55,128 +55,135 @@ envVarGroups:
         sync: false
 
 services:
-  # ── Trading Worker — Haifeng (LIVE) ───────────────────────────
-  - type: worker
-    name: kalshi-trading-worker-haifeng
-    runtime: python
-    region: oregon
-    plan: starter
-    rootDir: .
-    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
-    startCommand: python services/worker/main.py
-    envVars:
-      - key: TRADING_INSTANCE_NAME
-        value: Haifeng
-      - key: WORKER_MODELS
-        value: "gemini:gemini-3.1-pro-preview"
-      - key: WORKER_MAX_MARKETS
-        value: "50"
-      - key: WORKER_MAX_ACTIVE_MARKETS
-        value: "50"
-      - key: WORKER_STRATEGY
-        value: rebalancing
-      - key: MARKET_FETCHER
-        value: "true"
-      - key: WORKER_PEER_INSTANCES
-        value: Jibang
-      - key: LIVE_BETTING_DRY_RUN
-        value: "false"
-      - key: KALSHI_API_KEY_ID
-        sync: false
-      - key: KALSHI_PRIVATE_KEY_B64
-        sync: false
-      - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-494415302759.us-west1.run.app
-      - key: PREDICTOR_API_KEY
-        sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "1"
-      - fromGroup: kalshi-trading-shared
-
-  # ── Kalshi Sync Service — Haifeng ────────────────────────────
-  # Independent service to sync positions with Kalshi on SYNC_INTERVAL_SEC
-  - type: worker
-    name: kalshi-sync-service-haifeng
-    runtime: python
-    region: oregon
-    plan: starter
-    rootDir: .
-    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
-    startCommand: python services/kalshi_sync_service.py --instance Haifeng
-    envVars:
-      - key: KALSHI_API_KEY_ID_HAIFENG
-        sync: false
-      - key: KALSHI_PRIVATE_KEY_B64_HAIFENG
-        sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "0"
-      - fromGroup: kalshi-trading-shared
-
-  # ── Kalshi Sync Service — Jibang ─────────────────────────────
-  # Independent service to sync positions with Kalshi on SYNC_INTERVAL_SEC
-  - type: worker
-    name: kalshi-sync-service-jibang
-    runtime: python
-    region: oregon
-    plan: starter
-    rootDir: .
-    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
-    startCommand: python services/kalshi_sync_service.py --instance Jibang
-    envVars:
-      - key: KALSHI_API_KEY_ID_JIBANG
-        sync: false
-      - key: KALSHI_PRIVATE_KEY_B64_JIBANG
-        sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "0"
-      - fromGroup: kalshi-trading-shared
-
-  # ── Trading Worker — Jibang (LIVE) ────────────────────────────
-  # LIVE MODE - Real trading enabled
-  - type: worker
-    name: kalshi-trading-worker-jibang
-    runtime: python
-    region: oregon
-    plan: starter
-    rootDir: .
-    buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
-    startCommand: python services/worker/main.py
-    envVars:
-      - key: TRADING_INSTANCE_NAME
-        value: Jibang
-      - key: WORKER_MODELS
-        value: "gemini:gemini-3.1-pro-preview:market"
-      - key: WORKER_MAX_MARKETS
-        value: "50"
-      - key: WORKER_MAX_ACTIVE_MARKETS
-        value: "50"
-      - key: WORKER_STRATEGY
-        value: rebalancing
-      - key: MARKET_FETCHER
-        value: "true"
-      - key: WORKER_PEER_INSTANCES
-        value: ""
-      - key: LIVE_BETTING_DRY_RUN
-        value: "false"
-      - key: KALSHI_API_KEY_ID
-        sync: false
-      - key: KALSHI_PRIVATE_KEY_B64
-        sync: false
-      - key: PREDICTOR_SERVICE_URL
-        value: https://predictor-494415302759.us-west1.run.app
-      - key: PREDICTOR_API_KEY
-        sync: false
-      - key: DB_POOL_SIZE
-        value: "1"
-      - key: DB_MAX_OVERFLOW
-        value: "1"
-      - fromGroup: kalshi-trading-shared
+  # ════════════════════════════════════════════════════════════════
+  # Jibang & Haifeng FULLY STOPPED — both trading workers and both
+  # Kalshi sync services are commented out (no trading, paper trading,
+  # market fetching, predictions, or position syncing). Suspend the
+  # corresponding services in the Render dashboard as well. To resume,
+  # uncomment the four blocks below.
+  # ════════════════════════════════════════════════════════════════
+#   # ── Trading Worker — Haifeng (LIVE) ───────────────────────────
+#   - type: worker
+#     name: kalshi-trading-worker-haifeng
+#     runtime: python
+#     region: oregon
+#     plan: starter
+#     rootDir: .
+#     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
+#     startCommand: python services/worker/main.py
+#     envVars:
+#       - key: TRADING_INSTANCE_NAME
+#         value: Haifeng
+#       - key: WORKER_MODELS
+#         value: "gemini:gemini-3.1-pro-preview"
+#       - key: WORKER_MAX_MARKETS
+#         value: "50"
+#       - key: WORKER_MAX_ACTIVE_MARKETS
+#         value: "50"
+#       - key: WORKER_STRATEGY
+#         value: rebalancing
+#       - key: MARKET_FETCHER
+#         value: "true"
+#       - key: WORKER_PEER_INSTANCES
+#         value: Jibang
+#       - key: LIVE_BETTING_DRY_RUN
+#         value: "false"
+#       - key: KALSHI_API_KEY_ID
+#         sync: false
+#       - key: KALSHI_PRIVATE_KEY_B64
+#         sync: false
+#       - key: PREDICTOR_SERVICE_URL
+#         value: https://predictor-494415302759.us-west1.run.app
+#       - key: PREDICTOR_API_KEY
+#         sync: false
+#       - key: DB_POOL_SIZE
+#         value: "1"
+#       - key: DB_MAX_OVERFLOW
+#         value: "1"
+#       - fromGroup: kalshi-trading-shared
+# 
+#   # ── Kalshi Sync Service — Haifeng ────────────────────────────
+#   # Independent service to sync positions with Kalshi on SYNC_INTERVAL_SEC
+#   - type: worker
+#     name: kalshi-sync-service-haifeng
+#     runtime: python
+#     region: oregon
+#     plan: starter
+#     rootDir: .
+#     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
+#     startCommand: python services/kalshi_sync_service.py --instance Haifeng
+#     envVars:
+#       - key: KALSHI_API_KEY_ID_HAIFENG
+#         sync: false
+#       - key: KALSHI_PRIVATE_KEY_B64_HAIFENG
+#         sync: false
+#       - key: DB_POOL_SIZE
+#         value: "1"
+#       - key: DB_MAX_OVERFLOW
+#         value: "0"
+#       - fromGroup: kalshi-trading-shared
+# 
+#   # ── Kalshi Sync Service — Jibang ─────────────────────────────
+#   # Independent service to sync positions with Kalshi on SYNC_INTERVAL_SEC
+#   - type: worker
+#     name: kalshi-sync-service-jibang
+#     runtime: python
+#     region: oregon
+#     plan: starter
+#     rootDir: .
+#     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
+#     startCommand: python services/kalshi_sync_service.py --instance Jibang
+#     envVars:
+#       - key: KALSHI_API_KEY_ID_JIBANG
+#         sync: false
+#       - key: KALSHI_PRIVATE_KEY_B64_JIBANG
+#         sync: false
+#       - key: DB_POOL_SIZE
+#         value: "1"
+#       - key: DB_MAX_OVERFLOW
+#         value: "0"
+#       - fromGroup: kalshi-trading-shared
+# 
+#   # ── Trading Worker — Jibang (LIVE) ────────────────────────────
+#   # LIVE MODE - Real trading enabled
+#   - type: worker
+#     name: kalshi-trading-worker-jibang
+#     runtime: python
+#     region: oregon
+#     plan: starter
+#     rootDir: .
+#     buildCommand: pip install --no-cache-dir -r services/worker/requirements.txt && pip install -e packages/core
+#     startCommand: python services/worker/main.py
+#     envVars:
+#       - key: TRADING_INSTANCE_NAME
+#         value: Jibang
+#       - key: WORKER_MODELS
+#         value: "gemini:gemini-3.1-pro-preview:market"
+#       - key: WORKER_MAX_MARKETS
+#         value: "50"
+#       - key: WORKER_MAX_ACTIVE_MARKETS
+#         value: "50"
+#       - key: WORKER_STRATEGY
+#         value: rebalancing
+#       - key: MARKET_FETCHER
+#         value: "true"
+#       - key: WORKER_PEER_INSTANCES
+#         value: ""
+#       - key: LIVE_BETTING_DRY_RUN
+#         value: "false"
+#       - key: KALSHI_API_KEY_ID
+#         sync: false
+#       - key: KALSHI_PRIVATE_KEY_B64
+#         sync: false
+#       - key: PREDICTOR_SERVICE_URL
+#         value: https://predictor-494415302759.us-west1.run.app
+#       - key: PREDICTOR_API_KEY
+#         sync: false
+#       - key: DB_POOL_SIZE
+#         value: "1"
+#       - key: DB_MAX_OVERFLOW
+#         value: "1"
+#       - fromGroup: kalshi-trading-shared
 
   # ── Comparison Worker — GPT-5.4 (dry-run) ──────────────────────
   - type: worker
